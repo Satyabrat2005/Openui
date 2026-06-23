@@ -1,0 +1,70 @@
+{
+  "name": "openui",
+  "version": "0.1.0",
+  "description": "OpenUI — a macOS menu-bar AI assistant (Electron + Vite + React + TypeScript)",
+  "main": "./out/main/index.js",
+  "author": "OpenUI",
+  "license": "MIT",
+  "scripts": {
+    "postinstall": "node scripts/generate-tray-icon.cjs",
+    "icons": "node scripts/generate-tray-icon.cjs",
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "preview": "electron-vite preview",
+    "typecheck": "tsc --noEmit",
+    "build:mac": "electron-vite build && electron-builder --mac"
+  },
+  "build": {
+    "appId": "com.openui.app",
+    "productName": "OpenUI",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "out/**/*",
+      "resources/**/*",
+      "package.json"
+    ],
+    "mac": {
+      "category": "public.app-category.productivity",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
+      ],
+      "icon": "resources/icon.icns"
+    },
+    "dmg": {
+      "title": "${productName} ${version}"
+    }
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.40.0",
+    "tesseract.js": "^5.1.0",
+    "@nut-tree-fork/nut-js": "^4.2.0",
+    "gsap": "^3.12.5",
+    "node-osascript": "^2.1.0",
+    "ollama": "^0.5.0",
+    "openai": "^4.0.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.1",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "autoprefixer": "^10.4.20",
+    "electron": "^42.4.1",
+    "electron-builder": "^26.15.3",
+    "electron-vite": "^5.0.0",
+    "postcss": "^8.4.49",
+    "tailwindcss": "^3.4.15",
+    "typescript": "^5.7.2",
+    "vite": "^7.3.5"
+  }
+}

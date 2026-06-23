@@ -1,0 +1,51 @@
+# ── Dependencies ──────────────────────────────────────────────
+node_modules
+
+# ── Build / packaging output ──────────────────────────────────
+out
+dist
+build
+dist-electron
+release
+.vite
+
+# ── Secrets & environment ─────────────────────────────────────
+# Never commit real credentials. Only the documented template is tracked.
+.env
+.env.*
+!.env.example
+*.local
+
+# Signing material / private keys / certificates
+*.pem
+*.key
+*.p12
+*.pfx
+*.cer
+*.crt
+*.keystore
+*.jks
+*.mobileprovision
+*.provisionprofile
+secrets.json
+credentials.json
+*.asar.unpacked
+
+# ── Logs ──────────────────────────────────────────────────────
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# ── OS / editor cruft ─────────────────────────────────────────
+.DS_Store
+.AppleDouble
+.LSOverride
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+*.swp
+*~
+.idea
+.vscode/*
+!.vscode/extensions.json

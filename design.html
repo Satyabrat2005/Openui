@@ -1,0 +1,1661 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>OpenUI</title>
+
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+
+  <!-- GSAP (loaded, no animation logic yet) -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js" defer></script>
+
+  <style>
+    /* ─────────────────────────────────────────
+       RESET & BASE
+    ───────────────────────────────────────── */
+    *, *::before, *::after {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    html, body {
+      width: 100vw;
+      height: 100vh;
+      overflow: hidden;
+      font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* ─────────────────────────────────────────
+       DESKTOP
+    ───────────────────────────────────────── */
+    #desktop {
+      position: relative;
+      width: 100vw;
+      height: 100vh;
+      background: linear-gradient(
+        148deg,
+        #b6cde6 0%,
+        #c4d9f0 18%,
+        #d0e5f8 36%,
+        #ddeaf8 52%,
+        #e6e2f4 70%,
+        #ddd7ef 86%,
+        #d4cfe8 100%
+      );
+      overflow: hidden;
+    }
+
+    /* Subtle noise texture overlay */
+    #desktop::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.035'/%3E%3C/svg%3E");
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    /* ─────────────────────────────────────────
+       MENU BAR
+    ───────────────────────────────────────── */
+    #menu-bar {
+      position: absolute;
+      top: 0; left: 0; right: 0;
+      height: 28px;
+      background: rgba(246, 246, 248, 0.82);
+      backdrop-filter: blur(24px) saturate(180%);
+      -webkit-backdrop-filter: blur(24px) saturate(180%);
+      border-bottom: 0.5px solid rgba(0, 0, 0, 0.11);
+      display: flex;
+      align-items: center;
+      z-index: 100;
+      opacity: 0;
+    }
+
+    .menu-bar-left {
+      display: flex;
+      align-items: center;
+      gap: 20px;
+      padding: 0 16px;
+    }
+
+    .menu-bar-item {
+      font-size: 13px;
+      color: #2e2e2e;
+      cursor: default;
+      letter-spacing: -0.01em;
+    }
+
+    .menu-bar-item.bold {
+      font-weight: 600;
+      color: #1c1c1e;
+    }
+
+    .menu-bar-right {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      margin-left: auto;
+      padding: 0 14px;
+    }
+
+    .openui-menubar-pill {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      padding: 2px 7px 2px 5px;
+      border-radius: 5px;
+      background: rgba(0, 0, 0, 0.05);
+      cursor: pointer;
+    }
+
+    .openui-menubar-orb {
+      width: 16px; height: 16px;
+      border-radius: 50%;
+      background: linear-gradient(140deg, #5ac8fa 0%, #007aff 100%);
+      display: flex; align-items: center; justify-content: center;
+      flex-shrink: 0;
+    }
+
+    .openui-menubar-orb-dot {
+      width: 6px; height: 6px;
+      background: white;
+      border-radius: 50%;
+    }
+
+    /* Battery */
+    .battery-shell {
+      width: 25px; height: 12px;
+      border: 1.5px solid rgba(0,0,0,0.38);
+      border-radius: 3px;
+      position: relative;
+      display: flex; align-items: center;
+      padding: 1.5px;
+    }
+
+    .battery-fill {
+      width: 74%; height: 100%;
+      background: #1c1c1e;
+      border-radius: 1.5px;
+    }
+
+    .battery-nub {
+      width: 2px; height: 6px;
+      background: rgba(0,0,0,0.35);
+      border-radius: 1px;
+      margin-left: 2px;
+    }
+
+    /* ─────────────────────────────────────────
+       MAC WINDOW CHROME
+    ───────────────────────────────────────── */
+    .mac-window {
+      position: absolute;
+      border-radius: 10px;
+      overflow: hidden;
+      box-shadow:
+        0 0 0 0.5px rgba(0, 0, 0, 0.13),
+        0 4px 14px rgba(0, 0, 0, 0.08),
+        0 22px 60px rgba(0, 0, 0, 0.16);
+      opacity: 0;
+      z-index: 10;
+    }
+
+    .window-chrome {
+      height: 38px;
+      display: flex;
+      align-items: center;
+      padding: 0 12px;
+      gap: 8px;
+      flex-shrink: 0;
+      position: relative;
+    }
+
+    .traffic-lights {
+      display: flex;
+      gap: 8px;
+      flex-shrink: 0;
+    }
+
+    .tl {
+      width: 12px; height: 12px;
+      border-radius: 50%;
+      border: 0.5px solid rgba(0,0,0,0.1);
+    }
+
+    .tl-close    { background: #ff5f57; }
+    .tl-minimize { background: #febc2e; }
+    .tl-zoom     { background: #28c840; }
+
+    .window-chrome-title {
+      position: absolute;
+      left: 50%; top: 50%;
+      transform: translate(-50%, -50%);
+      font-size: 12px;
+      font-weight: 500;
+      color: #6e6e6e;
+      letter-spacing: -0.01em;
+      white-space: nowrap;
+    }
+
+    /* ─────────────────────────────────────────
+       VS CODE WINDOW
+    ───────────────────────────────────────── */
+    #vscode-window {
+      top: 52px;
+      left: 32px;
+      width: 730px;
+      height: 488px;
+    }
+
+    .vscode-body {
+      display: flex;
+      height: calc(100% - 38px);
+    }
+
+    /* Activity bar */
+    .vscode-activity {
+      width: 48px;
+      background: #333333;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding-top: 10px;
+      gap: 18px;
+      flex-shrink: 0;
+    }
+
+    .activity-icon {
+      width: 24px; height: 24px;
+      display: flex; align-items: center; justify-content: center;
+      opacity: 0.4;
+      color: white;
+    }
+
+    .activity-icon.active { opacity: 1; }
+
+    /* Sidebar */
+    .vscode-sidebar {
+      width: 185px;
+      background: #252526;
+      flex-shrink: 0;
+      overflow: hidden;
+    }
+
+    .sidebar-explorer-label {
+      padding: 10px 12px 6px;
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: #bbbcbe;
+    }
+
+    .sidebar-folder-row {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      padding: 2px 8px;
+      font-size: 11.5px;
+      color: #cccccc;
+      font-weight: 600;
+      letter-spacing: 0.02em;
+    }
+
+    .sidebar-file-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 2px 8px 2px 22px;
+      font-size: 12px;
+      color: #cccccc;
+      cursor: pointer;
+    }
+
+    .sidebar-file-row.active {
+      background: rgba(255,255,255,0.07);
+      border-radius: 3px;
+      margin: 0 4px;
+      padding-left: 18px;
+    }
+
+    .file-dot {
+      width: 8px; height: 8px;
+      border-radius: 1.5px;
+      flex-shrink: 0;
+    }
+
+    .sidebar-collapsed-row {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      padding: 3px 8px;
+      font-size: 12px;
+      color: #666666;
+      cursor: pointer;
+    }
+
+    /* Editor */
+    .vscode-editor {
+      flex: 1;
+      background: #1e1e1e;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      min-width: 0;
+    }
+
+    .editor-tabs {
+      background: #2d2d2d;
+      display: flex;
+      border-bottom: 1px solid #252526;
+      flex-shrink: 0;
+    }
+
+    .editor-tab {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 7px 14px;
+      font-size: 12.5px;
+      color: #919191;
+      border-right: 1px solid #252526;
+      cursor: pointer;
+      white-space: nowrap;
+      font-family: -apple-system, sans-serif;
+    }
+
+    .editor-tab.active {
+      background: #1e1e1e;
+      color: #d4d4d4;
+    }
+
+    .tab-modified-dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+
+    .editor-code-area {
+      flex: 1;
+      padding: 14px 16px;
+      display: flex;
+      gap: 16px;
+      overflow: hidden;
+      font-family: "Menlo", "Monaco", "Courier New", monospace;
+      font-size: 12px;
+      line-height: 1.65;
+      color: #d4d4d4;
+    }
+
+    .line-nums {
+      color: #4e4e4e;
+      text-align: right;
+      user-select: none;
+      flex-shrink: 0;
+      width: 22px;
+      line-height: 1.65;
+    }
+
+    .code-block {
+      color: #d4d4d4;
+      line-height: 1.65;
+      white-space: pre;
+      overflow: hidden;
+    }
+
+    /* Syntax tokens */
+    .ck { color: #569cd6; }
+    .cs { color: #ce9178; }
+    .cc { color: #6a9955; font-style: italic; }
+    .cf { color: #dcdcaa; }
+    .cn { color: #9cdcfe; }
+    .co { color: #4ec9b0; }
+    .cp { color: #c586c0; }
+
+    .vscode-statusbar {
+      height: 22px;
+      background: #007acc;
+      display: flex;
+      align-items: center;
+      padding: 0 12px;
+      gap: 16px;
+      font-size: 11px;
+      color: rgba(255,255,255,0.9);
+      flex-shrink: 0;
+      font-family: -apple-system, sans-serif;
+    }
+
+    /* ─────────────────────────────────────────
+       CALENDAR WINDOW
+    ───────────────────────────────────────── */
+    #calendar-window {
+      top: 74px;
+      right: 32px;
+      width: 490px;
+      height: 432px;
+      background: white;
+    }
+
+    #calendar-window .window-chrome {
+      background: #f5f5f7;
+      border-bottom: 0.5px solid #e8e8e8;
+    }
+
+    .cal-body {
+      display: flex;
+      height: calc(100% - 38px);
+    }
+
+    .cal-sidebar {
+      width: 178px;
+      background: #f9f9f9;
+      border-right: 0.5px solid #ebebeb;
+      padding: 14px 12px;
+      flex-shrink: 0;
+    }
+
+    .mini-cal-nav {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 9px;
+    }
+
+    .mini-cal-nav-btn {
+      width: 20px; height: 20px;
+      border: none;
+      background: none;
+      color: #8e8e93;
+      cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      border-radius: 4px;
+    }
+
+    .mini-cal-grid {
+      display: grid;
+      grid-template-columns: repeat(7, 1fr);
+      row-gap: 1px;
+    }
+
+    .mc-label {
+      font-size: 9px;
+      color: #8e8e93;
+      text-align: center;
+      padding: 2px 0;
+      font-weight: 600;
+    }
+
+    .mc-day {
+      font-size: 10px;
+      color: #5e5e5e;
+      text-align: center;
+      padding: 2px 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      height: 18px;
+    }
+
+    .mc-day.today {
+      background: #007aff;
+      color: white;
+      font-weight: 600;
+      border-radius: 50%;
+      width: 18px;
+      margin: 0 auto;
+    }
+
+    .cal-legend {
+      margin-top: 14px;
+    }
+
+    .legend-label {
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: #8e8e93;
+      margin-bottom: 8px;
+    }
+
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      padding: 2.5px 0;
+    }
+
+    .legend-dot {
+      width: 10px; height: 10px;
+      border-radius: 3px;
+      flex-shrink: 0;
+    }
+
+    .cal-main {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      position: relative;
+    }
+
+    .cal-view-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 16px;
+      border-bottom: 0.5px solid #f0f0f0;
+      flex-shrink: 0;
+    }
+
+    .view-switcher {
+      display: flex;
+      gap: 1px;
+      background: #ededed;
+      border-radius: 6px;
+      padding: 2px;
+    }
+
+    .view-btn {
+      font-size: 11px;
+      padding: 3px 9px;
+      border: none;
+      background: none;
+      color: #6e6e6e;
+      border-radius: 4px;
+      cursor: pointer;
+      font-family: -apple-system, sans-serif;
+    }
+
+    .view-btn.active {
+      background: white;
+      color: #007aff;
+      font-weight: 600;
+      box-shadow: 0 1px 2px rgba(0,0,0,0.1);
+    }
+
+    .cal-time-grid {
+      flex: 1;
+      overflow: hidden;
+    }
+
+    .time-row {
+      display: flex;
+      border-bottom: 0.5px solid #f4f4f4;
+      height: 52px;
+      flex-shrink: 0;
+    }
+
+    .time-label {
+      width: 50px;
+      font-size: 9px;
+      color: #aeaeb2;
+      text-align: right;
+      padding: 5px 9px 0;
+      flex-shrink: 0;
+      font-family: -apple-system, sans-serif;
+    }
+
+    .time-slot {
+      flex: 1;
+      border-left: 0.5px solid #f0f0f0;
+      position: relative;
+    }
+
+    .cal-event {
+      position: absolute;
+      left: 5px; right: 5px;
+      top: 5px; bottom: 6px;
+      border-radius: 5px;
+      padding: 4px 7px;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+    }
+
+    .cal-event-title {
+      font-size: 11px;
+      font-weight: 600;
+      color: white;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      font-family: -apple-system, sans-serif;
+    }
+
+    .cal-event-sub {
+      font-size: 9px;
+      color: rgba(255,255,255,0.72);
+      margin-top: 1px;
+      font-family: -apple-system, sans-serif;
+    }
+
+    /* Newly added event highlight */
+    .cal-event.new-event {
+      box-shadow: 0 0 0 2px rgba(255,255,255,0.35) inset;
+    }
+
+    /* ─────────────────────────────────────────
+       OPENUI POPUP PANEL
+    ───────────────────────────────────────── */
+    #openui-popup {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      width: 376px;
+      background: rgba(255, 255, 255, 0.97);
+      backdrop-filter: blur(40px) saturate(200%);
+      -webkit-backdrop-filter: blur(40px) saturate(200%);
+      border-radius: 18px;
+      box-shadow:
+        0 0 0 0.5px rgba(0, 0, 0, 0.08),
+        0 8px 28px rgba(0, 0, 0, 0.10),
+        0 36px 88px rgba(0, 0, 0, 0.18);
+      padding: 22px 22px 18px;
+      z-index: 200;
+      opacity: 0;
+    }
+
+    .popup-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 18px;
+    }
+
+    .popup-logo-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .popup-orb {
+      width: 24px; height: 24px;
+      border-radius: 50%;
+      background: linear-gradient(140deg, #5ac8fa 0%, #007aff 100%);
+      display: flex; align-items: center; justify-content: center;
+      flex-shrink: 0;
+    }
+
+    .popup-orb-dot {
+      width: 9px; height: 9px;
+      background: white;
+      border-radius: 50%;
+    }
+
+    .popup-status {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+    }
+
+    .status-dot {
+      width: 6px; height: 6px;
+      border-radius: 50%;
+      background: #34c759;
+    }
+
+    /* Mic section */
+    .mic-stage {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 18px 0 22px;
+      position: relative;
+    }
+
+    /* Pulse rings — will be animated with GSAP */
+    .mic-ring {
+      position: absolute;
+      top: 50%; left: 50%;
+      transform: translate(-50%, -50%);
+      border-radius: 50%;
+      pointer-events: none;
+    }
+
+    #ring-1 {
+      width: 96px; height: 96px;
+      border: 1.5px solid rgba(0, 122, 255, 0.22);
+    }
+
+    #ring-2 {
+      width: 122px; height: 122px;
+      border: 1.5px solid rgba(0, 122, 255, 0.13);
+    }
+
+    #ring-3 {
+      width: 150px; height: 150px;
+      border: 1px solid rgba(0, 122, 255, 0.07);
+    }
+
+    /* Mic orb */
+    .mic-orb {
+      width: 80px; height: 80px;
+      border-radius: 50%;
+      background: linear-gradient(145deg, #42adff 0%, #007aff 50%, #0055d4 100%);
+      box-shadow:
+        0 6px 22px rgba(0, 122, 255, 0.38),
+        0 2px 7px rgba(0, 122, 255, 0.18);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      position: relative;
+      z-index: 1;
+    }
+
+    /* Caption area */
+    .caption-area {
+      margin-top: 16px;
+      text-align: center;
+    }
+
+    #caption-text {
+      font-size: 14px;
+      font-weight: 500;
+      color: #1c1c1e;
+      letter-spacing: -0.01em;
+    }
+
+    /* Sound bars — heights animated with GSAP */
+    #sound-bars {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 3px;
+      margin-top: 10px;
+      height: 20px;
+    }
+
+    .sbar {
+      width: 3px;
+      border-radius: 99px;
+      background: #007aff;
+      flex-shrink: 0;
+    }
+
+    /* Transcript bubble */
+    #transcript-bubble {
+      background: #f7f7f9;
+      border-radius: 10px;
+      padding: 11px 14px;
+      margin-bottom: 14px;
+    }
+
+    #transcript-text {
+      font-size: 13px;
+      color: #3a3a3c;
+      line-height: 1.5;
+      letter-spacing: -0.01em;
+    }
+
+    /* Input strip */
+    .input-strip {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 9px 12px;
+      background: #f2f2f7;
+      border-radius: 10px;
+    }
+
+    /* Suggestion chips */
+    .chips-row {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+      margin-top: 11px;
+    }
+
+    .chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 3px;
+      padding: 5px 10px;
+      border-radius: 99px;
+      background: #f2f2f7;
+      font-size: 11px;
+      color: #5e5e6a;
+      cursor: pointer;
+      white-space: nowrap;
+      font-family: -apple-system, sans-serif;
+    }
+
+    /* ─────────────────────────────────────────
+       TASK CHECKLIST POPUP
+    ───────────────────────────────────────── */
+    #task-popup {
+      bottom: 50px;
+      right: 32px;
+      width: 278px;
+      background: white;
+      z-index: 50;
+    }
+
+    .task-popup-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 11px 14px;
+      border-bottom: 0.5px solid #ebebeb;
+      flex-shrink: 0;
+    }
+
+    .task-popup-title-row {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+    }
+
+    .task-icon-badge {
+      width: 18px; height: 18px;
+      border-radius: 5px;
+      background: #007aff;
+      display: flex; align-items: center; justify-content: center;
+      flex-shrink: 0;
+    }
+
+    .task-row {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      padding: 9px 14px;
+      border-bottom: 0.5px solid #f7f7f7;
+    }
+
+    .task-row:last-child {
+      border-bottom: none;
+    }
+
+    .task-check {
+      width: 18px; height: 18px;
+      border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      flex-shrink: 0;
+      margin-top: 1px;
+    }
+
+    .task-check.done {
+      background: #007aff;
+      border: none;
+    }
+
+    .task-check.pending {
+      border: 1.5px solid #d1d1d6;
+      background: none;
+    }
+
+    .task-check.working {
+      border: 1.5px solid #d1d1d6;
+      background: none;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .task-label {
+      font-size: 12px;
+      font-family: -apple-system, sans-serif;
+      line-height: 1.4;
+    }
+
+    .task-label.done {
+      text-decoration: line-through;
+      color: #aeaeb2;
+    }
+
+    .task-label.pending {
+      color: #5e5e5e;
+    }
+
+    .task-label.working {
+      color: #1c1c1e;
+      font-weight: 500;
+    }
+
+    .task-sublabel {
+      font-size: 10px;
+      color: #007aff;
+      margin-top: 2px;
+      font-family: -apple-system, sans-serif;
+    }
+
+    /* Spinner ring for in-progress task */
+    #task-spinner {
+      width: 10px; height: 10px;
+      border: 1.5px solid #dde5f0;
+      border-top-color: #007aff;
+      border-radius: 50%;
+    }
+
+    .task-popup-footer {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 8px 14px;
+      border-top: 0.5px solid #ebebeb;
+      background: #fafafa;
+      border-radius: 0 0 10px 10px;
+    }
+
+    .footer-dot {
+      width: 6px; height: 6px;
+      border-radius: 50%;
+      background: #34c759;
+      flex-shrink: 0;
+    }
+  </style>
+</head>
+
+<body>
+<div id="desktop">
+
+
+  <!-- ════════════════════════════
+       MENU BAR
+  ════════════════════════════ -->
+  <header id="menu-bar">
+
+    <div class="menu-bar-left">
+      <!-- Apple logo -->
+      <svg width="13" height="16" viewBox="0 0 13 16" fill="none" style="opacity:.78; flex-shrink:0;">
+        <path d="M11.98 11.5c-.26.57-.39.82-.72 1.33-.46.71-1.11 1.59-1.92 1.6-.72.01-.91-.47-1.91-.47-.99 0-1.21.48-1.93.47-.8-.01-1.43-.82-1.89-1.53C1.7 11.15.73 8.44 1.32 6.08c.39-1.47 1.43-2.29 2.52-2.3.88-.01 1.43.5 2.16.5.72 0 1.16-.52 2.2-.52.86 0 1.66.45 2.25 1.2-1.97 1.1-1.65 3.96.67 4.74l-.14.8zM7.8 2.76c.38-.88.24-1.98-.03-2.5-.8.05-1.74.55-2.3 1.22-.5.6-.93 1.55-.77 2.47.98.03 1.98-.56 3.1-1.19z" fill="currentColor"/>
+      </svg>
+
+      <!-- App menu items -->
+      <span class="menu-bar-item bold">OpenUI</span>
+      <span class="menu-bar-item">File</span>
+      <span class="menu-bar-item">Edit</span>
+      <span class="menu-bar-item">View</span>
+      <span class="menu-bar-item">Window</span>
+      <span class="menu-bar-item">Help</span>
+    </div>
+
+    <div class="menu-bar-right">
+      <!-- Wi-Fi icon -->
+      <svg width="17" height="13" viewBox="0 0 17 13" fill="none" style="opacity:.7; flex-shrink:0;">
+        <path d="M8.5 10.5 10 12.5H7L8.5 10.5ZM8.5 6C10.5 6 12.3 6.8 13.6 8.1L14.7 7C13.1 5.5 11 4.5 8.5 4.5S3.9 5.5 2.3 7L3.4 8.1C4.7 6.8 6.5 6 8.5 6ZM8.5 1C11.6 1 14.4 2.2 16.5 4.2L17.5 3.1C15.2 1.2 12.0 0 8.5 0S1.8 1.2-.5 3.1L.5 4.2C2.6 2.2 5.4 1 8.5 1Z" fill="currentColor"/>
+      </svg>
+
+      <!-- Battery -->
+      <div style="display:flex; align-items:center; gap:2px;">
+        <div class="battery-shell">
+          <div class="battery-fill"></div>
+        </div>
+        <div class="battery-nub"></div>
+      </div>
+
+      <!-- Clock -->
+      <span class="menu-bar-item bold" style="letter-spacing:-.01em;">9:41 AM</span>
+
+      <!-- OpenUI menu bar icon -->
+      <div class="openui-menubar-pill">
+        <div class="openui-menubar-orb">
+          <div class="openui-menubar-orb-dot"></div>
+        </div>
+        <span style="font-size:12px; font-weight:500; color:#1c1c1e; letter-spacing:-.01em;">OpenUI</span>
+      </div>
+    </div>
+
+  </header>
+  <!-- /menu-bar -->
+
+
+  <!-- ════════════════════════════
+       VS CODE WINDOW
+  ════════════════════════════ -->
+  <div id="vscode-window" class="mac-window">
+
+    <div class="window-chrome" style="background:#3c3c3c; border-bottom:1px solid #252526;">
+      <div class="traffic-lights">
+        <div class="tl tl-close"></div>
+        <div class="tl tl-minimize"></div>
+        <div class="tl tl-zoom"></div>
+      </div>
+      <span class="window-chrome-title" style="color:#9a9a9a;">meeting_agent.py — openui-workspace</span>
+    </div>
+
+    <div class="vscode-body">
+
+      <!-- Activity bar -->
+      <div class="vscode-activity">
+        <div class="activity-icon active">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+            <path d="M13 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V9l-7-7z" stroke="white" stroke-width="1.5" stroke-linejoin="round"/>
+            <path d="M13 2v7h7" stroke="white" stroke-width="1.5" stroke-linejoin="round"/>
+          </svg>
+        </div>
+        <div class="activity-icon">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+            <circle cx="11" cy="11" r="8" stroke="white" stroke-width="1.5"/>
+            <path d="m21 21-4.35-4.35" stroke="white" stroke-width="1.5" stroke-linecap="round"/>
+          </svg>
+        </div>
+        <div class="activity-icon">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+            <circle cx="18" cy="18" r="3" stroke="white" stroke-width="1.5"/>
+            <circle cx="6" cy="6" r="3" stroke="white" stroke-width="1.5"/>
+            <path d="M6 9v4a7 7 0 007 7" stroke="white" stroke-width="1.5" stroke-linecap="round"/>
+          </svg>
+        </div>
+        <div class="activity-icon" style="margin-top:auto; margin-bottom:12px; opacity:.5;">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+            <circle cx="12" cy="12" r="3" stroke="white" stroke-width="1.5"/>
+            <path d="M19.07 4.93a10 10 0 010 14.14M4.93 4.93a10 10 0 000 14.14" stroke="white" stroke-width="1.5" stroke-linecap="round"/>
+          </svg>
+        </div>
+      </div>
+
+      <!-- Sidebar -->
+      <div class="vscode-sidebar">
+        <div class="sidebar-explorer-label">Explorer</div>
+
+        <div class="sidebar-folder-row">
+          <svg width="10" height="10" viewBox="0 0 24 24" fill="#cccccc"><path d="M19 9l-7 7-7-7"/></svg>
+          <span>OPENUI-WORKSPACE</span>
+        </div>
+
+        <div style="padding-left:8px;">
+          <div class="sidebar-file-row active">
+            <div class="file-dot" style="background:#3b8ede;"></div>
+            <span style="color:#9cdcfe;">meeting_agent.py</span>
+          </div>
+          <div class="sidebar-file-row">
+            <div class="file-dot" style="background:#e5c07b;"></div>
+            <span>summariser.py</span>
+          </div>
+          <div class="sidebar-file-row">
+            <div class="file-dot" style="background:#e06c75;"></div>
+            <span>config.json</span>
+          </div>
+          <div class="sidebar-file-row">
+            <div class="file-dot" style="background:#56b6c2;"></div>
+            <span>README.md</span>
+          </div>
+        </div>
+
+        <div class="sidebar-collapsed-row" style="margin-top:5px;">
+          <svg width="10" height="10" viewBox="0 0 24 24" fill="#666"><path d="M9 18l6-6-6-6"/></svg>
+          <span>tests</span>
+        </div>
+        <div class="sidebar-collapsed-row">
+          <svg width="10" height="10" viewBox="0 0 24 24" fill="#555"><path d="M9 18l6-6-6-6"/></svg>
+          <span>node_modules</span>
+        </div>
+      </div>
+
+      <!-- Editor -->
+      <div class="vscode-editor">
+
+        <div class="editor-tabs">
+          <div class="editor-tab active">
+            <div class="tab-modified-dot" style="background:#e5c07b;"></div>
+            meeting_agent.py
+          </div>
+          <div class="editor-tab">summariser.py</div>
+        </div>
+
+        <div class="editor-code-area">
+          <div class="line-nums">
+            1<br>2<br>3<br>4<br>5<br>6<br>7<br>8<br>9<br>10<br>
+            11<br>12<br>13<br>14<br>15<br>16<br>17<br>18<br>19<br>20<br>21
+          </div>
+
+          <!-- Code -->
+          <div class="code-block"><span class="ck">import</span> <span class="cn">openui</span>
+<span class="ck">from</span> <span class="cn">openui.agents</span> <span class="ck">import</span> <span class="co">MeetingAgent</span>, <span class="co">CodeReviewer</span>
+
+<span class="cc"># Autonomous developer workflow — runs locally</span>
+<span class="cn">agent</span> = <span class="cf">MeetingAgent</span>(
+    <span class="cn">model</span>=<span class="cs">"llama3"</span>,
+    <span class="cn">calendar</span>=<span class="cs">"work"</span>,
+    <span class="cn">local_only</span>=<span class="ck">True</span>
+)
+
+<span class="ck">def</span> <span class="cf">run_morning_workflow</span>() -> <span class="ck">None</span>:
+    <span class="cs">"""Join meeting, summarise, then trigger code review."""</span>
+    <span class="cn">summary</span> = <span class="cn">agent</span>.<span class="cf">join_and_transcribe</span>(<span class="cs">"Strategy Meet"</span>)
+    <span class="cn">agent</span>.<span class="cf">draft_and_send_minutes</span>(<span class="cn">summary</span>, <span class="cn">to</span>=<span class="cs">"team@company.com"</span>)
+
+    <span class="cn">reviewer</span> = <span class="cf">CodeReviewer</span>(<span class="cn">repo</span>=<span class="cs">"org/main"</span>)
+    <span class="cn">open_prs</span> = <span class="cn">reviewer</span>.<span class="cf">fetch_pull_requests</span>(<span class="cn">state</span>=<span class="cs">"open"</span>)
+
+    <span class="ck">for</span> <span class="cn">pr</span> <span class="ck">in</span> <span class="cn">open_prs</span>:
+        <span class="cn">feedback</span> = <span class="cn">reviewer</span>.<span class="cf">analyse</span>(<span class="cn">pr</span>)
+        <span class="cn">reviewer</span>.<span class="cf">post_comment</span>(<span class="cn">pr</span>, <span class="cn">feedback</span>)
+
+<span class="cf">run_morning_workflow</span>()</div>
+        </div>
+
+        <div class="vscode-statusbar">
+          <span>⎇ main</span>
+          <span>Python 3.12</span>
+          <span style="margin-left:auto;">Ln 21, Col 1 &nbsp;·&nbsp; UTF-8</span>
+        </div>
+
+      </div><!-- /editor -->
+    </div><!-- /vscode-body -->
+  </div>
+  <!-- /vscode-window -->
+
+
+  <!-- ════════════════════════════
+       CALENDAR WINDOW
+  ════════════════════════════ -->
+  <div id="calendar-window" class="mac-window">
+
+    <div class="window-chrome" style="background:#f5f5f7; border-bottom:0.5px solid #e8e8e8;">
+      <div class="traffic-lights">
+        <div class="tl tl-close"></div>
+        <div class="tl tl-minimize"></div>
+        <div class="tl tl-zoom"></div>
+      </div>
+      <span class="window-chrome-title">Calendar</span>
+    </div>
+
+    <div class="cal-body">
+
+      <!-- Sidebar -->
+      <div class="cal-sidebar">
+
+        <div class="mini-cal-nav">
+          <span style="font-size:12px; font-weight:600; color:#1c1c1e;">June 2026</span>
+          <div style="display:flex; gap:1px;">
+            <button class="mini-cal-nav-btn">
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none"><path d="M15 18l-6-6 6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+            </button>
+            <button class="mini-cal-nav-btn">
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none"><path d="M9 18l6-6-6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+            </button>
+          </div>
+        </div>
+
+        <!-- Mini calendar grid — June 2026 (June 1 = Monday) -->
+        <div class="mini-cal-grid">
+          <!-- Day labels -->
+          <div class="mc-label">S</div>
+          <div class="mc-label">M</div>
+          <div class="mc-label">T</div>
+          <div class="mc-label">W</div>
+          <div class="mc-label">T</div>
+          <div class="mc-label">F</div>
+          <div class="mc-label">S</div>
+
+          <!-- Week 1 (Mon–Sat, Sunday blank) -->
+          <div class="mc-day"></div>
+          <div class="mc-day">1</div>
+          <div class="mc-day">2</div>
+          <div class="mc-day">3</div>
+          <div class="mc-day">4</div>
+          <div class="mc-day">5</div>
+          <div class="mc-day">6</div>
+
+          <!-- Week 2 -->
+          <div class="mc-day">7</div>
+          <div class="mc-day">8</div>
+          <div class="mc-day">9</div>
+          <div class="mc-day">10</div>
+          <div class="mc-day">11</div>
+          <div class="mc-day">12</div>
+          <div class="mc-day">13</div>
+
+          <!-- Week 3 (today = 19, Friday) -->
+          <div class="mc-day">14</div>
+          <div class="mc-day">15</div>
+          <div class="mc-day">16</div>
+          <div class="mc-day">17</div>
+          <div class="mc-day">18</div>
+          <div class="mc-day today">19</div>
+          <div class="mc-day">20</div>
+
+          <!-- Week 4 -->
+          <div class="mc-day">21</div>
+          <div class="mc-day">22</div>
+          <div class="mc-day">23</div>
+          <div class="mc-day">24</div>
+          <div class="mc-day">25</div>
+          <div class="mc-day">26</div>
+          <div class="mc-day">27</div>
+
+          <!-- Week 5 -->
+          <div class="mc-day">28</div>
+          <div class="mc-day">29</div>
+          <div class="mc-day">30</div>
+        </div>
+
+        <!-- Calendar legend -->
+        <div class="cal-legend">
+          <div class="legend-label">Calendars</div>
+          <div class="legend-item">
+            <div class="legend-dot" style="background:#007aff;"></div>
+            <span style="font-size:12px; color:#3c3c3c;">Work</span>
+          </div>
+          <div class="legend-item">
+            <div class="legend-dot" style="background:#34c759;"></div>
+            <span style="font-size:12px; color:#3c3c3c;">Personal</span>
+          </div>
+          <div class="legend-item">
+            <div class="legend-dot" style="background:#ff3b30;"></div>
+            <span style="font-size:12px; color:#3c3c3c;">Travel</span>
+          </div>
+        </div>
+
+      </div><!-- /cal-sidebar -->
+
+      <!-- Main calendar view -->
+      <div class="cal-main">
+
+        <div class="cal-view-header">
+          <div>
+            <span style="font-size:14px; font-weight:600; color:#1c1c1e;">Friday</span>
+            <span style="font-size:14px; color:#8e8e93; margin-left:4px;">· June 19</span>
+          </div>
+          <div class="view-switcher">
+            <button class="view-btn">Day</button>
+            <button class="view-btn active">Week</button>
+            <button class="view-btn">Month</button>
+          </div>
+        </div>
+
+        <div class="cal-time-grid">
+
+          <!-- 8 AM -->
+          <div class="time-row">
+            <div class="time-label">8 AM</div>
+            <div class="time-slot"></div>
+          </div>
+
+          <!-- 9 AM — Team Standup -->
+          <div class="time-row">
+            <div class="time-label">9 AM</div>
+            <div class="time-slot">
+              <div class="cal-event" style="background:#007aff;">
+                <div class="cal-event-title">Team Standup</div>
+                <div class="cal-event-sub">9:00 – 9:30 AM</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 10 AM -->
+          <div class="time-row">
+            <div class="time-label">10 AM</div>
+            <div class="time-slot"></div>
+          </div>
+
+          <!-- 11 AM — Strategy Meet (joined by OpenUI) -->
+          <div class="time-row">
+            <div class="time-label">11 AM</div>
+            <div class="time-slot">
+              <div class="cal-event new-event" style="background:#ff3b30;">
+                <div class="cal-event-title">Strategy Meet</div>
+                <div class="cal-event-sub">11:00 AM · Joined by OpenUI</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 12 PM -->
+          <div class="time-row">
+            <div class="time-label">12 PM</div>
+            <div class="time-slot"></div>
+          </div>
+
+          <!-- 1 PM — Code Review -->
+          <div class="time-row">
+            <div class="time-label">1 PM</div>
+            <div class="time-slot">
+              <div class="cal-event" style="background:#34c759;">
+                <div class="cal-event-title">Code Review</div>
+                <div class="cal-event-sub">1:00 – 3:00 PM</div>
+              </div>
+            </div>
+          </div>
+
+        </div><!-- /cal-time-grid -->
+
+        <!-- ✓ Minutes saved toast — animated in by GSAP -->
+        <div id="minutes-saved" style="
+          position: absolute; bottom: 14px; left: 50%; transform: translateX(-50%);
+          display: flex; align-items: center; gap: 7px;
+          padding: 7px 14px 7px 9px;
+          background: white; border-radius: 99px;
+          box-shadow: 0 2px 14px rgba(0,0,0,0.13), 0 0 0 0.5px rgba(0,0,0,0.07);
+          white-space: nowrap; font-family: -apple-system, sans-serif;
+          opacity: 0; z-index: 20;">
+          <div style="width:18px; height:18px; border-radius:50%; background:#34c759; display:flex; align-items:center; justify-content:center; flex-shrink:0;">
+            <svg width="10" height="10" viewBox="0 0 24 24" fill="none"><path d="M20 6L9 17l-5-5" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </div>
+          <span style="font-size:11px; font-weight:500; color:#1c1c1e;">Minutes saved to Notion</span>
+        </div>
+
+      </div><!-- /cal-main -->
+    </div><!-- /cal-body -->
+  </div>
+  <!-- /calendar-window -->
+
+
+  <!-- ════════════════════════════
+       OPENUI POPUP PANEL
+  ════════════════════════════ -->
+  <div id="openui-popup">
+
+    <!-- Header -->
+    <div class="popup-header">
+      <div class="popup-logo-row">
+        <div class="popup-orb">
+          <div class="popup-orb-dot"></div>
+        </div>
+        <span style="font-size:14px; font-weight:600; color:#1c1c1e; letter-spacing:-.02em;">OpenUI</span>
+      </div>
+      <div class="popup-status">
+        <div class="status-dot"></div>
+        <span style="font-size:11px; color:#8e8e93; font-weight:500;">Local · Private</span>
+      </div>
+    </div>
+
+    <!-- Mic stage -->
+    <div class="mic-stage">
+      <!-- Pulse rings (animated by GSAP) -->
+      <div id="ring-1" class="mic-ring"></div>
+      <div id="ring-2" class="mic-ring"></div>
+      <div id="ring-3" class="mic-ring"></div>
+
+      <!-- Mic button -->
+      <div class="mic-orb">
+        <svg width="31" height="31" viewBox="0 0 24 24" fill="none">
+          <rect x="9" y="2" width="6" height="12" rx="3" fill="white"/>
+          <path d="M5 10c0 3.866 3.134 7 7 7s7-3.134 7-7" stroke="white" stroke-width="1.8" stroke-linecap="round"/>
+          <line x1="12" y1="19" x2="12" y2="22" stroke="white" stroke-width="1.8" stroke-linecap="round"/>
+          <line x1="8.5" y1="22" x2="15.5" y2="22" stroke="white" stroke-width="1.8" stroke-linecap="round"/>
+        </svg>
+      </div>
+
+      <!-- Caption -->
+      <div class="caption-area">
+        <div id="caption-text">Listening…</div>
+        <!-- Sound bars (heights animated by GSAP) -->
+        <div id="sound-bars">
+          <div class="sbar" style="height:8px;" id="sb1"></div>
+          <div class="sbar" style="height:14px;" id="sb2"></div>
+          <div class="sbar" style="height:6px;" id="sb3"></div>
+          <div class="sbar" style="height:18px;" id="sb4"></div>
+          <div class="sbar" style="height:10px;" id="sb5"></div>
+          <div class="sbar" style="height:16px;" id="sb6"></div>
+          <div class="sbar" style="height:7px;" id="sb7"></div>
+          <div class="sbar" style="height:12px;" id="sb8"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Transcript bubble -->
+    <div id="transcript-bubble">
+      <p id="transcript-text">"At 11, join the strategy meet, take notes, then review the team's code and check off the task list when done."</p>
+    </div>
+
+    <!-- Input strip -->
+    <div class="input-strip">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" style="color:#aeaeb2; flex-shrink:0;">
+        <circle cx="11" cy="11" r="8" stroke="currentColor" stroke-width="2"/>
+        <path d="m21 21-4.35-4.35" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+      </svg>
+      <span style="font-size:13px; color:#aeaeb2; flex:1; font-family:-apple-system,sans-serif;">Ask OpenUI anything…</span>
+      <kbd style="font-size:11px; color:#c7c7cc; font-family:-apple-system,sans-serif;">⌘K</kbd>
+    </div>
+
+    <!-- Suggestion chips -->
+    <div class="chips-row">
+      <div class="chip">📧 Check email</div>
+      <div class="chip">📅 Schedule event</div>
+      <div class="chip">📁 Find file</div>
+    </div>
+
+  </div>
+  <!-- /openui-popup -->
+
+
+  <!-- ════════════════════════════
+       TASK CHECKLIST POPUP
+  ════════════════════════════ -->
+  <div id="task-popup" class="mac-window">
+
+    <div class="task-popup-header">
+      <div class="task-popup-title-row">
+        <div class="task-icon-badge">
+          <svg width="10" height="10" viewBox="0 0 24 24" fill="none">
+            <path d="M20 6L9 17l-5-5" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </div>
+        <span style="font-size:12px; font-weight:600; color:#1c1c1e; font-family:-apple-system,sans-serif;">Workflow Status</span>
+      </div>
+      <span style="font-size:11px; color:#aeaeb2; font-weight:500; font-family:-apple-system,sans-serif;">2 / 4 done</span>
+    </div>
+
+    <!-- Task list -->
+    <div>
+
+      <!-- Done: 1 -->
+      <div class="task-row">
+        <div class="task-check done">
+          <svg width="10" height="10" viewBox="0 0 24 24" fill="none">
+            <path d="M20 6L9 17l-5-5" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </div>
+        <span class="task-label done">Join 11 AM Strategy Meet</span>
+      </div>
+
+      <!-- Done: 2 -->
+      <div class="task-row">
+        <div class="task-check done">
+          <svg width="10" height="10" viewBox="0 0 24 24" fill="none">
+            <path d="M20 6L9 17l-5-5" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </div>
+        <span class="task-label done">Draft &amp; Send Minutes</span>
+      </div>
+
+      <!-- In progress (highlighted row) -->
+      <div class="task-row" style="background:#f0f7ff;">
+        <div class="task-check working">
+          <div id="task-spinner"></div>
+        </div>
+        <div>
+          <div class="task-label working">Review Team Pull Requests</div>
+          <div class="task-sublabel">OpenUI is reviewing…</div>
+        </div>
+      </div>
+
+      <!-- Pending: 4 -->
+      <div class="task-row">
+        <div class="task-check pending"></div>
+        <span class="task-label pending">Credit Team Salaries</span>
+      </div>
+
+    </div>
+
+    <!-- ✓ Workflow complete banner — animated in by GSAP -->
+    <div id="workflow-complete" style="
+      display: flex; align-items: center; gap: 8px;
+      padding: 10px 14px;
+      border-top: 0.5px solid #d1fae5; background: #f0fdf4;
+      opacity: 0;">
+      <div style="width:18px; height:18px; border-radius:50%; background:#34c759; display:flex; align-items:center; justify-content:center; flex-shrink:0;">
+        <svg width="10" height="10" viewBox="0 0 24 24" fill="none"><path d="M20 6L9 17l-5-5" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </div>
+      <span style="font-size:12px; font-weight:600; color:#15803d; font-family:-apple-system,sans-serif;">Workflow complete</span>
+    </div>
+
+    <div class="task-popup-footer">
+      <div class="footer-dot"></div>
+      <span style="font-size:10px; color:#aeaeb2; font-family:-apple-system,sans-serif;">Llama 3 · Running locally · 0 cloud calls</span>
+    </div>
+
+  </div>
+  <!-- /task-popup -->
+
+
+</div><!-- /desktop -->
+
+<script>
+  window.addEventListener("DOMContentLoaded", function () {
+
+    /* ══════════════════════════════════════════════════════════
+       CONFIGURATION
+    ══════════════════════════════════════════════════════════ */
+    const CAPTION = "Join the 11 AM strategy meet, take notes, then open my current project in VS Code and check off the task list when done.";
+    const CHAR_MS = 55; // ms per character — 120 chars × 55 ms ≈ 6.6 s of typing
+
+    // All timing anchors in seconds from sequence start
+    const T = {
+      menuBar       :  0.8,
+      popupIn       :  2.2,
+      ringsStart    :  3.2,
+      barsStart     :  3.5,
+      typingStart   :  4.0,  // typing ends ≈ t 10.6
+      stopListening : 11.5,  // 0.9 s hold after typing completes
+      popupOut      : 11.8,
+      calIn         : 13.0,
+      minutesBadge  : 15.0,
+      calOut        : 18.0,
+      vscodeIn      : 19.0,
+      taskIn        : 22.5,
+      workflowDone  : 24.5,
+    };
+
+
+    /* ══════════════════════════════════════════════════════════
+       SOUND BARS — stochastic bounce while listening
+    ══════════════════════════════════════════════════════════ */
+    let barTimer = null;
+
+    function startBars() {
+      const bars = document.querySelectorAll(".sbar");
+      (function tick() {
+        bars.forEach(function (bar) {
+          gsap.to(bar, {
+            height   : (Math.floor(Math.random() * 16) + 3) + "px",
+            duration : 0.14 + Math.random() * 0.12,
+            ease     : "power1.inOut",
+          });
+        });
+        barTimer = setTimeout(tick, 150 + Math.floor(Math.random() * 90));
+      })();
+    }
+
+    function stopBars() {
+      clearTimeout(barTimer);
+      barTimer = null;
+      gsap.killTweensOf(".sbar");
+      gsap.to(".sbar", { height: "3px", duration: 0.4, ease: "power2.out" });
+    }
+
+
+    /* ══════════════════════════════════════════════════════════
+       MIC PULSE RINGS — staggered outward wave
+    ══════════════════════════════════════════════════════════ */
+    var RING_CFG = [
+      { id: "ring-1", toScale: 1.65, dur: 1.75, delay: 0.00 },
+      { id: "ring-2", toScale: 1.46, dur: 1.75, delay: 0.46 },
+      { id: "ring-3", toScale: 1.28, dur: 1.75, delay: 0.92 },
+    ];
+    var ringTweens = [];
+
+    function startRings() {
+      RING_CFG.forEach(function (cfg) {
+        var el = document.getElementById(cfg.id);
+        gsap.set(el, { scale: 1, opacity: 1, transformOrigin: "50% 50%" });
+        var tw = gsap.to(el, {
+          scale           : cfg.toScale,
+          opacity         : 0,
+          transformOrigin : "50% 50%",
+          duration        : cfg.dur,
+          delay           : cfg.delay,
+          repeat          : -1,
+          repeatDelay     : 0.12,
+          ease            : "power1.out",
+        });
+        ringTweens.push(tw);
+      });
+    }
+
+    function stopRings() {
+      ringTweens.forEach(function (tw) { tw.kill(); });
+      ringTweens = [];
+      gsap.to(["#ring-1", "#ring-2", "#ring-3"], {
+        opacity  : 0,
+        duration : 0.35,
+        ease     : "power2.out",
+      });
+    }
+
+
+    /* ══════════════════════════════════════════════════════════
+       TYPEWRITER — character-by-character caption
+    ══════════════════════════════════════════════════════════ */
+    function typeWriter(el, text, charMs) {
+      el.textContent = "";
+      var i = 0;
+      (function step() {
+        if (i < text.length) {
+          el.textContent += text.charAt(i++);
+          setTimeout(step, charMs);
+        }
+      })();
+    }
+
+
+    /* ══════════════════════════════════════════════════════════
+       MAIN SEQUENCE TIMELINE
+    ══════════════════════════════════════════════════════════ */
+    var tl = gsap.timeline({ defaults: { ease: "expo.out" } });
+
+    // ① — Menu bar drops in from above the viewport
+    tl.fromTo(
+      "#menu-bar",
+      { opacity: 0, y: -28 },
+      { opacity: 1, y: 0, duration: 0.7 },
+      T.menuBar
+    );
+
+    // ② — OpenUI centre panel scales + fades into view
+    tl.fromTo(
+      "#openui-popup",
+      { opacity: 0, scale: 0.94, y: 14 },
+      { opacity: 1, scale: 1,    y: 0,  duration: 0.9 },
+      T.popupIn
+    );
+
+    // ③ — Mic pulse rings begin
+    tl.add(function () { startRings(); }, T.ringsStart);
+
+    // ④ — Sound bars begin bouncing
+    tl.add(function () { startBars(); }, T.barsStart);
+
+    // ⑤ — Caption typewriter fires
+    tl.add(function () {
+      typeWriter(document.getElementById("caption-text"), CAPTION, CHAR_MS);
+    }, T.typingStart);
+
+    // ⑥ — Wrap up listening state; popup fades out
+    tl.add(function () { stopRings(); stopBars(); }, T.stopListening);
+
+    tl.to(
+      "#openui-popup",
+      { opacity: 0, scale: 0.94, y: -12, duration: 0.65, ease: "power2.inOut" },
+      T.popupOut
+    );
+
+    // ⑦ — Calendar / Meeting window slides in from right
+    tl.fromTo(
+      "#calendar-window",
+      { opacity: 0, x: 64, y: 10 },
+      { opacity: 1, x: 0,  y: 0,  duration: 0.8 },
+      T.calIn
+    );
+
+    // ⑧ — "Minutes saved" toast springs into frame
+    tl.fromTo(
+      "#minutes-saved",
+      { opacity: 0, scale: 0.78, y: 10 },
+      { opacity: 1, scale: 1,    y: 0,  duration: 0.52, ease: "back.out(1.7)" },
+      T.minutesBadge
+    );
+
+    // ⑨ — Calendar slides back out
+    tl.to(
+      "#calendar-window",
+      { opacity: 0, x: 64, duration: 0.55, ease: "power2.in" },
+      T.calOut
+    );
+
+    // ⑩ — VS Code scales up from a slightly smaller ghost
+    tl.fromTo(
+      "#vscode-window",
+      { opacity: 0, scale: 0.93, y: 20 },
+      { opacity: 1, scale: 1,    y: 0,  duration: 0.88 },
+      T.vscodeIn
+    );
+
+    // ⑪ — Task checklist popup rises from the bottom-right
+    tl.fromTo(
+      "#task-popup",
+      { opacity: 0, y: 30 },
+      { opacity: 1, y: 0,  duration: 0.65 },
+      T.taskIn
+    );
+
+    // ⑫ — "Workflow complete" banner snaps in with a soft spring
+    tl.fromTo(
+      "#workflow-complete",
+      { opacity: 0, y: 10 },
+      { opacity: 1, y: 0,  duration: 0.55, ease: "back.out(1.5)" },
+      T.workflowDone
+    );
+
+  });
+</script>
+
+</body>
+</html>

@@ -1,0 +1,421 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ─────────────────────────────────────────
+   RESET & BASE  (ported from design.html)
+───────────────────────────────────────── */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body {
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
+  /* Transparent so the frameless Electron window lets the desktop show through. */
+  background: transparent;
+  font-family: -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+#root {
+  width: 100%;
+  height: 100%;
+}
+
+/* Full-screen transparent canvas the popups float on. Clicking empty space
+   here dismisses the window (handled in App.tsx). */
+.openui-overlay {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+/* ─────────────────────────────────────────
+   MAC WINDOW CHROME  (used by the task popup)
+───────────────────────────────────────── */
+.mac-window {
+  position: absolute;
+  border-radius: 10px;
+  overflow: hidden;
+  box-shadow:
+    0 0 0 0.5px rgba(0, 0, 0, 0.13),
+    0 4px 14px rgba(0, 0, 0, 0.08),
+    0 22px 60px rgba(0, 0, 0, 0.16);
+  opacity: 0;
+  z-index: 10;
+}
+
+/* ─────────────────────────────────────────
+   OPENUI POPUP PANEL
+───────────────────────────────────────── */
+#openui-popup {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 376px;
+  background: rgba(255, 255, 255, 0.97);
+  backdrop-filter: blur(40px) saturate(200%);
+  -webkit-backdrop-filter: blur(40px) saturate(200%);
+  border-radius: 18px;
+  box-shadow:
+    0 0 0 0.5px rgba(0, 0, 0, 0.08),
+    0 8px 28px rgba(0, 0, 0, 0.1),
+    0 36px 88px rgba(0, 0, 0, 0.18);
+  padding: 22px 22px 18px;
+  z-index: 200;
+  opacity: 0;
+}
+
+.popup-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 18px;
+}
+
+.popup-logo-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.popup-orb {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: linear-gradient(140deg, #5ac8fa 0%, #007aff 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.popup-orb-dot {
+  width: 9px;
+  height: 9px;
+  background: white;
+  border-radius: 50%;
+}
+
+.popup-status {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #34c759;
+}
+
+/* Mic section */
+.mic-stage {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 18px 0 22px;
+  position: relative;
+}
+
+/* Pulse rings — animated with GSAP */
+.mic-ring {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  pointer-events: none;
+}
+
+#ring-1 {
+  width: 96px;
+  height: 96px;
+  border: 1.5px solid rgba(0, 122, 255, 0.22);
+}
+
+#ring-2 {
+  width: 122px;
+  height: 122px;
+  border: 1.5px solid rgba(0, 122, 255, 0.13);
+}
+
+#ring-3 {
+  width: 150px;
+  height: 150px;
+  border: 1px solid rgba(0, 122, 255, 0.07);
+}
+
+/* Mic orb */
+.mic-orb {
+  width: 80px;
+  height: 80px;
+  border-radius: 50%;
+  background: linear-gradient(145deg, #42adff 0%, #007aff 50%, #0055d4 100%);
+  box-shadow:
+    0 6px 22px rgba(0, 122, 255, 0.38),
+    0 2px 7px rgba(0, 122, 255, 0.18);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  z-index: 1;
+}
+
+/* Caption area */
+.caption-area {
+  margin-top: 16px;
+  text-align: center;
+}
+
+#caption-text {
+  font-size: 14px;
+  font-weight: 500;
+  color: #1c1c1e;
+  letter-spacing: -0.01em;
+}
+
+/* Sound bars — heights animated with GSAP */
+#sound-bars {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  margin-top: 10px;
+  height: 20px;
+}
+
+.sbar {
+  width: 3px;
+  border-radius: 99px;
+  background: #007aff;
+  flex-shrink: 0;
+}
+
+/* Transcript bubble */
+#transcript-bubble {
+  background: #f7f7f9;
+  border-radius: 10px;
+  padding: 11px 14px;
+  margin-bottom: 14px;
+}
+
+#transcript-text {
+  font-size: 13px;
+  color: #3a3a3c;
+  line-height: 1.5;
+  letter-spacing: -0.01em;
+}
+
+/* Input strip */
+.input-strip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 12px;
+  background: #f2f2f7;
+  border-radius: 10px;
+}
+
+/* Suggestion chips */
+.chips-row {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 11px;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 5px 10px;
+  border-radius: 99px;
+  background: #f2f2f7;
+  font-size: 11px;
+  color: #5e5e6a;
+  cursor: pointer;
+  white-space: nowrap;
+  font-family: -apple-system, sans-serif;
+}
+
+/* ─────────────────────────────────────────
+   TASK CHECKLIST POPUP
+───────────────────────────────────────── */
+#task-popup {
+  bottom: 50px;
+  right: 32px;
+  width: 278px;
+  background: white;
+  z-index: 50;
+}
+
+.task-popup-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 11px 14px;
+  border-bottom: 0.5px solid #ebebeb;
+  flex-shrink: 0;
+}
+
+.task-popup-title-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.task-icon-badge {
+  width: 18px;
+  height: 18px;
+  border-radius: 5px;
+  background: #007aff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.task-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 9px 14px;
+  border-bottom: 0.5px solid #f7f7f7;
+}
+
+.task-row:last-child {
+  border-bottom: none;
+}
+
+.task-check {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+.task-check.done {
+  background: #007aff;
+  border: none;
+}
+
+.task-check.pending {
+  border: 1.5px solid #d1d1d6;
+  background: none;
+}
+
+.task-check.working {
+  border: 1.5px solid #d1d1d6;
+  background: none;
+  position: relative;
+  overflow: hidden;
+}
+
+.task-label {
+  font-size: 12px;
+  font-family: -apple-system, sans-serif;
+  line-height: 1.4;
+}
+
+.task-label.done {
+  text-decoration: line-through;
+  color: #aeaeb2;
+}
+
+.task-label.pending {
+  color: #5e5e5e;
+}
+
+.task-label.working {
+  color: #1c1c1e;
+  font-weight: 500;
+}
+
+.task-sublabel {
+  font-size: 10px;
+  color: #007aff;
+  margin-top: 2px;
+  font-family: -apple-system, sans-serif;
+}
+
+/* Spinner ring for in-progress task — rotation driven by CSS so that rows
+   added dynamically by the agent loop animate without any JS wiring. */
+#task-spinner,
+.task-spinner {
+  width: 10px;
+  height: 10px;
+  border: 1.5px solid #dde5f0;
+  border-top-color: #007aff;
+  border-radius: 50%;
+  animation: openui-spin 0.8s linear infinite;
+}
+
+@keyframes openui-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Failed task — red badge + label, mirroring the .done / .pending variants. */
+.task-check.error {
+  background: #ff3b30;
+  border: none;
+}
+
+.task-label.error {
+  color: #b91c1c;
+  font-weight: 500;
+}
+
+.task-sublabel.error {
+  color: #ff3b30;
+}
+
+/* "Workflow complete" banner entrance (replaces the old GSAP spring-in). */
+@keyframes openui-rise {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.workflow-complete-enter {
+  animation: openui-rise 0.45s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}
+
+.task-popup-footer {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  border-top: 0.5px solid #ebebeb;
+  background: #fafafa;
+  border-radius: 0 0 10px 10px;
+}
+
+.footer-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #34c759;
+  flex-shrink: 0;
+}
