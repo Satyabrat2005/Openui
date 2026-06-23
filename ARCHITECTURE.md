@@ -18,7 +18,7 @@
 ## 1. Project Structure
 
 ```
-C:\Users\Ashu\Documents\OpenUI\
+OpenUI/                                  # project root
 ├── design.html                          # Original UI reference (read-only)
 ├── package.json                         # npm config; postinstall generates tray icons
 ├── electron.vite.config.ts              # Three-bundle build: main / preload / renderer
