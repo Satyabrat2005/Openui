@@ -49,3 +49,7 @@ Desktop.ini
 .idea
 .vscode/*
 !.vscode/extensions.json
+
+# ── Internal docs (live in OpenUI-Confidential, not this public repo) ──
+/ARCHITECTURE.md
+/SECURITY_AUDIT.md
