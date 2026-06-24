@@ -21,6 +21,12 @@ import { getSupabaseClient } from './supabaseClient'
 import { closeAuthWindow } from './authWindow'
 import { database } from '../database'
 import { setActiveUser, cacheUserTier, type UserProfile } from './sessionManager'
+import {
+  emitToRenderer,
+  getCurrentUserId,
+  handlePaymentSuccess,
+  syncSubscriptionStatus
+} from '../stripe/subscriptionSync'
 
 const PROTOCOL = 'openui'
 
@@ -103,9 +109,22 @@ function findDeepLink(argv: string[]): string | undefined {
   return argv.find((arg) => arg.startsWith(`${PROTOCOL}://`))
 }
 
+/** Route a Stripe payment/portal deep-link action to the subscription layer. */
+function handleStripeRedirect(action: string): void {
+  const userId = getCurrentUserId()
+  if (action === 'payment-success') {
+    if (userId) void handlePaymentSuccess(userId)
+  } else if (action === 'payment-cancelled') {
+    emitToRenderer('openui:payment-cancelled')
+  } else if (action === 'portal-closed') {
+    if (userId) void syncSubscriptionStatus(userId)
+  }
+}
+
 /**
- * Parse a delivered deep link and, for an auth callback, complete the sign-in.
- * Supabase implicit-flow returns the tokens in the URL fragment.
+ * Parse a delivered deep link and route it: Stripe payment/portal redirects go to
+ * the subscription layer; an auth callback completes the sign-in. Supabase
+ * implicit-flow returns the tokens in the URL fragment.
  */
 export async function handleDeepLink(url: string, mainWindow: BrowserWindow | null): Promise<void> {
   let parsedUrl: URL
@@ -116,10 +135,24 @@ export async function handleDeepLink(url: string, mainWindow: BrowserWindow | nu
     return
   }
 
-  // For `openui://auth-callback`, the URL parser puts `auth-callback` in `host`
-  // (non-special scheme). Accept either host or pathname form defensively.
-  const isAuthCallback = parsedUrl.host === 'auth-callback' || parsedUrl.pathname.replace(/\//g, '') === 'auth-callback'
-  if (!isAuthCallback) return
+  // The action is the deep link's host for `openui://<action>` (non-special
+  // scheme), with the pathname form accepted defensively.
+  const action = parsedUrl.host || parsedUrl.pathname.replace(/\//g, '')
+
+  // Stripe checkout success/cancel + billing-portal return: hand off to the
+  // subscription layer, then surface the main window.
+  if (action === 'payment-success' || action === 'payment-cancelled' || action === 'portal-closed') {
+    handleStripeRedirect(action)
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      if (mainWindow.isMinimized()) mainWindow.restore()
+      mainWindow.show()
+      mainWindow.focus()
+    }
+    return
+  }
+
+  // For `openui://auth-callback`, the URL parser puts `auth-callback` in `host`.
+  if (action !== 'auth-callback') return
 
   // Tokens arrive in the fragment (#…); some error responses use the query
   // string. Merge both so we read whichever the provider used.

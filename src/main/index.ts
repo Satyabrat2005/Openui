@@ -5,6 +5,7 @@ import { registerVoiceIPC } from './voice'
 import { registerInterviewerIPC } from './interviewer'
 import { startScheduler } from './scheduler'
 import { openSettingsPane, type PermissionTarget } from './permissions'
+import { registerStripeIPC, isPaymentFlowWebContents } from './stripe/checkout'
 import { closeBrowser } from './tools'
 import { initDatabase } from './database'
 import { registerDeepLinkProtocol, setupDeepLinkHandlers } from './auth/deeplink'
@@ -73,18 +74,22 @@ function applySecurityHardening(): void {
 
   app.on('web-contents-created', (_event, contents) => {
     // Block all attempts to open new windows; route genuine external links to
-    // the OS browser instead of a privileged Electron window.
+    // the OS browser instead of a privileged Electron window. Payment windows
+    // (Stripe checkout/portal) deny popups too, but WITHOUT leaking the URL to
+    // the external browser mid-flow.
     contents.setWindowOpenHandler(({ url }) => {
+      if (isPaymentFlowWebContents(contents)) return { action: 'deny' }
       if (url.startsWith('https://')) void shell.openExternal(url)
       return { action: 'deny' }
     })
 
     // Disallow navigating the main frame anywhere except the app's own origin
-    // (the Vite dev URL in development, file:// when packaged). The OAuth window
-    // is exempt — it must roam across the Supabase/Google origins the sign-in
-    // flow needs; its own handler captures the openui:// callback.
+    // (the Vite dev URL in development, file:// when packaged). Two windows are
+    // exempt and roam external origins: the OAuth window (Supabase/Google) and
+    // the Stripe payment window (Stripe/bank). Each has its own handler that
+    // captures the openui:// callback / success+cancel redirects.
     contents.on('will-navigate', (event, url) => {
-      if (isAuthWebContents(contents)) return
+      if (isAuthWebContents(contents) || isPaymentFlowWebContents(contents)) return
       const devUrl = process.env['ELECTRON_RENDERER_URL']
       const allowed = (isDev && devUrl && url.startsWith(devUrl)) || url.startsWith('file://')
       if (!allowed) event.preventDefault()
@@ -273,6 +278,8 @@ app.whenReady().then(() => {
     registerInterviewerIPC(win)
     // Phase 8: activity monitor + Autonomous Coding Mode IPC.
     startScheduler(win)
+    // Stripe/subscription IPC + periodic sync loop (idles until a user signs in).
+    registerStripeIPC(win)
   }
 
   app.on('activate', () => {

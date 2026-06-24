@@ -3,6 +3,7 @@ import { contextBridge, ipcRenderer } from 'electron'
 type Tier = 'free' | 'pro' | 'enterprise'
 type PermissionTarget = 'accessibility' | 'microphone'
 type TaskSource = 'todo' | 'github'
+type InterviewState = 'idle' | 'asking' | 'listening' | 'evaluating' | 'complete'
 type IpcListener = Parameters<typeof ipcRenderer.on>[1]
 
 /** Signed-in user profile pushed/returned by the main auth layer. */
@@ -103,6 +104,40 @@ const api = {
     ipcRenderer.send('openui:permission:open-settings', permission)
   },
 
+  // ── subscriptions / Stripe ──────────────────────────────────────────────────
+
+  // Start Stripe Checkout for the given price id (opens a payment window in
+  // main). The current user is resolved in the main process — never trusted
+  // from here.
+  checkout: (priceId: string): Promise<void> => ipcRenderer.invoke('openui:checkout', { priceId }),
+
+  // Open the Stripe billing portal (manage/upgrade/downgrade/cancel/invoices).
+  openPortal: (): Promise<void> => ipcRenderer.invoke('openui:portal'),
+
+  // Force an immediate subscription sync; resolves to the verified current tier.
+  syncSubscription: (): Promise<Tier> => ipcRenderer.invoke('openui:sync-subscription'),
+
+  // Fired when the verified tier changes (after a sync, webhook, or payment).
+  onTierChanged: (cb: (tier: Tier) => void): (() => void) => {
+    const fn = wrap<Tier>(cb)
+    ipcRenderer.on('openui:tier-changed', fn)
+    return (): void => { ipcRenderer.removeListener('openui:tier-changed', fn) }
+  },
+
+  // Fired after a checkout completes successfully (post forced-sync).
+  onPaymentSuccess: (cb: () => void): (() => void) => {
+    const fn = (() => cb()) as IpcListener
+    ipcRenderer.on('openui:payment-success', fn)
+    return (): void => { ipcRenderer.removeListener('openui:payment-success', fn) }
+  },
+
+  // Fired when the user closes/cancels checkout without paying.
+  onPaymentCancelled: (cb: () => void): (() => void) => {
+    const fn = (() => cb()) as IpcListener
+    ipcRenderer.on('openui:payment-cancelled', fn)
+    return (): void => { ipcRenderer.removeListener('openui:payment-cancelled', fn) }
+  },
+
   // ── Phase 12: AI Interviewer ──────────────────────────────────────────────
   // Start an interview session with a resume and job description.
   startInterview: (resume: string, jobDescription: string, tier: Tier): Promise<void> =>
@@ -135,9 +170,9 @@ const api = {
 
   // State-machine status updates (asking / listening / evaluating / complete).
   onInterviewStatus: (
-    cb: (data: { state: string; detail?: string }) => void
+    cb: (data: { state: InterviewState; detail?: string }) => void
   ): (() => void) => {
-    const fn = wrap<{ state: string; detail?: string }>(cb)
+    const fn = wrap<{ state: InterviewState; detail?: string }>(cb)
     ipcRenderer.on('openui:interview:status', fn)
     return (): void => { ipcRenderer.removeListener('openui:interview:status', fn) }
   },

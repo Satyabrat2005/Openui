@@ -4,6 +4,8 @@ import { Ollama } from 'ollama'
 import { BrowserWindow, ipcMain } from 'electron'
 import { toolSchemas, executeTool, describeToolCall, type ToolSchema, type ToolResult, type Tier } from './tools'
 import { database } from './database'
+import { clampTierToEntitlement } from './stripe/pricing'
+import { getCurrentUserId } from './stripe/subscriptionSync'
 
 export interface Message {
   role: 'user' | 'assistant'
@@ -316,7 +318,12 @@ export async function handleChat(win: BrowserWindow, userMessage: string, tier: 
   // Designer: force pro tier (Claude Vision) and use the Figma design review prompt.
   const isPrReview = PR_REVIEW_RE.test(userMessage)
   const isDesigner = DESIGNER_RE.test(userMessage) && !isPrReview
-  const effectiveTier: Tier = isPrReview || isDesigner ? 'pro' : tier
+  // PR review / designer want pro-tier models. SECURITY: clamp the final tier to
+  // the signed-in user's verified entitlement so the untrusted renderer (or these
+  // forced-pro modes) can't route to models the user hasn't paid for. No-op when
+  // no user is signed in (e.g. local dev) — see clampTierToEntitlement.
+  const requestedTier: Tier = isPrReview || isDesigner ? 'pro' : tier
+  const effectiveTier: Tier = clampTierToEntitlement(requestedTier, getCurrentUserId())
   const effectiveSystemPrompt = isPrReview
     ? PR_REVIEW_SYSTEM_PROMPT
     : isDesigner

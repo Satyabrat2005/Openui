@@ -107,6 +107,13 @@ export interface OpenUIApi {
   onAuthSuccess: (cb: (user: AuthUser) => void) => () => void
   onAuthError: (cb: (error: { message: string }) => void) => () => void
   onAuthLogout: (cb: () => void) => () => void
+  // Subscriptions / Stripe.
+  checkout: (priceId: string) => Promise<void>
+  openPortal: () => Promise<void>
+  syncSubscription: () => Promise<'free' | 'pro' | 'enterprise'>
+  onTierChanged: (cb: (tier: 'free' | 'pro' | 'enterprise') => void) => () => void
+  onPaymentSuccess: (cb: () => void) => () => void
+  onPaymentCancelled: (cb: () => void) => () => void
 }
 
 declare global {
