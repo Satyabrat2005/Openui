@@ -3,6 +3,7 @@ import OpenAI from 'openai'
 import { Ollama } from 'ollama'
 import { BrowserWindow, ipcMain } from 'electron'
 import { toolSchemas, executeTool, describeToolCall, type ToolSchema, type ToolResult, type Tier } from './tools'
+import { database } from './database'
 
 export interface Message {
   role: 'user' | 'assistant'
@@ -24,6 +25,7 @@ interface TaskUpdate {
 }
 
 const history: Message[] = []
+let currentConversationId: string | null = null
 
 // Safety bound on the agentic loop so a model that keeps emitting tool calls
 // (or loops on a failing tool) can never spin forever.
@@ -300,7 +302,14 @@ export function callModel(
  */
 export async function handleChat(win: BrowserWindow, userMessage: string, tier: Tier): Promise<void> {
   const turnStart = history.length // for clean rollback on failure
+
+  if (!currentConversationId) {
+    currentConversationId = database.conversations.createConversation(null, 'New Chat')
+  }
+  const convId = currentConversationId
+
   history.push({ role: 'user', content: userMessage })
+  database.messages.addMessage(convId, 'user', userMessage)
   emit(win, 'openui:task:reset')
 
   // PR review: force pro tier (Claude Sonnet) and use the strict review prompt.
@@ -328,6 +337,7 @@ export async function handleChat(win: BrowserWindow, userMessage: string, tier: 
       const toolCall = parseToolCall(responseText)
       if (!toolCall) {
         finalText = responseText // natural-language answer ⇒ turn complete
+        database.messages.addMessage(convId, 'assistant', finalText)
         break
       }
 
@@ -363,6 +373,7 @@ export async function handleChat(win: BrowserWindow, userMessage: string, tier: 
 
       if (turn === maxTurns - 1) {
         finalText = 'Reached the tool-call limit for this request.'
+        database.messages.addMessage(convId, 'assistant', finalText)
       }
     }
 
@@ -376,6 +387,7 @@ export async function handleChat(win: BrowserWindow, userMessage: string, tier: 
 
 export function clearHistory(): void {
   history.length = 0
+  currentConversationId = null
 }
 
 /** Coerce an untrusted IPC tier value to a known Tier, defaulting to 'free'. */

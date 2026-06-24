@@ -4,6 +4,15 @@ type Tier = 'free' | 'pro' | 'enterprise'
 type PermissionTarget = 'accessibility' | 'microphone'
 type TaskSource = 'todo' | 'github'
 type IpcListener = Parameters<typeof ipcRenderer.on>[1]
+
+/** Signed-in user profile pushed/returned by the main auth layer. */
+type AuthUser = {
+  id: string
+  email: string | null
+  display_name: string | null
+  avatar_url: string | null
+  tier: string
+}
 type TaskUpdate = {
   id: string
   label: string
@@ -161,6 +170,37 @@ const api = {
     const fn = wrap<AutonomousStatus>(cb)
     ipcRenderer.on('openui:autonomous:status', fn)
     return (): void => { ipcRenderer.removeListener('openui:autonomous:status', fn) }
+  },
+
+  // ── Authentication (Google OAuth via Supabase) ─────────────────────────────
+  // Open the OAuth window. Resolves false when Supabase is not configured.
+  login: (): Promise<boolean> => ipcRenderer.invoke('openui:login'),
+  // Sign out and clear the local session.
+  logout: (): Promise<void> => ipcRenderer.invoke('openui:logout'),
+  // Fetch the current user profile (or null when signed out).
+  getUser: (): Promise<AuthUser | null> => ipcRenderer.invoke('openui:get-user'),
+  // Fetch the cached subscription tier ('free' when unknown).
+  getTier: (): Promise<string> => ipcRenderer.invoke('openui:get-tier'),
+
+  // Fired in the main window when sign-in completes successfully.
+  onAuthSuccess: (cb: (user: AuthUser) => void): (() => void) => {
+    const fn = wrap<AuthUser>(cb)
+    ipcRenderer.on('openui:auth-success', fn)
+    return (): void => { ipcRenderer.removeListener('openui:auth-success', fn) }
+  },
+
+  // Fired when sign-in fails or is cancelled.
+  onAuthError: (cb: (error: { message: string }) => void): (() => void) => {
+    const fn = wrap<{ message: string }>(cb)
+    ipcRenderer.on('openui:auth-error', fn)
+    return (): void => { ipcRenderer.removeListener('openui:auth-error', fn) }
+  },
+
+  // Fired after a successful logout so the UI can return to the signed-out state.
+  onAuthLogout: (cb: () => void): (() => void) => {
+    const fn = (() => cb()) as IpcListener
+    ipcRenderer.on('openui:auth-logout', fn)
+    return (): void => { ipcRenderer.removeListener('openui:auth-logout', fn) }
   }
 }
 

@@ -60,6 +60,15 @@ export interface InterviewEntry {
   id: number
 }
 
+/** Signed-in user profile, as returned/pushed by the main auth layer. */
+export interface AuthUser {
+  id: string
+  email: string | null
+  display_name: string | null
+  avatar_url: string | null
+  tier: string
+}
+
 export interface OpenUIApi {
   hide: () => void
   quit: () => void
@@ -90,6 +99,14 @@ export interface OpenUIApi {
   onInterviewTranscript: (cb: (data: InterviewTranscriptPayload) => void) => () => void
   onInterviewStatus: (cb: (data: InterviewStatusPayload) => void) => () => void
   onInterviewError: (cb: (msg: string) => void) => () => void
+  // Authentication (Google OAuth via Supabase).
+  login: () => Promise<boolean>
+  logout: () => Promise<void>
+  getUser: () => Promise<AuthUser | null>
+  getTier: () => Promise<string>
+  onAuthSuccess: (cb: (user: AuthUser) => void) => () => void
+  onAuthError: (cb: (error: { message: string }) => void) => () => void
+  onAuthLogout: (cb: () => void) => () => void
 }
 
 declare global {
