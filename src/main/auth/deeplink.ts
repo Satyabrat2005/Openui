@@ -19,7 +19,8 @@ import { app, BrowserWindow } from 'electron'
 import path from 'path'
 import { getSupabaseClient } from './supabaseClient'
 import { closeAuthWindow } from './authWindow'
-import { upsertUser, updateAuthTokens, cacheSubscriptionTier, type UserProfile } from '../db/userRepo'
+import { database } from '../database'
+import { setActiveUser, cacheUserTier, type UserProfile } from './sessionManager'
 
 const PROTOCOL = 'openui'
 
@@ -191,19 +192,22 @@ export async function completeAuth(
       tier
     }
 
-    // expires_in is seconds-from-now; store an absolute epoch-ms expiry. Default
-    // to one hour if the provider omitted it.
+    // expires_in is seconds-from-now; store an absolute epoch-SECONDS expiry to
+    // match the DB schema. Default to one hour if the provider omitted it.
     const expiresInSec = Number(expiresIn)
-    const expiresAt = Date.now() + (Number.isFinite(expiresInSec) && expiresInSec > 0 ? expiresInSec : 3600) * 1000
+    const expiresAt =
+      Math.floor(Date.now() / 1000) + (Number.isFinite(expiresInSec) && expiresInSec > 0 ? expiresInSec : 3600)
 
-    upsertUser(profile)
-    updateAuthTokens(user.id, {
-      access_token: accessToken,
-      refresh_token: refreshToken,
-      token_type: tokenType,
-      expires_at: expiresAt
+    database.users.upsertUser({
+      id: user.id,
+      email: profile.email ?? undefined,
+      displayName: profile.display_name ?? undefined,
+      avatarUrl: profile.avatar_url ?? undefined,
+      tier
     })
-    cacheSubscriptionTier(user.id, tier)
+    database.users.updateAuthTokens(user.id, accessToken, refreshToken, expiresAt)
+    cacheUserTier(user.id, tier)
+    setActiveUser(user.id)
 
     mainWindow?.webContents.send('openui:auth-success', profile)
   } catch (err) {

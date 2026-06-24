@@ -3,10 +3,10 @@ import { join } from 'path'
 import { registerAgentIPC } from './agent'
 import { registerVoiceIPC } from './voice'
 import { openSettingsPane, type PermissionTarget } from './permissions'
+import { initDatabase } from './database'
 import { registerDeepLinkProtocol, setupDeepLinkHandlers } from './auth/deeplink'
 import { openAuthWindow, isAuthWebContents, isAuthWindowOpen } from './auth/authWindow'
 import { logout, getCurrentUser, getUserTier, startTokenRefreshLoop, stopTokenRefreshLoop } from './auth/sessionManager'
-import { closeDb } from './db/database'
 
 let tray: Tray | null = null
 let win: BrowserWindow | null = null
@@ -218,6 +218,8 @@ function createTray(): void {
 registerDeepLinkProtocol()
 
 app.whenReady().then(() => {
+  initDatabase()
+
   // True menu-bar app: no Dock icon on macOS.
   if (process.platform === 'darwin') app.dock?.hide()
 
@@ -274,8 +276,7 @@ app.on('window-all-closed', () => {
   // Intentionally do not quit — the tray icon keeps OpenUI running.
 })
 
-// Release auth resources on shutdown: stop the refresh timer and close SQLite.
+// Release auth resources on shutdown: stop the proactive token-refresh timer.
 app.on('will-quit', () => {
   stopTokenRefreshLoop()
-  closeDb()
 })

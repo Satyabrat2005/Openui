@@ -165,8 +165,6 @@ src/
             └── useAssistantAnimations.ts  # GSAP entrance + audio-bar animations
 ```
 
-See [ARCHITECTURE.md](ARCHITECTURE.md) for the full technical reference.
-
 ---
 
 ## Troubleshooting
