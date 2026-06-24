@@ -7,7 +7,7 @@
  * spinner and the "workflow complete" banner are now driven by CSS + state.
  */
 import { useEffect, useState } from 'react'
-import type { TaskStatus, TaskUpdatePayload } from '../env'
+import type { AutonomousStatus, TaskStatus, TaskUpdatePayload } from '../env'
 
 function CheckIcon(): JSX.Element {
   return (
@@ -44,8 +44,47 @@ function TaskCheck({ status }: { status: TaskStatus }): JSX.Element {
   return <div className="task-check pending" />
 }
 
+/** Small pill toggle used for the Autonomous / I'm-busy switches. */
+function Toggle({
+  label,
+  on,
+  onClick
+}: {
+  label: string
+  on: boolean
+  onClick: () => void
+}): JSX.Element {
+  return (
+    <button type="button" className={`auto-toggle ${on ? 'on' : ''}`} onClick={onClick}>
+      <span className="auto-toggle-track">
+        <span className="auto-toggle-thumb" />
+      </span>
+      <span className="auto-toggle-label">{label}</span>
+    </button>
+  )
+}
+
+/** Human-readable line describing what the background agent is doing. */
+function autonomousLine(status: AutonomousStatus): string {
+  switch (status.state) {
+    case 'working':
+      return status.currentTask
+        ? `Background Agent Working… — ${status.currentTask}`
+        : 'Background Agent Working…'
+    case 'monitoring':
+      return status.detail ?? 'Monitoring — will work while you are away'
+    case 'paused':
+      return 'Paused — welcome back'
+    default:
+      return 'Autonomous mode off'
+  }
+}
+
 export default function TaskListPopup(): JSX.Element {
   const [tasks, setTasks] = useState<TaskUpdatePayload[]>([])
+  const [enabled, setEnabled] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [auto, setAuto] = useState<AutonomousStatus>({ active: false, state: 'disabled' })
 
   useEffect(() => {
     const offReset = window.openui.onTaskReset(() => setTasks([]))
@@ -63,6 +102,43 @@ export default function TaskListPopup(): JSX.Element {
       offTask()
     }
   }, [])
+
+  // Autonomous Coding Mode: hydrate current status, then subscribe to updates.
+  useEffect(() => {
+    let live = true
+    window.openui
+      .getAutonomousStatus()
+      .then((s) => {
+        if (live) {
+          setAuto(s)
+          setEnabled(s.active)
+        }
+      })
+      .catch(() => {})
+    const off = window.openui.onAutonomousStatus((s) => {
+      setAuto(s)
+      setEnabled(s.active)
+    })
+    return () => {
+      live = false
+      off()
+    }
+  }, [])
+
+  const toggleEnabled = (): void => {
+    const next = !enabled
+    setEnabled(next)
+    if (!next) setBusy(false)
+    window.openui.setAutonomousEnabled(next)
+  }
+
+  const toggleBusy = (): void => {
+    const next = !busy
+    setBusy(next)
+    window.openui.setBusy(next)
+  }
+
+  const working = auto.active && auto.state === 'working'
 
   const doneCount = tasks.filter((t) => t.status === 'done').length
   const settled = tasks.length > 0 && tasks.every((t) => t.status === 'done' || t.status === 'error')
@@ -87,6 +163,19 @@ export default function TaskListPopup(): JSX.Element {
           {tasks.length === 0 ? 'Idle' : `${doneCount} / ${tasks.length} done`}
         </span>
       </div>
+
+      {/* Background Agent banner — visible whenever Autonomous Coding Mode is on. */}
+      {auto.active && (
+        <div className={`autonomous-banner ${auto.state}`}>
+          {working ? <div className="autonomous-pulse" /> : <div className="autonomous-dot" />}
+          <div className="autonomous-text">
+            <div className="autonomous-line">{autonomousLine(auto)}</div>
+            {auto.detail && auto.state === 'working' && (
+              <div className="autonomous-detail">{auto.detail}</div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Task list */}
       <div>
@@ -154,6 +243,12 @@ export default function TaskListPopup(): JSX.Element {
           </span>
         </div>
       )}
+
+      {/* Autonomous-mode controls: master switch + manual "I'm busy" override. */}
+      <div className="autonomous-controls">
+        <Toggle label="Autonomous" on={enabled} onClick={toggleEnabled} />
+        <Toggle label="I'm busy" on={busy} onClick={toggleBusy} />
+      </div>
 
       <div className="task-popup-footer">
         <div className="footer-dot" />

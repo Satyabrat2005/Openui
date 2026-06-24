@@ -2,7 +2,10 @@ import { app, BrowserWindow, Tray, Menu, ipcMain, screen, nativeImage, session, 
 import { join } from 'path'
 import { registerAgentIPC } from './agent'
 import { registerVoiceIPC } from './voice'
+import { registerInterviewerIPC } from './interviewer'
+import { startScheduler } from './scheduler'
 import { openSettingsPane, type PermissionTarget } from './permissions'
+import { closeBrowser } from './tools'
 
 let tray: Tray | null = null
 let win: BrowserWindow | null = null
@@ -137,8 +140,10 @@ function createWindow(): void {
     }
   })
 
-  // Float above normal windows like a real menu-bar panel and stay available
-  // even on other Spaces / full-screen apps (macOS).
+  // Float above normal windows like a real overlay panel.
+  // On Windows the 'screen-saver' level is clamped to 'floating' by Electron,
+  // which still places the window above normal app windows — the desired effect.
+  // setVisibleOnAllWorkspaces is a no-op on Windows (no virtual-desktop API).
   win.setAlwaysOnTop(true, 'screen-saver')
   win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
 
@@ -216,11 +221,12 @@ app.whenReady().then(() => {
   ipcMain.on('openui:hide', () => hideWindow())
   ipcMain.on('openui:quit', () => app.quit())
 
-  // Open the macOS System Settings pane for the requested permission so the
-  // user can grant it without manually navigating the Settings tree. The
-  // permission value is validated against a fixed allowlist before it is used
-  // to look up a settings deep-link URL (defence against a malformed/forged IPC
-  // message reaching shell.openExternal).
+  // Open the OS settings pane for the requested permission so the user can
+  // grant it without navigating the Settings UI manually.
+  // macOS → System Settings deep-link; Windows → ms-settings: URI.
+  // The permission value is validated against a fixed allowlist before it is
+  // used to look up the URL (defence against a malformed/forged IPC message
+  // reaching shell.openExternal).
   ipcMain.on('openui:permission:open-settings', (_event, permission: unknown) => {
     if (!PERMISSION_TARGETS.includes(permission as PermissionTarget)) {
       console.error('[openui] Ignored open-settings for invalid permission:', permission)
@@ -234,6 +240,9 @@ app.whenReady().then(() => {
   if (win) {
     registerAgentIPC(win)
     registerVoiceIPC(win)
+    registerInterviewerIPC(win)
+    // Phase 8: activity monitor + Autonomous Coding Mode IPC.
+    startScheduler(win)
   }
 
   app.on('activate', () => {
@@ -244,4 +253,9 @@ app.whenReady().then(() => {
 // Keep the app alive in the tray when the popup window is hidden/closed.
 app.on('window-all-closed', () => {
   // Intentionally do not quit — the tray icon keeps OpenUI running.
+})
+
+// Gracefully close the Playwright browser (if open) before the process exits.
+app.on('before-quit', () => {
+  closeBrowser().catch(() => {})
 })
