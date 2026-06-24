@@ -20,8 +20,14 @@ body {
   overflow: hidden;
   /* Transparent so the frameless Electron window lets the desktop show through. */
   background: transparent;
-  font-family: -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif;
+  /* -apple-system / BlinkMacSystemFont → macOS/iOS system font.
+     Segoe UI → Windows system font (falls back from the Apple entries).
+     Arial / sans-serif → final cross-platform fallback. */
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
   -webkit-font-smoothing: antialiased;
+  /* Prevent Windows from rendering a 1 px system border on frameless windows. */
+  border: none;
+  outline: none;
 }
 
 #root {
@@ -39,7 +45,9 @@ body {
 }
 
 /* ─────────────────────────────────────────
-   MAC WINDOW CHROME  (used by the task popup)
+   POPUP WINDOW CHROME  (used by the task popup)
+   Named .mac-window for historical reasons; the styles work on Windows too —
+   box-shadow replaces the native window frame on both platforms.
 ───────────────────────────────────────── */
 .mac-window {
   position: absolute;
@@ -246,7 +254,7 @@ body {
   color: #5e5e6a;
   cursor: pointer;
   white-space: nowrap;
-  font-family: -apple-system, sans-serif;
+  font-family: -apple-system, 'Segoe UI', sans-serif;
 }
 
 /* ─────────────────────────────────────────
@@ -328,7 +336,7 @@ body {
 
 .task-label {
   font-size: 12px;
-  font-family: -apple-system, sans-serif;
+  font-family: -apple-system, 'Segoe UI', sans-serif;
   line-height: 1.4;
 }
 
@@ -350,7 +358,7 @@ body {
   font-size: 10px;
   color: #007aff;
   margin-top: 2px;
-  font-family: -apple-system, sans-serif;
+  font-family: -apple-system, 'Segoe UI', sans-serif;
 }
 
 /* Spinner ring for in-progress task — rotation driven by CSS so that rows
@@ -418,4 +426,157 @@ body {
   border-radius: 50%;
   background: #34c759;
   flex-shrink: 0;
+}
+
+/* ─────────────────────────────────────────
+   PHASE 8 — Autonomous Coding Mode UI
+───────────────────────────────────────── */
+
+/* "Background Agent Working…" banner shown while autonomous mode is active. */
+.autonomous-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-top: 0.5px solid #ebebeb;
+  border-bottom: 0.5px solid #ebebeb;
+  background: #f5f3ff;
+}
+
+.autonomous-banner.monitoring {
+  background: #f7f7fa;
+}
+
+.autonomous-banner.paused {
+  background: #fff7ed;
+}
+
+.autonomous-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.autonomous-line {
+  font-size: 12px;
+  font-weight: 600;
+  color: #5b21b6;
+  font-family: -apple-system, sans-serif;
+}
+
+.autonomous-banner.monitoring .autonomous-line {
+  color: #6b7280;
+}
+
+.autonomous-banner.paused .autonomous-line {
+  color: #c2410c;
+}
+
+.autonomous-detail {
+  font-size: 11px;
+  color: #8b8b93;
+  font-family: -apple-system, sans-serif;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 230px;
+}
+
+/* Steady dot for monitoring/paused; pulsing dot while actively working. */
+.autonomous-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #9ca3af;
+  flex-shrink: 0;
+}
+
+.autonomous-pulse {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #7c3aed;
+  flex-shrink: 0;
+  box-shadow: 0 0 0 0 rgba(124, 58, 237, 0.55);
+  animation: autonomous-pulse 1.4s infinite;
+}
+
+@keyframes autonomous-pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(124, 58, 237, 0.55);
+  }
+  70% {
+    box-shadow: 0 0 0 8px rgba(124, 58, 237, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(124, 58, 237, 0);
+  }
+}
+
+/* Toggle controls row above the footer. */
+.autonomous-controls {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 8px 14px;
+  border-top: 0.5px solid #ebebeb;
+  background: #fff;
+}
+
+.auto-toggle {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  font-family: -apple-system, sans-serif;
+}
+
+.auto-toggle-track {
+  position: relative;
+  width: 30px;
+  height: 18px;
+  border-radius: 9px;
+  background: #d1d1d6;
+  transition: background 0.2s ease;
+  flex-shrink: 0;
+}
+
+.auto-toggle.on .auto-toggle-track {
+  background: #7c3aed;
+}
+
+.auto-toggle-thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+  transition: transform 0.2s ease;
+}
+
+.auto-toggle.on .auto-toggle-thumb {
+  transform: translateX(12px);
+}
+
+.auto-toggle-label {
+  font-size: 11px;
+  font-weight: 500;
+  color: #1c1c1e;
+}
+
+/* ─────────────────────────────────────────
+   PHASE 12 — AI Interviewer Mode
+───────────────────────────────────────── */
+
+/* Generic opacity pulse used by the interview status indicator dot. */
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.4; }
 }

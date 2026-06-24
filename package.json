@@ -12,7 +12,8 @@
     "build": "electron-vite build",
     "preview": "electron-vite preview",
     "typecheck": "tsc --noEmit",
-    "build:mac": "electron-vite build && electron-builder --mac"
+    "build:mac": "electron-vite build && electron-builder --mac",
+    "build:win": "electron-vite build && electron-builder --win"
   },
   "build": {
     "appId": "com.openui.app",
@@ -49,16 +50,30 @@
       ],
       "icon": "resources/icon.icns"
     },
-    "win": {
-      "target": "nsis"
-    },
     "dmg": {
       "title": "${productName} ${version}"
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64", "ia32"]
+        }
+      ],
+      "icon": "resources/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "installerIcon": "resources/icon.ico",
+      "uninstallerIcon": "resources/icon.ico",
+      "shortcutName": "OpenUI"
     }
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.40.0",
     "@nut-tree-fork/nut-js": "^4.2.0",
+    "@octokit/rest": "^20.0.0",
     "@supabase/supabase-js": "^2.108.2",
     "@types/better-sqlite3": "^7.6.13",
     "better-sqlite3": "^12.11.1",
@@ -66,6 +81,7 @@
     "node-osascript": "^2.1.0",
     "ollama": "^0.5.0",
     "openai": "^4.0.0",
+    "playwright": "^1.44.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "tesseract.js": "^5.1.0"

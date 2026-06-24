@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer } from 'electron'
 
 type Tier = 'free' | 'pro' | 'enterprise'
 type PermissionTarget = 'accessibility' | 'microphone'
+type TaskSource = 'todo' | 'github'
 type IpcListener = Parameters<typeof ipcRenderer.on>[1]
 
 /** Signed-in user profile pushed/returned by the main auth layer. */
@@ -16,6 +17,12 @@ type TaskUpdate = {
   id: string
   label: string
   status: 'pending' | 'working' | 'done' | 'error'
+  detail?: string
+}
+type AutonomousStatus = {
+  active: boolean
+  state: 'disabled' | 'monitoring' | 'working' | 'paused'
+  currentTask?: string
   detail?: string
 }
 
@@ -90,10 +97,79 @@ const api = {
     return (): void => { ipcRenderer.removeListener('openui:permission:denied', fn) }
   },
 
-  // Ask the main process to open the macOS System Settings pane for the
-  // given permission (accessibility | microphone).
+  // Ask the main process to open the OS settings pane for the given permission
+  // (accessibility | microphone): macOS System Settings or Windows ms-settings:.
   openSettings: (permission: PermissionTarget): void => {
     ipcRenderer.send('openui:permission:open-settings', permission)
+  },
+
+  // ── Phase 12: AI Interviewer ──────────────────────────────────────────────
+  // Start an interview session with a resume and job description.
+  startInterview: (resume: string, jobDescription: string, tier: Tier): Promise<void> =>
+    ipcRenderer.invoke('openui:interview:start', { resume, jobDescription, tier }),
+
+  // Send the candidate's recorded audio answer.
+  sendInterviewAnswer: (audio: ArrayBuffer, mimeType: string): Promise<void> =>
+    ipcRenderer.invoke('openui:interview:answer', { audio: new Uint8Array(audio), mimeType }),
+
+  // Terminate the active interview session.
+  stopInterview: (): void => ipcRenderer.send('openui:interview:stop'),
+
+  // New question from the interviewer (includes base64 MP3 for TTS playback).
+  onInterviewQuestion: (
+    cb: (data: { text: string; audioBase64: string; questionNumber: number }) => void
+  ): (() => void) => {
+    const fn = wrap<{ text: string; audioBase64: string; questionNumber: number }>(cb)
+    ipcRenderer.on('openui:interview:question', fn)
+    return (): void => { ipcRenderer.removeListener('openui:interview:question', fn) }
+  },
+
+  // Transcript update — fired for both interviewer questions and candidate answers.
+  onInterviewTranscript: (
+    cb: (data: { speaker: 'interviewer' | 'candidate'; text: string }) => void
+  ): (() => void) => {
+    const fn = wrap<{ speaker: 'interviewer' | 'candidate'; text: string }>(cb)
+    ipcRenderer.on('openui:interview:transcript', fn)
+    return (): void => { ipcRenderer.removeListener('openui:interview:transcript', fn) }
+  },
+
+  // State-machine status updates (asking / listening / evaluating / complete).
+  onInterviewStatus: (
+    cb: (data: { state: string; detail?: string }) => void
+  ): (() => void) => {
+    const fn = wrap<{ state: string; detail?: string }>(cb)
+    ipcRenderer.on('openui:interview:status', fn)
+    return (): void => { ipcRenderer.removeListener('openui:interview:status', fn) }
+  },
+
+  // Error events from the interviewer backend.
+  onInterviewError: (cb: (msg: string) => void): (() => void) => {
+    const fn = wrap<string>(cb)
+    ipcRenderer.on('openui:interview:error', fn)
+    return (): void => { ipcRenderer.removeListener('openui:interview:error', fn) }
+  },
+
+  // ── Phase 8: Autonomous Coding Mode ──────────────────────────────────────
+  // Enable/disable background autonomous coding. The optional tier + source ride
+  // along so the UI can choose the model and where tasks come from.
+  setAutonomousEnabled: (enabled: boolean, tier?: Tier, source?: TaskSource): void => {
+    ipcRenderer.send('openui:autonomous:set-enabled', { enabled, tier, source })
+  },
+
+  // Manual "I'm busy" toggle — treat the user as away regardless of idle time.
+  setBusy: (busy: boolean): void => {
+    ipcRenderer.send('openui:autonomous:set-busy', busy)
+  },
+
+  // Fetch the current autonomous status once (e.g. on component mount).
+  getAutonomousStatus: (): Promise<AutonomousStatus> =>
+    ipcRenderer.invoke('openui:autonomous:get-status'),
+
+  // Subscribe to autonomous status changes (drives the "Background Agent" UI).
+  onAutonomousStatus: (cb: (status: AutonomousStatus) => void): (() => void) => {
+    const fn = wrap<AutonomousStatus>(cb)
+    ipcRenderer.on('openui:autonomous:status', fn)
+    return (): void => { ipcRenderer.removeListener('openui:autonomous:status', fn) }
   },
 
   // ── Authentication (Google OAuth via Supabase) ─────────────────────────────

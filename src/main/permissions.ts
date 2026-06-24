@@ -1,31 +1,36 @@
 /**
- * permissions.ts — macOS OS-permission helpers for OpenUI.
+ * permissions.ts — OS-permission helpers for OpenUI (macOS + Windows).
  *
- * Uses Electron's built-in systemPreferences API (the equivalent of
- * node-mac-permissions), so no additional native dependency is required.
+ * Uses Electron's built-in systemPreferences API so no additional native
+ * dependency is required.
  *
  * Accessibility  — required by nut.js for mouse/keyboard synthesis.
  * Microphone     — required by the renderer's MediaRecorder voice input.
  *
- * All functions are no-ops (return the "granted" state) on non-macOS platforms
- * so the rest of the codebase can call them unconditionally.
+ * All check functions return the "granted" state on unsupported platforms so
+ * the rest of the codebase can call them unconditionally.
  */
 import { systemPreferences, shell } from 'electron'
 
 export type PermissionTarget = 'accessibility' | 'microphone'
 
-// macOS deep-link URLs that open the correct Privacy pane in System Settings.
-const SETTINGS_URLS: Record<PermissionTarget, string> = {
-  accessibility:
-    'x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility',
-  microphone:
-    'x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone'
+// Deep-link URLs that open the correct settings pane per platform.
+const SETTINGS_URLS: Record<PermissionTarget, Partial<Record<NodeJS.Platform, string>>> = {
+  accessibility: {
+    darwin: 'x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility',
+    win32: 'ms-settings:easeofaccess'
+  },
+  microphone: {
+    darwin: 'x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone',
+    win32: 'ms-settings:privacy-microphone'
+  }
 }
 
 /**
  * Returns true if the app holds Accessibility (AX) permission.
- * Passing false to isTrustedAccessibilityClient checks without prompting.
- * Always returns true on non-macOS platforms.
+ * On macOS, checks via isTrustedAccessibilityClient without prompting.
+ * On Windows and Linux, nut.js manages its own access — returns true so the
+ * caller proceeds and nut.js surfaces its own error on failure.
  */
 export function checkAccessibility(): boolean {
   if (process.platform !== 'darwin') return true
@@ -33,8 +38,10 @@ export function checkAccessibility(): boolean {
 }
 
 /**
- * Returns the macOS microphone permission status string.
- * Returns 'authorized' on non-macOS platforms.
+ * Returns the microphone permission status string.
+ * On macOS, queries systemPreferences directly.
+ * On other platforms, returns 'authorized' and lets the browser's
+ * getUserMedia call surface any denial at the renderer level.
  */
 export function checkMicrophone(): string {
   if (process.platform !== 'darwin') return 'authorized'
@@ -42,11 +49,14 @@ export function checkMicrophone(): string {
 }
 
 /**
- * Open the System Settings pane for the given permission so the user can
- * grant it without hunting through the UI themselves.
- * No-op on non-macOS platforms.
+ * Open the OS settings pane for the given permission so the user can grant it
+ * without hunting through the UI themselves.
+ * macOS → System Settings deep-link (x-apple.systempreferences:…)
+ * Windows → Settings URI (ms-settings:…)
+ * Other platforms → no-op.
  */
 export async function openSettingsPane(permission: PermissionTarget): Promise<void> {
-  if (process.platform !== 'darwin') return
-  await shell.openExternal(SETTINGS_URLS[permission])
+  const url = SETTINGS_URLS[permission][process.platform as NodeJS.Platform]
+  if (!url) return
+  await shell.openExternal(url)
 }
