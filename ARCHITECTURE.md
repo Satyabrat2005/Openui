@@ -11,7 +11,7 @@
 | **Phase 4** | Screen vision — `read_screen()` tool: `desktopCapturer` capture, Claude Vision (pro/enterprise), Tesseract.js OCR (free) | **Complete** |
 | **Phase 5** | Voice input — push-to-talk mic, MediaRecorder + AnalyserNode, Whisper transcription, auto-route to agent | **Complete** |
 | **Phase 6** | macOS permission hardening — pre-flight OS permission checks, graceful degradation, in-app System Settings modal, unhandled-rejection fixes | **Complete** |
-| **Distribution** | `electron-builder` macOS DMG config (`arm64` + `x64`), `build:mac` script, comprehensive README | **Complete** |
+| **Distribution** | `electron-builder` Windows NSIS (`x64`+`ia32`) + macOS DMG (`arm64`+`x64`); `build:win` / `build:mac` scripts; generated `.ico` / `.icns` via `scripts/convert-icon.js`; `openui://` deep-link + single-instance lock; comprehensive README | **Complete** |
 | **Phase 7** | Auth + subscription gating — Google OAuth via Supabase, SQLite persistence, tier-based model routing, Stripe checkout, voice tier routing, `AuthContext`, `TierUpgradeModal`, `ConversationList` | **Complete** |
 
 ---
@@ -116,13 +116,13 @@ react / react-dom        ^18.3.1   — UI (renderer only)
 
 > **Note:** `@nut-tree/nut-js` was removed from the npm registry; the project now depends on the drop-in fork `@nut-tree-fork/nut-js`. The lazy-loading logic in `tools.ts` tries both names so existing installs are not broken.
 
-### Distribution pipeline (`npm run build:mac`)
+### Distribution pipeline (`npm run build:win` / `npm run build:mac`)
 
 ```
-npm run build:mac
-  │
-  ├── electron-vite build     ← compiles TS; output → out/
-  └── electron-builder --mac  ← packages app; output → dist/
+npm run build:win                            npm run build:mac
+  │                                            │
+  ├── electron-vite build → out/               ├── electron-vite build → out/
+  └── electron-builder --win → dist/           └── electron-builder --mac → dist/
 ```
 
 **electron-builder configuration** (in `package.json` → `"build"` key):
@@ -131,17 +131,35 @@ npm run build:mac
 |---|---|
 | `appId` | `com.openui.app` |
 | `productName` | `OpenUI` |
+| `directories.output` | `dist/` |
+| `npmRebuild` | `true` — rebuild native `node_modules` (nut.js) against Electron's ABI |
+| `asarUnpack` | `**/*.node` — keep native bindings outside the asar so they load at runtime |
+| `extraResources` | `{ from: resources, to: resources }` — see note below |
+| `win.target` | `nsis` — `x64` |
+| `win.icon` | `resources/icon.ico` (generated; see *Icon generation*) |
+| `win.artifactName` | `OpenUI.Setup.${version}.${ext}` → `dist/OpenUI.Setup.0.1.0.exe` |
+| `nsis` | interactive installer: `oneClick: false`, `allowToChangeInstallationDirectory: true`, `shortcutName: OpenUI`, `uninstallDisplayName: OpenUI`, `license: LICENSE`, `installerLanguages: [en_US]`, `language: 1033` |
 | `mac.category` | `public.app-category.productivity` |
 | `mac.target` | `dmg` — `arm64` + `x64` |
-| `mac.icon` | `resources/icon.icns` (must be provided; see README) |
-| `directories.output` | `dist/` |
+| `mac.icon` | `resources/icon.icns` (generated when png2icons is installed) |
 
-**Files packaged** (`files` array):
-- `out/**/*` — compiled main / preload / renderer bundles
-- `resources/**/*` — tray icon PNGs
-- `package.json` — electron-builder reads it at runtime for the `main` entry point
+**Files packaged.** electron-builder always collects the production-`dependencies` subtree of `node_modules` automatically (verified in the build log: `@anthropic-ai/sdk`, `openai`, `ollama`, `tesseract.js`, `@nut-tree-fork/*`, `node-osascript` are all packed; dev-dependencies and the orphaned `better-sqlite3` are not). The explicit `files` array additionally includes `out/**/*` (compiled bundles), `resources/**/*`, and `package.json` (read at runtime for the `main` entry point).
 
-The macOS DMG build must be run on a macOS host. Cross-compilation to macOS from Windows/Linux is not supported.
+> **`extraResources` (runtime resource path).** `resourcePath()` in `index.ts` resolves packaged assets from `process.resourcesPath/resources/…`. The `files` array only places `resources/` *inside* the asar, which `process.resourcesPath` does not point at — so without `extraResources` the tray icon would be missing in the installed app. `extraResources: [{ from: 'resources', to: 'resources' }]` copies the folder to `<app>/resources/resources/`, exactly where `resourcePath()` reads it.
+
+> **`nodeGypRebuild` is intentionally NOT set.** It runs `node-gyp rebuild` against a `binding.gyp` in the project root; OpenUI has no first-party native addon (its only native dependency, nut.js, ships prebuilt binaries), so enabling it would fail the build with "binding.gyp not found". `npmRebuild: true` is the correct switch for rebuilding native modules that live in `node_modules`.
+
+### Icon generation (`scripts/convert-icon.js`)
+
+OpenUI ships no branded source art, so `scripts/convert-icon.js` synthesises a 1024×1024 "orb" PNG (`resources/icon.png`) with Node's `zlib` alone, then emits `resources/icon.ico` (and `resources/icon.icns` on installs that have the optional `png2icons` dev-dependency). The script prefers `png2icons` when present and otherwise falls back to a built-in multi-size PNG-in-ICO encoder (16–256 px; the 256 px entry satisfies electron-builder's minimum-icon-size check). It runs on `postinstall` and via `npm run icons`, so the icons exist before any packaging step — including on the `windows-latest` CI runner.
+
+### Deep linking & single-instance (`index.ts`)
+
+The packaged Windows app registers `app.setAsDefaultProtocolClient('openui')` and acquires `app.requestSingleInstanceLock()`. Windows delivers an `openui://…` launch as a `process.argv` entry to a *second* process; the `second-instance` handler extracts that URL and forwards the existing window (macOS instead emits `open-url` on the original process). The single-instance lock also prevents a duplicate tray icon. `handleDeepLink()` is currently a window-surfacing stub — the OAuth/auth consumer is not part of this build — and is the integration point for the future auth callback.
+
+### Cross-platform notes
+
+Each installer must be built on its target OS: the Windows `.exe` on Windows (platform-specific native-module binaries) and the macOS `.dmg` on macOS (Apple toolchain). Cross-compiling native modules is not supported. The cross-platform runtime features (chat, voice, `read_screen`, nut.js mouse/keyboard) work on both; the macOS-only tools (`open_app`, `search_files`, `control_calendar`) return a graceful unsupported-platform error elsewhere.
 
 ---
 
