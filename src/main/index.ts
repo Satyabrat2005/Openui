@@ -6,6 +6,7 @@ import { registerInterviewerIPC } from './interviewer'
 import { startScheduler } from './scheduler'
 import { openSettingsPane, type PermissionTarget } from './permissions'
 import { registerStripeIPC, isPaymentFlowWebContents } from './stripe/checkout'
+import { registerWaitlistIPC } from './waitlist'
 import { closeBrowser } from './tools'
 import { initDatabase } from './database'
 import { registerDeepLinkProtocol, setupDeepLinkHandlers } from './auth/deeplink'
@@ -271,6 +272,9 @@ app.whenReady().then(() => {
   ipcMain.handle('openui:get-user', () => getCurrentUser())
   // Cached subscription tier ('free' when unknown/expired).
   ipcMain.handle('openui:get-tier', () => getUserTier())
+
+  // Pro-tier waitlist: post an email to the Mailchimp-proxy Edge Function.
+  registerWaitlistIPC()
 
   if (win) {
     registerAgentIPC(win)

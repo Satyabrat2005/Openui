@@ -91,6 +91,11 @@ export interface AuthUser {
   tier: string
 }
 
+/** Result of a `joinWaitlist` call. */
+export type WaitlistResult =
+  | { ok: true; alreadySubscribed?: boolean }
+  | { ok: false; error: string }
+
 export interface OpenUIApi {
   // Window
   hide: () => void
@@ -131,6 +136,8 @@ export interface OpenUIApi {
   logout: () => Promise<void>
   getUser: () => Promise<AuthUser | null>
   getTier: () => Promise<string>
+  // Pro-tier waitlist (Mailchimp proxy via Edge Function).
+  joinWaitlist: (email: string) => Promise<WaitlistResult>
   onAuthSuccess: (cb: (user: AuthUser) => void) => () => void
   onAuthError: (cb: (error: { message: string }) => void) => () => void
   onAuthLogout: (cb: () => void) => () => void
