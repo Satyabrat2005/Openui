@@ -43,6 +43,9 @@ type ConversationSummary = {
   title: string
   created_at: number
 }
+type WaitlistResult =
+  | { ok: true; alreadySubscribed?: boolean }
+  | { ok: false; error: string }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const wrap = <T>(cb: (data: T) => void): IpcListener => ((_: any, data: T) => cb(data)) as IpcListener
@@ -209,6 +212,11 @@ const api = {
   logout: (): Promise<void> => ipcRenderer.invoke('openui:logout'),
   getUser: (): Promise<AuthUser | null> => ipcRenderer.invoke('openui:get-user'),
   getTier: (): Promise<string> => ipcRenderer.invoke('openui:get-tier'),
+
+  // Join the Pro-tier waitlist (proxied to Mailchimp via the waitlist Edge
+  // Function). Resolves to { ok, alreadySubscribed?, error? }.
+  joinWaitlist: (email: string): Promise<WaitlistResult> =>
+    ipcRenderer.invoke('openui:join-waitlist', email),
 
   onAuthSuccess: (cb: (user: AuthUser) => void): (() => void) => {
     const fn = wrap<AuthUser>(cb)

@@ -1,4 +1,5 @@
 import type { TierUpgradePayload } from '../env'
+import WaitlistLink from './WaitlistLink'
 
 interface Props {
   payload: TierUpgradePayload
@@ -151,6 +152,9 @@ export default function TierUpgradeModal({ payload, onDismiss }: Props): JSX.Ele
             </div>
           ))}
         </div>
+
+        {/* Soft alternative to upgrading — capture interest for the Pro launch. */}
+        <WaitlistLink />
 
         <button
           onClick={onDismiss}

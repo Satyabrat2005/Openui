@@ -16,15 +16,17 @@
 # below upload all three (installer + .yml + .blockmap) for each platform.
 #
 # OPTIONAL GitHub Secrets (Settings → Secrets and variables → Actions):
-#   Only needed to inline the (non-secret, SKU-like) Stripe price IDs into the
-#   renderer bundle. If unset the shell still builds — pricing buttons just
+#   These are only needed if you want the packaged build to ship with the
+#   Stripe price IDs inlined into the renderer bundle. They are NOT secret
+#   (public SKU-like values) but are kept in Actions secrets for convenience.
+#   If unset, the v0.1.0 UI shell still builds fine — pricing buttons just
 #   resolve to undefined price IDs at runtime.
 #     VITE_STRIPE_PRO_PRICE_ID
 #     VITE_STRIPE_ENTERPRISE_PRICE_ID
 #
-#   Do NOT add real Anthropic/OpenAI/Supabase/Stripe SECRET keys here — those
-#   are runtime-only and live in the user's local .env or Supabase Edge Function
-#   secrets, never in the shipped binary.
+#   Do NOT add real Anthropic/OpenAI/Supabase service-role/Stripe SECRET keys
+#   here — those are runtime-only and live in the user's local .env or the
+#   Supabase Edge Function secrets, never in the shipped binary.
 #
 #   GITHUB_TOKEN is provided automatically by Actions — no setup required.
 # ─────────────────────────────────────────────────────────────────────────────
@@ -105,6 +107,9 @@ jobs:
       contents: write
 
     steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
       - name: Download macOS artifact
         uses: actions/download-artifact@v4
         with:

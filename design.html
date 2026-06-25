@@ -908,6 +908,348 @@
       background: #34c759;
       flex-shrink: 0;
     }
+
+    /* ─────────────────────────────────────────
+       DOWNLOAD DOCK (primary CTA)
+    ───────────────────────────────────────── */
+    .download-dock {
+      position: fixed;
+      bottom: 26px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 500;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 11px;
+      padding: 16px 20px 13px;
+      max-width: calc(100vw - 28px);
+      background: rgba(255, 255, 255, 0.78);
+      backdrop-filter: blur(40px) saturate(200%);
+      -webkit-backdrop-filter: blur(40px) saturate(200%);
+      border-radius: 20px;
+      border: 0.5px solid rgba(0, 0, 0, 0.06);
+      box-shadow:
+        0 0 0 0.5px rgba(0, 0, 0, 0.05),
+        0 8px 28px rgba(0, 0, 0, 0.12),
+        0 30px 70px rgba(0, 0, 0, 0.18);
+      font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif;
+    }
+
+    .download-dock-title {
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: #6e6e73;
+    }
+
+    .dl-btn-row {
+      display: flex;
+      gap: 11px;
+    }
+
+    .dl-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 11px;
+      min-height: 52px;
+      padding: 0 22px;
+      border-radius: 13px;
+      text-decoration: none;
+      cursor: pointer;
+      border: 0.5px solid transparent;
+      transition: transform 0.18s ease, box-shadow 0.18s ease, background 0.18s ease;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    .dl-btn-icon {
+      flex-shrink: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .dl-btn-meta {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+      line-height: 1.2;
+    }
+
+    .dl-btn-main {
+      font-size: 14px;
+      font-weight: 600;
+      letter-spacing: -0.01em;
+      white-space: nowrap;
+    }
+
+    .dl-btn-sub {
+      font-size: 11px;
+      font-weight: 500;
+      margin-top: 1px;
+      white-space: nowrap;
+    }
+
+    /* Primary — detected OS */
+    .dl-btn.primary {
+      background: linear-gradient(145deg, #42adff 0%, #007aff 55%, #0066e6 100%);
+      color: #ffffff;
+      box-shadow:
+        0 6px 18px rgba(0, 122, 255, 0.32),
+        0 2px 6px rgba(0, 122, 255, 0.18);
+    }
+    .dl-btn.primary .dl-btn-sub { color: rgba(255, 255, 255, 0.82); }
+    .dl-btn.primary:hover {
+      transform: translateY(-2px);
+      box-shadow:
+        0 10px 26px rgba(0, 122, 255, 0.38),
+        0 3px 8px rgba(0, 122, 255, 0.22);
+    }
+
+    /* Secondary — the other OS */
+    .dl-btn.secondary {
+      background: rgba(255, 255, 255, 0.92);
+      color: #1c1c1e;
+      border: 0.5px solid rgba(0, 0, 0, 0.12);
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+    }
+    .dl-btn.secondary .dl-btn-sub { color: #8e8e93; }
+    .dl-btn.secondary:hover {
+      transform: translateY(-2px);
+      background: #ffffff;
+      box-shadow: 0 7px 18px rgba(0, 0, 0, 0.11);
+    }
+
+    .dl-btn:active { transform: translateY(0); }
+
+    .dl-btn:focus-visible {
+      outline: 2.5px solid #007aff;
+      outline-offset: 3px;
+    }
+
+    /* Coming-soon / disabled state */
+    .dl-btn.coming-soon {
+      opacity: 0.5;
+      cursor: not-allowed;
+      pointer-events: none;
+      filter: grayscale(0.3);
+    }
+
+    /* Loading shimmer on the sub-label while checking the API */
+    .dl-btn-sub.dl-loading {
+      position: relative;
+      color: transparent !important;
+      border-radius: 4px;
+      overflow: hidden;
+      min-width: 84px;
+      background: rgba(0, 0, 0, 0.08);
+    }
+    .dl-btn.primary .dl-btn-sub.dl-loading { background: rgba(255, 255, 255, 0.28); }
+    .dl-btn-sub.dl-loading::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      transform: translateX(-100%);
+      background: linear-gradient(
+        90deg,
+        transparent 0%,
+        rgba(255, 255, 255, 0.55) 50%,
+        transparent 100%
+      );
+      animation: dl-shimmer 1.1s infinite;
+    }
+    @keyframes dl-shimmer {
+      100% { transform: translateX(100%); }
+    }
+
+    .dl-releases-link {
+      font-size: 11.5px;
+      color: #007aff;
+      text-decoration: none;
+      letter-spacing: -0.01em;
+    }
+    .dl-releases-link:hover { text-decoration: underline; }
+    .dl-releases-link:focus-visible {
+      outline: 2px solid #007aff;
+      outline-offset: 2px;
+      border-radius: 3px;
+    }
+
+    /* Responsive — stack the buttons on narrow screens */
+    @media (max-width: 540px) {
+      .download-dock {
+        left: 14px;
+        right: 14px;
+        transform: none;
+        max-width: none;
+      }
+      .dl-btn-row {
+        flex-direction: column;
+        width: 100%;
+      }
+      .dl-btn { width: 100%; justify-content: center; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .dl-btn { transition: none; }
+      .dl-btn-sub.dl-loading::after { animation: none; }
+    }
+
+    /* ─────────────────────────────────────────
+       WAITLIST / EMAIL CAPTURE (inside the dock)
+    ───────────────────────────────────────── */
+    .dock-divider {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      width: 100%;
+      margin: 3px 0 1px;
+      color: #aeaeb2;
+      font-size: 10.5px;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+    .dock-divider::before,
+    .dock-divider::after {
+      content: "";
+      flex: 1;
+      height: 0.5px;
+      background: rgba(0, 0, 0, 0.12);
+    }
+
+    .waitlist {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 9px;
+      width: 100%;
+    }
+
+    .waitlist-headline {
+      font-size: 14px;
+      font-weight: 600;
+      letter-spacing: -0.01em;
+      color: #1c1c1e;
+      text-align: center;
+    }
+
+    .waitlist-subline {
+      font-size: 11.5px;
+      line-height: 1.4;
+      color: #6e6e73;
+      text-align: center;
+      max-width: 340px;
+    }
+
+    .waitlist-form {
+      display: flex;
+      gap: 8px;
+      width: 100%;
+      max-width: 380px;
+    }
+
+    .waitlist-input {
+      flex: 1;
+      min-width: 0;
+      height: 42px;
+      padding: 0 14px;
+      font-size: 13.5px;
+      font-family: inherit;
+      color: #1c1c1e;
+      background: rgba(255, 255, 255, 0.92);
+      border: 0.5px solid rgba(0, 0, 0, 0.16);
+      border-radius: 11px;
+      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04) inset;
+      transition: border-color 0.16s ease, box-shadow 0.16s ease;
+      -webkit-appearance: none;
+      appearance: none;
+    }
+    .waitlist-input::placeholder { color: #aeaeb2; }
+    .waitlist-input:focus {
+      outline: none;
+      border-color: #007aff;
+      box-shadow:
+        0 0 0 3px rgba(0, 122, 255, 0.18),
+        0 1px 2px rgba(0, 0, 0, 0.04) inset;
+    }
+    .waitlist-input:disabled {
+      opacity: 0.7;
+      cursor: not-allowed;
+    }
+
+    .waitlist-btn {
+      flex-shrink: 0;
+      height: 42px;
+      padding: 0 20px;
+      font-size: 13.5px;
+      font-weight: 600;
+      letter-spacing: -0.01em;
+      font-family: inherit;
+      color: #ffffff;
+      background: linear-gradient(145deg, #42adff 0%, #007aff 55%, #0066e6 100%);
+      border: 0.5px solid transparent;
+      border-radius: 11px;
+      cursor: pointer;
+      white-space: nowrap;
+      box-shadow:
+        0 4px 14px rgba(0, 122, 255, 0.28),
+        0 1px 4px rgba(0, 122, 255, 0.16);
+      transition: transform 0.16s ease, box-shadow 0.16s ease, background 0.16s ease;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .waitlist-btn:hover:not(:disabled) {
+      transform: translateY(-1px);
+      box-shadow:
+        0 7px 20px rgba(0, 122, 255, 0.34),
+        0 2px 6px rgba(0, 122, 255, 0.2);
+    }
+    .waitlist-btn:active:not(:disabled) { transform: translateY(0); }
+    .waitlist-btn:focus-visible {
+      outline: 2.5px solid #007aff;
+      outline-offset: 3px;
+    }
+    /* Loading state */
+    .waitlist-btn:disabled {
+      opacity: 0.6;
+      cursor: default;
+      box-shadow: none;
+    }
+    /* Success state — green-tinted, persistent */
+    .waitlist-btn.joined {
+      opacity: 1;
+      background: linear-gradient(145deg, #4cd964 0%, #34c759 55%, #28a745 100%);
+      box-shadow: 0 4px 14px rgba(52, 199, 89, 0.28);
+    }
+
+    .waitlist-message {
+      font-size: 11.5px;
+      line-height: 1.4;
+      text-align: center;
+      min-height: 16px;
+      letter-spacing: -0.01em;
+    }
+    .waitlist-message.success { color: #1f9d4d; font-weight: 500; }
+    .waitlist-message.error   { color: #e0352b; font-weight: 500; }
+    .waitlist-message.info    { color: #6e6e73; font-weight: 500; }
+
+    .waitlist-disclaimer {
+      font-size: 10px;
+      line-height: 1.35;
+      color: #aeaeb2;
+      text-align: center;
+      max-width: 360px;
+    }
+
+    @media (max-width: 540px) {
+      .waitlist-form { flex-direction: column; }
+      .waitlist-btn { width: 100%; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .waitlist-input,
+      .waitlist-btn { transition: none; }
+    }
   </style>
 </head>
 
@@ -1457,6 +1799,288 @@
 
 
 </div><!-- /desktop -->
+
+
+<!-- ════════════════════════════
+     DOWNLOAD DOCK (primary CTA)
+════════════════════════════ -->
+<section class="download-dock" aria-label="Download OpenUI">
+  <span class="download-dock-title" id="dl-dock-title">Download OpenUI — free &amp; local-first</span>
+
+  <div class="dl-btn-row">
+
+    <!-- macOS -->
+    <a id="dl-mac" class="dl-btn primary"
+       href="https://github.com/Satyabrat2005/Openui/releases/latest/download/OpenUI.dmg"
+       aria-label="Download OpenUI for Mac (checking latest version)">
+      <span class="dl-btn-icon" aria-hidden="true">
+        <!-- Apple logo -->
+        <svg width="17" height="20" viewBox="0 0 13 16" fill="none">
+          <path d="M11.98 11.5c-.26.57-.39.82-.72 1.33-.46.71-1.11 1.59-1.92 1.6-.72.01-.91-.47-1.91-.47-.99 0-1.21.48-1.93.47-.8-.01-1.43-.82-1.89-1.53C1.7 11.15.73 8.44 1.32 6.08c.39-1.47 1.43-2.29 2.52-2.3.88-.01 1.43.5 2.16.5.72 0 1.16-.52 2.2-.52.86 0 1.66.45 2.25 1.2-1.97 1.1-1.65 3.96.67 4.74l-.14.8zM7.8 2.76c.38-.88.24-1.98-.03-2.5-.8.05-1.74.55-2.3 1.22-.5.6-.93 1.55-.77 2.47.98.03 1.98-.56 3.1-1.19z" fill="currentColor"/>
+        </svg>
+      </span>
+      <span class="dl-btn-meta">
+        <span class="dl-btn-main" id="dl-mac-main">Download for Mac</span>
+        <span class="dl-btn-sub dl-loading" id="dl-mac-sub">Checking latest…</span>
+      </span>
+    </a>
+
+    <!-- Windows -->
+    <a id="dl-win" class="dl-btn secondary"
+       href="https://github.com/Satyabrat2005/Openui/releases/latest/download/OpenUI.Setup.exe"
+       aria-label="Download OpenUI for Windows (checking latest version)">
+      <span class="dl-btn-icon" aria-hidden="true">
+        <!-- Windows logo -->
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+          <path d="M3 5.1 10.4 4v7.3H3V5.1zm0 13.8 7.4 1V11.7H3v7.2zM11.3 3.9 21 2.5v8.8h-9.7V3.9zm0 16.2L21 21.5v-8.8h-9.7v7.4z"/>
+        </svg>
+      </span>
+      <span class="dl-btn-meta">
+        <span class="dl-btn-main" id="dl-win-main">Download for Windows</span>
+        <span class="dl-btn-sub dl-loading" id="dl-win-sub">Checking latest…</span>
+      </span>
+    </a>
+
+  </div>
+
+  <a class="dl-releases-link"
+     href="https://github.com/Satyabrat2005/Openui/releases"
+     target="_blank" rel="noopener noreferrer">
+    View all releases on GitHub →
+  </a>
+
+  <!-- ── or ── divider -->
+  <div class="dock-divider" aria-hidden="true">or</div>
+
+  <!-- Waitlist / email capture -->
+  <div class="waitlist">
+    <span class="waitlist-headline">Get early access to Pro features</span>
+    <span class="waitlist-subline">
+      Be the first to know when Pro tier launches with cloud AI models,
+      advanced automation, and more.
+    </span>
+
+    <form class="waitlist-form" id="waitlist-form" novalidate onsubmit="handleWaitlistSubmit(event)">
+      <input
+        type="email"
+        id="waitlist-email"
+        class="waitlist-input"
+        name="email"
+        placeholder="you@example.com"
+        autocomplete="email"
+        required
+        aria-label="Email address" />
+      <button type="submit" id="waitlist-submit" class="waitlist-btn">Join Waitlist</button>
+    </form>
+
+    <p class="waitlist-message" id="waitlist-message" role="status" aria-live="polite"></p>
+
+    <p class="waitlist-disclaimer">
+      No spam. Unsubscribe anytime. We'll only email about major updates and the Pro tier launch.
+    </p>
+  </div>
+</section>
+
+
+<!-- ════════════════════════════
+     DOWNLOAD DOCK — OS detection + GitHub Releases API
+════════════════════════════ -->
+<script>
+  (function () {
+    "use strict";
+
+    var REPO       = "Satyabrat2005/Openui";
+    var RELEASES   = "https://github.com/" + REPO + "/releases";
+    var API_LATEST = "https://api.github.com/repos/" + REPO + "/releases/latest";
+
+    var macBtn  = document.getElementById("dl-mac");
+    var winBtn  = document.getElementById("dl-win");
+    var macSub  = document.getElementById("dl-mac-sub");
+    var winSub  = document.getElementById("dl-win-sub");
+    var macMain = document.getElementById("dl-mac-main");
+    var winMain = document.getElementById("dl-win-main");
+
+    /* ── 1. Detect the visitor's OS and emphasise the matching button ── */
+    function detectOS() {
+      var ua   = navigator.userAgent || "";
+      var plat = navigator.platform || "";
+      if (/Win/i.test(plat) || /Windows/i.test(ua)) return "win";
+      // Modern iPads report as "MacIntel" — still fine to point at the Mac build.
+      if (/Mac/i.test(plat) || /Mac OS X/i.test(ua)) return "mac";
+      return null;
+    }
+
+    function applyEmphasis(os) {
+      // Default (unknown OS): leave Mac primary, Windows secondary.
+      if (os === "win") {
+        winBtn.className = "dl-btn primary";
+        macBtn.className = "dl-btn secondary";
+      } else if (os === "mac") {
+        macBtn.className = "dl-btn primary";
+        winBtn.className = "dl-btn secondary";
+      }
+    }
+
+    applyEmphasis(detectOS());
+
+    /* ── 2. Helpers to render the fetched release info ── */
+    function fmtCount(n) {
+      if (typeof n !== "number" || n <= 0) return "";
+      return " · " + n.toLocaleString() + (n === 1 ? " download" : " downloads");
+    }
+
+    function setReady(btn, sub, main, label, version, asset) {
+      sub.classList.remove("dl-loading");
+      var count = asset ? fmtCount(asset.download_count) : "";
+      sub.textContent = version + count;
+      btn.setAttribute(
+        "aria-label",
+        "Download OpenUI " + version + " for " + label
+      );
+    }
+
+    function setComingSoon(btn, sub, main, label) {
+      btn.classList.add("coming-soon");
+      btn.setAttribute("aria-disabled", "true");
+      btn.setAttribute("tabindex", "-1");
+      sub.classList.remove("dl-loading");
+      sub.textContent = "Coming soon";
+      main.textContent = "Download for " + label + " (Coming Soon)";
+      btn.setAttribute("aria-label", "OpenUI for " + label + " — coming soon");
+    }
+
+    function allComingSoon() {
+      setComingSoon(macBtn, macSub, macMain, "Mac");
+      setComingSoon(winBtn, winSub, winMain, "Windows");
+    }
+
+    /* ── 3. Fetch the latest release from the GitHub API ── */
+    fetch(API_LATEST, { headers: { Accept: "application/vnd.github+json" } })
+      .then(function (r) {
+        if (!r.ok) throw new Error("No release (HTTP " + r.status + ")");
+        return r.json();
+      })
+      .then(function (release) {
+        var version = release.tag_name || release.name || "";
+        if (version && version.charAt(0) !== "v" && /^\d/.test(version)) {
+          version = "v" + version;
+        }
+        var assets = release.assets || [];
+        var macAsset = assets.filter(function (a) { return /\.dmg$/i.test(a.name); })[0];
+        var winAsset = assets.filter(function (a) { return /\.exe$/i.test(a.name); })[0];
+
+        // Per-platform: a missing asset means that build isn't published yet.
+        if (macAsset || version) {
+          setReady(macBtn, macSub, macMain, "Mac", version || "Latest", macAsset);
+        } else {
+          setComingSoon(macBtn, macSub, macMain, "Mac");
+        }
+        if (winAsset || version) {
+          setReady(winBtn, winSub, winMain, "Windows", version || "Latest", winAsset);
+        } else {
+          setComingSoon(winBtn, winSub, winMain, "Windows");
+        }
+      })
+      .catch(function () {
+        // Rate-limited, offline, or no release exists yet → Coming Soon.
+        allComingSoon();
+      });
+  })();
+</script>
+
+
+<!-- ════════════════════════════
+     WAITLIST — email capture → Supabase Edge Function (Mailchimp proxy)
+════════════════════════════ -->
+<script>
+  /*
+   * The Mailchimp API key is NEVER exposed here. The form posts the email to a
+   * Supabase Edge Function (supabase/functions/waitlist) which calls Mailchimp
+   * server-side. Set WAITLIST_ENDPOINT below to your deployed function URL:
+   *   https://<your-project-ref>.supabase.co/functions/v1/waitlist
+   */
+  var WAITLIST_ENDPOINT =
+    "https://YOUR_SUPABASE_PROJECT_ID.supabase.co/functions/v1/waitlist";
+
+  // Persisted across visits so a returning subscriber keeps the success state.
+  var WAITLIST_FLAG = "openui_waitlist_joined";
+
+  function showJoinedState(message) {
+    var button = document.getElementById("waitlist-submit");
+    var messageEl = document.getElementById("waitlist-message");
+    var input = document.getElementById("waitlist-email");
+    button.textContent = "Joined!";
+    button.disabled = true;
+    button.classList.add("joined");
+    input.value = "";
+    input.disabled = true;
+    if (messageEl) {
+      messageEl.textContent = message;
+      messageEl.className = "waitlist-message success";
+    }
+  }
+
+  async function handleWaitlistSubmit(event) {
+    event.preventDefault();
+    const email = document.getElementById('waitlist-email').value;
+    const button = document.getElementById('waitlist-submit');
+    const messageEl = document.getElementById('waitlist-message');
+
+    // Validate email
+    if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      messageEl.textContent = 'Please enter a valid email address.';
+      messageEl.className = 'waitlist-message error';
+      return;
+    }
+
+    // Show loading state
+    button.disabled = true;
+    button.textContent = 'Joining...';
+    messageEl.textContent = '';
+    messageEl.className = 'waitlist-message';
+
+    try {
+      const response = await fetch(WAITLIST_ENDPOINT, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email }),
+      });
+
+      const data = await response.json();
+
+      if (response.ok && !data.error) {
+        // Success state — persist so it survives a page reload.
+        try { localStorage.setItem(WAITLIST_FLAG, '1'); } catch (e) {}
+        showJoinedState("You're on the list! We'll notify you when Pro launches.");
+
+        // Track the event in PostHog if it's loaded
+        if (typeof posthog !== 'undefined') {
+          posthog.capture('waitlist_joined', { email_domain: email.split('@')[1] });
+        }
+      } else if (data.error === 'already_subscribed') {
+        messageEl.textContent = "You're already on the waitlist!";
+        messageEl.className = 'waitlist-message info';
+        button.textContent = 'Join Waitlist';
+        button.disabled = false;
+      } else {
+        throw new Error(data.error || 'Something went wrong');
+      }
+    } catch (error) {
+      messageEl.textContent = 'Something went wrong. Please try again.';
+      messageEl.className = 'waitlist-message error';
+      button.textContent = 'Join Waitlist';
+      button.disabled = false;
+    }
+  }
+
+  // On load: if the visitor already joined, pre-fill the persistent success state.
+  window.addEventListener("DOMContentLoaded", function () {
+    var joined = false;
+    try { joined = localStorage.getItem(WAITLIST_FLAG) === '1'; } catch (e) {}
+    if (joined) showJoinedState("You're on the list! We'll notify you when Pro launches.");
+  });
+</script>
+
 
 <script>
   window.addEventListener("DOMContentLoaded", function () {

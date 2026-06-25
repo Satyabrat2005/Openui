@@ -6,8 +6,8 @@
   "author": "OpenUI",
   "license": "MIT",
   "scripts": {
-    "postinstall": "node scripts/generate-tray-icon.cjs",
-    "icons": "node scripts/generate-tray-icon.cjs",
+    "postinstall": "node scripts/generate-tray-icon.cjs && node scripts/convert-icon.js",
+    "icons": "node scripts/generate-tray-icon.cjs && node scripts/convert-icon.js",
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "preview": "electron-vite preview",
@@ -40,16 +40,23 @@
       }
     ],
     "asarUnpack": [
-      "**/node_modules/better-sqlite3/**"
+      "**/*.node"
     ],
+    "extraResources": [
+      {
+        "from": "resources",
+        "to": "resources"
+      }
+    ],
+    "npmRebuild": true,
     "mac": {
       "category": "public.app-category.productivity",
+      "identity": null,
       "target": [
         {
           "target": "dmg",
           "arch": [
-            "arm64",
-            "x64"
+            "universal"
           ]
         },
         {
@@ -71,7 +78,8 @@
       ]
     },
     "dmg": {
-      "title": "${productName} ${version}"
+      "title": "${productName} ${version}",
+      "artifactName": "${productName}.${ext}"
     },
     "win": {
       "target": [
@@ -83,14 +91,22 @@
           ]
         }
       ],
-      "icon": "resources/icon.ico"
+      "icon": "resources/icon.ico",
+      "artifactName": "OpenUI.Setup.${version}.${ext}"
     },
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "installerIcon": "resources/icon.ico",
       "uninstallerIcon": "resources/icon.ico",
-      "shortcutName": "OpenUI"
+      "uninstallDisplayName": "OpenUI",
+      "license": "LICENSE",
+      "installerLanguages": [
+        "en_US"
+      ],
+      "language": "1033",
+      "shortcutName": "OpenUI",
+      "artifactName": "${productName}.Setup.${version}.${ext}"
     }
   },
   "dependencies": {
@@ -120,6 +136,7 @@
     "electron": "^42.4.1",
     "electron-builder": "^26.15.3",
     "electron-vite": "^5.0.0",
+    "png2icons": "^2.0.1",
     "postcss": "^8.4.49",
     "tailwindcss": "^3.4.15",
     "typescript": "^5.7.2",
