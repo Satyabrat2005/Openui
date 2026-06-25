@@ -92,7 +92,7 @@
         }
       ],
       "icon": "resources/icon.ico",
-      "artifactName": "OpenUI.Setup.${version}.${ext}"
+      "artifactName": "${productName}.Setup.${ext}"
     },
     "nsis": {
       "oneClick": false,
@@ -106,7 +106,7 @@
       ],
       "language": "1033",
       "shortcutName": "OpenUI",
-      "artifactName": "${productName}.Setup.${version}.${ext}"
+      "artifactName": "${productName}.Setup.${ext}"
     }
   },
   "dependencies": {
