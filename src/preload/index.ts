@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer } from 'electron'
 
 type Tier = 'free' | 'pro' | 'enterprise'
 type PermissionTarget = 'accessibility' | 'microphone'
+type ConsentStatus = 'unknown' | 'granted' | 'denied'
 type TaskSource = 'todo' | 'github'
 type InterviewState = 'idle' | 'asking' | 'listening' | 'evaluating' | 'complete'
 type IpcListener = Parameters<typeof ipcRenderer.on>[1]
@@ -256,6 +257,17 @@ const api = {
 
   getTelemetryStatus: (): Promise<boolean> =>
     ipcRenderer.invoke('openui:get-telemetry-status'),
+
+  // Privacy consent — first-launch ConsentModal + the Settings analytics toggle.
+  grantConsent: (): Promise<ConsentStatus> => ipcRenderer.invoke('openui:grant-consent'),
+  denyConsent: (): Promise<ConsentStatus> => ipcRenderer.invoke('openui:deny-consent'),
+  getConsentStatus: (): Promise<ConsentStatus> => ipcRenderer.invoke('openui:get-consent-status'),
+
+  onConsentUpdated: (cb: (status: ConsentStatus) => void): (() => void) => {
+    const fn = wrap<ConsentStatus>(cb)
+    ipcRenderer.on('openui:consent-updated', fn)
+    return (): void => { ipcRenderer.removeListener('openui:consent-updated', fn) }
+  },
 
   // ── Auto-update (electron-updater) ──────────────────────────────────────────
   // Invokers are no-ops in dev (autoUpdater only runs packaged); the on* event

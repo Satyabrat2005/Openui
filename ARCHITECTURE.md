@@ -13,6 +13,7 @@
 | **Phase 6** | macOS permission hardening — pre-flight OS permission checks, graceful degradation, in-app System Settings modal, unhandled-rejection fixes | **Complete** |
 | **Distribution** | `electron-builder` Windows NSIS (`x64`+`ia32`) + macOS DMG (`arm64`+`x64`); `build:win` / `build:mac` scripts; generated `.ico` / `.icns` via `scripts/convert-icon.js`; `openui://` deep-link + single-instance lock; comprehensive README | **Complete** |
 | **Phase 7** | Auth + subscription gating — Google OAuth via Supabase, SQLite persistence, tier-based model routing, Stripe checkout, voice tier routing, `AuthContext`, `TierUpgradeModal`, `ConversationList` | **Complete** |
+| **Sub-Phase 4** | Telemetry & privacy — PostHog analytics (4A core, 4B event instrumentation), opt-in privacy consent layer with `ConsentModal` + Settings toggle (4C) | **Complete** |
 
 ---
 
@@ -947,3 +948,136 @@ Subscription lifecycle
 ```
 
 The `typecheck` script already exists in `package.json`; it just needs to be wired into the CI pipeline.
+
+---
+
+## 17. Telemetry & Privacy (Sub-Phase 4)
+
+OpenUI ships an **opt-in** anonymous analytics layer built on PostHog. It is
+designed for macOS App Store guidelines and GDPR compliance: nothing is
+collected — and the PostHog client is never even initialised — until the user
+explicitly grants consent.
+
+### Module map (`src/main/telemetry/`)
+
+| File | Responsibility |
+|---|---|
+| `events.ts` | Single source of truth for event names + property shapes (`Events` / `EVENTS`). |
+| `posthog.ts` | PostHog client lifecycle: consent-gated init, identify, capture, opt-out, shutdown. |
+| `consent.ts` | Consent state machine (`ConsentStatus`), persisted to the `settings` table; local pending-event queue. |
+| `index.ts` | `trackEvent()` wrapper — never throws; no-ops when telemetry is disabled. |
+
+### What data IS collected (only after opt-in)
+
+- App opens, closes, crashes, and version / auto-update events
+- Feature usage — which tools run, which models / tiers are selected, voice & vision usage
+- Performance metrics — response latency, tool execution time, token counts
+- Subscription tier, OS platform, and app version
+- A random anonymous device id (`<userData>/.telemetry-id`), replaced by the
+  Supabase user id only after sign-in (`identifyUser`)
+
+See `events.ts` for the exhaustive list of event names and their property shapes.
+
+### What is NEVER collected
+
+- Chat messages or voice recordings (only lengths / counts, never content)
+- File contents or file paths
+- Screenshots, screen contents, or OCR text
+- Personal data beyond the post-login user id
+- API keys or any secret from `process.env`
+
+While consent is UNKNOWN or DENIED there is **no network egress** from the
+telemetry layer at all: the PostHog client object is `null`, so `trackEvent()`
+is a zero-cost no-op.
+
+### Consent flow
+
+```
+First launch
+  app.whenReady → initDatabase() → await initTelemetry()
+        │
+        └─ getConsentStatus() === GRANTED ?  ── no ──▶ PostHog stays OFF (client = null)
+                  │ yes
+                  └─▶ startClient()  (PostHog online)
+
+Renderer mount (App.tsx)
+  getConsentStatus() === 'unknown' ?  ── yes ──▶ <ConsentModal/>
+        │
+        ├─ "Allow Analytics" ─▶ openui:grant-consent
+        │      main: grantConsent() → enableTelemetryAfterConsent() (client online,
+        │            flush pending) → trackEvent(TELEMETRY_OPT_IN) → openui:consent-updated
+        │
+        └─ "Skip" ──────────▶ openui:deny-consent
+               main: (client active ? trackEvent(TELEMETRY_OPT_OUT) : recordPendingEvent(…))
+                     → denyConsent() → shutdownTelemetry() → openui:consent-updated
+```
+
+`ConsentModal` is **non-blocking** and **non-manipulative**: "Allow Analytics"
+and "Skip" are the same size and visual weight (no dark pattern). "Skip" persists
+a permanent `DENIED` (`telemetry_consent` in the `settings` table), so the prompt
+never reappears on later launches — but the choice is always reversible from
+Settings. Dismissing with "Skip" lets the user start using the app immediately.
+
+Because PostHog is not initialised on a first launch, `TELEMETRY_OPT_IN` is
+literally the first event a consenting user ever sends. `TELEMETRY_OPT_OUT` is
+the LAST event before shutdown; if telemetry was never started (the user pressed
+"Skip"), the opt-out is stashed locally (`telemetry_pending_events`) and
+batch-sent only if they later opt back in.
+
+### Changing the choice later (Settings)
+
+`AssistantPopup`'s header has a gear button that opens `SettingsModal`, which
+hosts the **Anonymous Usage Analytics** switch ("Help us improve OpenUI by
+sharing anonymous usage data. No personal data is ever collected."):
+
+- Toggle **ON** → `grantConsent()` → PostHog initialised → `TELEMETRY_OPT_IN`.
+- Toggle **OFF** → `TELEMETRY_OPT_OUT` (last event) → `denyConsent()` → PostHog
+  shut down and flushed.
+
+The switch reads its initial state from `getConsentStatus()` and stays in sync
+via the `openui:consent-updated` push.
+
+### Consent state (persisted in the `settings` table)
+
+| Key | Values | Meaning |
+|---|---|---|
+| `telemetry_consent` | `unknown` \| `granted` \| `denied` | Authoritative consent status. |
+| `telemetry_opt_out` | `true` \| `false` | Low-level mirror kept for `setTelemetryOptOut`. |
+| `telemetry_pending_events` | `string[]` | Events recorded while disabled; batch-sent on next opt-in. |
+
+### IPC channels (Sub-Phase 4C)
+
+| Channel | Direction | Payload | Purpose |
+|---|---|---|---|
+| `openui:grant-consent` | Renderer → Main (invoke) | *(none)* | Opt in; init PostHog; emit `TELEMETRY_OPT_IN`. |
+| `openui:deny-consent` | Renderer → Main (invoke) | *(none)* | Opt out; emit `TELEMETRY_OPT_OUT`; shut PostHog down. |
+| `openui:get-consent-status` | Renderer → Main (invoke) | *(none)* | Returns the current `ConsentStatus`. |
+| `openui:consent-updated` | Main → Renderer | `ConsentStatus` | Consent changed; keeps modal / toggle in sync. |
+| `openui:set-telemetry-opt-out` | Renderer → Main (invoke) | `boolean` | Low-level opt-out (Sub-Phase 4A). |
+| `openui:get-telemetry-status` | Renderer → Main (invoke) | *(none)* | Returns whether the client is active. |
+
+### PostHog integration details
+
+- **Package:** `posthog-node`. Host defaults to `https://us.i.posthog.com`
+  (override `POSTHOG_HOST`); requires `POSTHOG_API_KEY` — with no key, telemetry
+  is a permanent no-op regardless of consent.
+- **Batching:** `flushAt: 20`, `flushInterval: 10000` ms. `shutdownTelemetry()`
+  flushes on `before-quit`.
+- **Identity:** anonymous device id until `identifyUser(userId)` runs after auth;
+  `resetTelemetryIdentity()` returns to the device id on logout.
+- **Safety:** the `trackEvent()` wrapper in `telemetry/index.ts` swallows all
+  errors so analytics can never disrupt a user-facing flow.
+
+### How to opt out
+
+- **In-app:** Settings (gear icon) → turn **Anonymous Usage Analytics** off.
+  This is available at any time, before or after the first-launch prompt.
+- **At first launch:** press **Skip** in the consent prompt.
+- **By configuration:** unset `POSTHOG_API_KEY` to disable telemetry build-wide.
+
+### Environment variables
+
+| Variable | Default | Used by |
+|---|---|---|
+| `POSTHOG_API_KEY` | *(unset — disables telemetry entirely)* | `initTelemetry`, `enableTelemetryAfterConsent` |
+| `POSTHOG_HOST` | `https://us.i.posthog.com` | PostHog client |

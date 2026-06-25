@@ -12,7 +12,8 @@ import { initDatabase } from './database'
 import { registerDeepLinkProtocol, setupDeepLinkHandlers } from './auth/deeplink'
 import { openAuthWindow, isAuthWebContents, isAuthWindowOpen } from './auth/authWindow'
 import { logout, getCurrentUser, getUserTier, startTokenRefreshLoop, stopTokenRefreshLoop } from './auth/sessionManager'
-import { initTelemetry, shutdownTelemetry, setTelemetryOptOut, isTelemetryActive, trackEvent } from './telemetry/posthog'
+import { initTelemetry, enableTelemetryAfterConsent, shutdownTelemetry, setTelemetryOptOut, isTelemetryActive, trackEvent } from './telemetry/posthog'
+import { grantConsent, denyConsent, getConsentStatus, recordPendingEvent, ConsentStatus } from './telemetry/consent'
 import { initUpdater, checkForUpdates, downloadUpdate, installUpdateAndRestart, openReleasesPage } from './updater/updater'
 import { Events } from './telemetry/events'
 
@@ -239,7 +240,6 @@ app.whenReady().then(async () => {
   if (process.platform === 'darwin') app.dock?.hide()
 
   applySecurityHardening()
-  initTelemetry()
   trackEvent(Events.APP_STARTED, { platform: process.platform, version: app.getVersion() })
 
   createWindow()
@@ -284,6 +284,39 @@ app.whenReady().then(async () => {
     setTelemetryOptOut(optOut === true)
   })
   ipcMain.handle('openui:get-telemetry-status', () => isTelemetryActive())
+
+  // ── Privacy consent IPC (Sub-Phase 4C) ───────────────────────────────────────
+  // Both the first-launch ConsentModal and the Settings analytics toggle flow
+  // through these channels, so the grant/deny logic lives in exactly one place.
+
+  // Opt in: persist consent, bring PostHog online (initTelemetry left it off
+  // until now), then send the opt-in event — the FIRST event a new user emits.
+  ipcMain.handle('openui:grant-consent', async () => {
+    await grantConsent()
+    enableTelemetryAfterConsent()
+    trackEvent(Events.TELEMETRY_OPT_IN)
+    win?.webContents.send('openui:consent-updated', ConsentStatus.GRANTED)
+    return ConsentStatus.GRANTED
+  })
+
+  // Opt out: the opt-out event is the LAST thing sent. If telemetry is live it is
+  // captured now and flushed by the shutdown below; if it was never started
+  // (first-launch "Skip"), it is stashed locally to batch-send on a later opt-in.
+  ipcMain.handle('openui:deny-consent', async () => {
+    if (isTelemetryActive()) {
+      trackEvent(Events.TELEMETRY_OPT_OUT)
+    } else {
+      recordPendingEvent(Events.TELEMETRY_OPT_OUT)
+    }
+    await denyConsent()
+    shutdownTelemetry()
+    win?.webContents.send('openui:consent-updated', ConsentStatus.DENIED)
+    return ConsentStatus.DENIED
+  })
+
+  // Current consent status — drives whether the renderer shows the ConsentModal
+  // on launch and the initial state of the Settings analytics toggle.
+  ipcMain.handle('openui:get-consent-status', () => getConsentStatus())
 
   // Pro-tier waitlist: post an email to the Mailchimp-proxy Edge Function.
   registerWaitlistIPC()

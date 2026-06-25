@@ -3,6 +3,9 @@
 /** Which OS permission needs to be granted before the tool can proceed. */
 export type PermissionTarget = 'accessibility' | 'microphone'
 
+/** Privacy consent state for anonymous usage analytics. */
+export type ConsentStatus = 'unknown' | 'granted' | 'denied'
+
 export type Tier = 'free' | 'pro' | 'enterprise'
 
 export interface User {
@@ -171,6 +174,11 @@ export interface OpenUIApi {
   // Telemetry.
   setTelemetryOptOut: (optOut: boolean) => Promise<void>
   getTelemetryStatus: () => Promise<boolean>
+  // Privacy consent — first-launch ConsentModal + Settings analytics toggle.
+  grantConsent: () => Promise<ConsentStatus>
+  denyConsent: () => Promise<ConsentStatus>
+  getConsentStatus: () => Promise<ConsentStatus>
+  onConsentUpdated: (cb: (status: ConsentStatus) => void) => () => void
   // Auto-update (electron-updater). No-ops in dev; events stay silent there.
   getAppVersion: () => Promise<string>
   checkForUpdates: () => Promise<{ currentVersion: string }>

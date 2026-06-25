@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import AssistantPopup from './components/AssistantPopup'
 import TaskListPopup from './components/TaskListPopup'
 import PermissionModal from './components/PermissionModal'
+import ConsentModal from './components/ConsentModal'
 import { useAssistantAnimations } from './hooks/useAssistantAnimations'
 import { AuthProvider } from './context/AuthContext'
 import type { PermissionTarget } from './env'
@@ -12,6 +13,7 @@ function AppShell(): JSX.Element {
   const captionLockedRef = useRef<boolean>(false)
 
   const [permissionNeeded, setPermissionNeeded] = useState<PermissionTarget | null>(null)
+  const [consentNeeded, setConsentNeeded] = useState(false)
 
   useAssistantAnimations(overlayRef, recordingRef, captionLockedRef)
 
@@ -19,6 +21,21 @@ function AppShell(): JSX.Element {
     return window.openui.onPermissionDenied((permission) => {
       setPermissionNeeded(permission as PermissionTarget)
     })
+  }, [])
+
+  // First-launch privacy consent: show the prompt only while status is UNKNOWN.
+  // "Skip" persists a permanent DENIED, so this never reappears on later launches.
+  useEffect(() => {
+    let cancelled = false
+    window.openui
+      .getConsentStatus()
+      .then((status) => {
+        if (!cancelled && status === 'unknown') setConsentNeeded(true)
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
   }, [])
 
   const handleBackdrop = (e: React.MouseEvent<HTMLDivElement>): void => {
@@ -53,6 +70,7 @@ function AppShell(): JSX.Element {
           onDismiss={() => setPermissionNeeded(null)}
         />
       )}
+      {consentNeeded && <ConsentModal onClose={() => setConsentNeeded(false)} />}
     </div>
   )
 }

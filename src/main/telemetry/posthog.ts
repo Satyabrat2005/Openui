@@ -3,7 +3,8 @@ import { app } from 'electron'
 import { randomUUID } from 'node:crypto'
 import { readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { getSetting, setSetting } from '../database/repositories/settingsRepo'
+import { setSetting } from '../database/repositories/settingsRepo'
+import { ConsentStatus, getConsentStatus, drainPendingEvents } from './consent'
 
 let client: PostHog | null = null
 let deviceId = 'anonymous'
@@ -22,23 +23,52 @@ function loadOrCreateDeviceId(): string {
   }
 }
 
-/**
- * Initialise the PostHog client. Silent no-op when POSTHOG_API_KEY is unset
- * or when the user has opted out via settings.
- * Must be called after app.whenReady() so app.getPath() is available.
- */
-export function initTelemetry(): void {
-  if (!POSTHOG_API_KEY) return
-  try {
-    if (getSetting('telemetry_opt_out') === true) return
-  } catch { /* settings may not be ready yet — proceed */ }
-
+/** Construct the PostHog client (idempotent). Caller guarantees consent. */
+function startClient(): void {
+  if (client) return
   deviceId = loadOrCreateDeviceId()
   client = new PostHog(POSTHOG_API_KEY, {
     host: POSTHOG_HOST,
     flushAt: 20,
     flushInterval: 10000
   })
+}
+
+/**
+ * Initialise PostHog on startup. Consent is checked FIRST: the client is only
+ * created when the user has explicitly GRANTED analytics. On a first launch
+ * (UNKNOWN — awaiting the consent prompt) or after an opt-out (DENIED), PostHog
+ * is never initialised. Silent no-op when POSTHOG_API_KEY is unset.
+ *
+ * Must be called after app.whenReady() so app.getPath() and the settings DB are
+ * available.
+ */
+export async function initTelemetry(): Promise<void> {
+  if (!POSTHOG_API_KEY) return
+  let consent: ConsentStatus
+  try {
+    consent = await getConsentStatus()
+  } catch {
+    return
+  }
+  if (consent !== ConsentStatus.GRANTED) return
+  startClient()
+}
+
+/**
+ * Bring PostHog online immediately after the user grants consent from the UI.
+ * initTelemetry() runs at startup — before the consent prompt is shown — so a
+ * brand-new user has no client until they opt in here. Any events stashed
+ * locally while telemetry was disabled (e.g. an opt-out recorded during an
+ * earlier "Skip") are batch-sent on the way up.
+ */
+export function enableTelemetryAfterConsent(): void {
+  if (!POSTHOG_API_KEY) return
+  startClient()
+  if (!client) return
+  for (const event of drainPendingEvents()) {
+    trackEvent(event)
+  }
 }
 
 /** Attach a known user identity after auth (replaces the anonymous device ID). */
