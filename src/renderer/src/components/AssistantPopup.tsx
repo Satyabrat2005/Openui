@@ -7,6 +7,8 @@ import SignInBanner from './SignInBanner'
 import UsageCounter from './UsageCounter'
 import UpdateBanner from './UpdateBanner'
 import SettingsModal from './SettingsModal'
+import OllamaSuggestion from './OllamaSuggestion'
+import LocalAIStatus from './LocalAIStatus'
 
 type VoiceState = 'idle' | 'recording' | 'transcribing' | 'processing' | 'done'
 
@@ -40,6 +42,7 @@ export default function AssistantPopup({
   const [inputText, setInputText] = useState('')
   const initialSentRef = useRef(false)
   const [showSettings, setShowSettings] = useState(false)
+  const [showLocalAIToast, setShowLocalAIToast] = useState(false)
 
   // Imperative refs — caption and bars are managed outside React state so
   // GSAP and rAF writes don't conflict with React's reconciler.
@@ -83,11 +86,18 @@ export default function AssistantPopup({
       setCaption('') // clear so onChunk can stream into a blank caption
     })
 
+    // Fired by the 60-second Ollama polling loop when local AI comes online.
+    const offLocalAI = window.openui.onLocalAIAvailable(() => {
+      setShowLocalAIToast(true)
+      setTimeout(() => setShowLocalAIToast(false), 4000)
+    })
+
     return () => {
       offChunk()
       offDone()
       offError()
       offTranscript()
+      offLocalAI()
     }
   }, [setCaption, captionLockedRef])
 
@@ -369,6 +379,9 @@ export default function AssistantPopup({
         <p id="transcript-text">{transcript ?? ''}</p>
       </div>
 
+      {/* Ollama suggestion card — shown 2 min after mount if Ollama is absent */}
+      <OllamaSuggestion />
+
       {/* Input strip */}
       <div className="input-strip">
         <svg
@@ -423,6 +436,32 @@ export default function AssistantPopup({
       <UpdateBanner />
 
       {showSettings && <SettingsModal onClose={() => setShowSettings(false)} />}
+
+      {/* Local AI status footer */}
+      <LocalAIStatus />
+
+      {/* Toast: shown briefly when Ollama is detected running for the first time */}
+      {showLocalAIToast && (
+        <div
+          style={{
+            position: 'absolute',
+            bottom: 60,
+            left: '50%',
+            transform: 'translateX(-50%)',
+            background: 'rgba(28,28,30,0.88)',
+            color: '#fff',
+            fontSize: 12,
+            fontWeight: 500,
+            fontFamily: '-apple-system, sans-serif',
+            borderRadius: 20,
+            padding: '6px 14px',
+            whiteSpace: 'nowrap',
+            pointerEvents: 'none'
+          }}
+        >
+          Local AI detected! Switching to unlimited local mode.
+        </div>
+      )}
     </div>
   )
 }

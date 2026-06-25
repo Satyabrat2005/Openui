@@ -206,6 +206,13 @@ export interface OpenUIApi {
   // App settings (key/value persisted in SQLite).
   getSetting: (key: string) => Promise<unknown>
   setSetting: (key: string, value: unknown) => Promise<void>
+  // Local AI / Ollama.
+  checkOllama: () => Promise<{ installed: boolean; running: boolean }>
+  installOllama: () => Promise<void>
+  startOllama: () => Promise<boolean>
+  dismissOllamaPrompt: (permanent: boolean) => Promise<void>
+  pullModel: (modelName: string) => Promise<boolean>
+  onLocalAIAvailable: (cb: () => void) => () => void
 }
 
 declare global {

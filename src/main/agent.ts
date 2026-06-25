@@ -578,6 +578,22 @@ export function registerAgentIPC(win: BrowserWindow): void {
     await handleChat(win, message, coerceTier(tier))
   })
   ipcMain.on('openui:clear-history', () => clearHistory())
+
+  // Poll for Ollama state changes every 60 s. When Ollama comes online after
+  // being absent, notify the renderer so it can switch to local mode and show
+  // a brief "Local AI detected" toast. Silently transitions back to cloud when
+  // Ollama stops — no error shown to the user.
+  let lastOllamaStatus = false
+  setInterval(async () => {
+    const current = await isOllamaRunning()
+    if (current !== lastOllamaStatus) {
+      lastOllamaStatus = current
+      if (current) {
+        emit(win, 'openui:local-ai-available')
+        console.log('[Telemetry] ollama_detected { method: "polling" }')
+      }
+    }
+  }, 60_000)
 }
 
 export function registerConversationIPC(win: BrowserWindow): void {
