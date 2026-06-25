@@ -21,6 +21,7 @@ import { getSupabaseClient } from './supabaseClient'
 import { closeAuthWindow } from './authWindow'
 import { database } from '../database'
 import { setActiveUser, cacheUserTier, type UserProfile } from './sessionManager'
+import { identifyUser } from '../telemetry/posthog'
 import {
   emitToRenderer,
   getCurrentUserId,
@@ -243,6 +244,7 @@ export async function completeAuth(
     setActiveUser(user.id)
 
     mainWindow?.webContents.send('openui:auth-success', profile)
+    identifyUser(profile.id, { email: profile.email ?? undefined, tier })
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
     console.error('[openui] completeAuth failed:', message)

@@ -14,6 +14,7 @@
 import { BrowserWindow } from 'electron'
 import { getSupabaseClient } from './supabaseClient'
 import { database, type UserRow } from '../database'
+import { resetTelemetryIdentity } from '../telemetry/posthog'
 
 /** Settings key under which the signed-in user's id is stored. */
 export const ACTIVE_USER_KEY = 'auth.active_user_id'
@@ -135,6 +136,7 @@ export async function logout(win?: BrowserWindow | null): Promise<void> {
   const id = getActiveUserId()
   if (id) database.users.updateAuthTokens(id, '', '', 0) // clears the valid token
   database.settings.deleteSetting(ACTIVE_USER_KEY)
+  resetTelemetryIdentity()
 
   try {
     await getSupabaseClient().auth.signOut()

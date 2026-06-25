@@ -19,6 +19,11 @@
 #   Supabase Edge Function secrets, never in the shipped binary.
 #
 #   GITHUB_TOKEN is provided automatically by Actions — no setup required.
+#
+#   Optional PostHog telemetry (runtime — not baked into the binary):
+#     POSTHOG_API_KEY    — PostHog project API key (phc_…)
+#     POSTHOG_HOST       — PostHog ingest host (default: https://us.i.posthog.com)
+#   If unset, telemetry is silently disabled in the shipped build.
 # ─────────────────────────────────────────────────────────────────────────────
 name: Build and Release
 
@@ -53,6 +58,8 @@ jobs:
         env:
           VITE_STRIPE_PRO_PRICE_ID: ${{ secrets.VITE_STRIPE_PRO_PRICE_ID }}
           VITE_STRIPE_ENTERPRISE_PRICE_ID: ${{ secrets.VITE_STRIPE_ENTERPRISE_PRICE_ID }}
+          POSTHOG_API_KEY: ${{ secrets.POSTHOG_API_KEY }}
+          POSTHOG_HOST: ${{ secrets.POSTHOG_HOST }}
 
       - name: Build macOS DMG
         if: matrix.os == 'macos-latest'
@@ -61,6 +68,8 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VITE_STRIPE_PRO_PRICE_ID: ${{ secrets.VITE_STRIPE_PRO_PRICE_ID }}
           VITE_STRIPE_ENTERPRISE_PRICE_ID: ${{ secrets.VITE_STRIPE_ENTERPRISE_PRICE_ID }}
+          POSTHOG_API_KEY: ${{ secrets.POSTHOG_API_KEY }}
+          POSTHOG_HOST: ${{ secrets.POSTHOG_HOST }}
 
       - name: Build Windows EXE
         if: matrix.os == 'windows-latest'
@@ -69,6 +78,8 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VITE_STRIPE_PRO_PRICE_ID: ${{ secrets.VITE_STRIPE_PRO_PRICE_ID }}
           VITE_STRIPE_ENTERPRISE_PRICE_ID: ${{ secrets.VITE_STRIPE_ENTERPRISE_PRICE_ID }}
+          POSTHOG_API_KEY: ${{ secrets.POSTHOG_API_KEY }}
+          POSTHOG_HOST: ${{ secrets.POSTHOG_HOST }}
 
       - name: Upload macOS artifacts
         if: matrix.os == 'macos-latest'

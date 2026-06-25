@@ -59,7 +59,9 @@
       "protocols": [
         {
           "name": "OpenUI Auth",
-          "schemes": ["openui"]
+          "schemes": [
+            "openui"
+          ]
         }
       ]
     },
@@ -71,7 +73,10 @@
       "target": [
         {
           "target": "nsis",
-          "arch": ["x64", "ia32"]
+          "arch": [
+            "x64",
+            "ia32"
+          ]
         }
       ],
       "icon": "resources/icon.ico",
@@ -104,6 +109,7 @@
     "ollama": "^0.5.0",
     "openai": "^4.0.0",
     "playwright": "^1.44.0",
+    "posthog-js-lite": "^4.8.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "tesseract.js": "^5.1.0"

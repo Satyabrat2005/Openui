@@ -240,7 +240,14 @@ const api = {
     ipcRenderer.invoke('openui:get-conversations'),
 
   loadConversation: (id: string): Promise<Array<{ role: string; content: string; created_at: number }>> =>
-    ipcRenderer.invoke('openui:load-conversation', id)
+    ipcRenderer.invoke('openui:load-conversation', id),
+
+  // ── Telemetry ────────────────────────────────────────────────────────────────
+  setTelemetryOptOut: (optOut: boolean): Promise<void> =>
+    ipcRenderer.invoke('openui:set-telemetry-opt-out', optOut),
+
+  getTelemetryStatus: (): Promise<boolean> =>
+    ipcRenderer.invoke('openui:get-telemetry-status')
 }
 
 export type OpenUIApi = typeof api
