@@ -1,4 +1,4 @@
-# OpenUI — Architecture Reference
+﻿# OpenUI — Architecture Reference
 
 ## Phase Status
 
@@ -14,6 +14,7 @@
 | **Distribution** | `electron-builder` Windows NSIS (`x64`+`ia32`) + macOS DMG (`arm64`+`x64`); `build:win` / `build:mac` scripts; generated `.ico` / `.icns` via `scripts/convert-icon.js`; `openui://` deep-link + single-instance lock; comprehensive README | **Complete** |
 | **Phase 7** | Auth + subscription gating — Google OAuth via Supabase, SQLite persistence, tier-based model routing, Stripe checkout, voice tier routing, `AuthContext`, `TierUpgradeModal`, `ConversationList` | **Complete** |
 | **Sub-Phase 4** | Telemetry & privacy — PostHog analytics (4A core, 4B event instrumentation), opt-in privacy consent layer with `ConsentModal` + Settings toggle (4C) | **Complete** |
+| **Phase 10** | GitHub PR review — `github.ts` tool module (`list_open_prs`, `get_pr_diff`, `post_pr_comment` via `@octokit/rest`), `PR_REVIEW_RE` trigger in `agent.ts`, strict `PR_REVIEW_SYSTEM_PROMPT`, forced Claude Sonnet (pro tier), 32-turn budget for multi-PR sessions | **Complete** |
 | **Onboarding Phase A** | Cloud-first routing — every tier works with no local setup via the `chat-proxy` Edge Function (our keys, server-side), per-tier daily limits (`usage_tracking`), Ollama demoted to optional cost-saver/offline fallback, live usage counter, no more "Ollama required" errors | **Complete** |
 
 ---
@@ -1150,3 +1151,69 @@ via the `openui:consent-updated` push.
 |---|---|---|
 | `POSTHOG_API_KEY` | *(unset — disables telemetry entirely)* | `initTelemetry`, `enableTelemetryAfterConsent` |
 | `POSTHOG_HOST` | `https://us.i.posthog.com` | PostHog client |
+
+
+---
+
+## Phase 10 — GitHub PR Review (`src/main/github.ts`)
+
+### Goal
+
+Let the CTO use case run end-to-end from the chat UI: say **"Review my PRs"** and OpenUI fetches every open pull request in the specified repository, analyses each diff with Claude Sonnet, and posts a structured review comment directly on GitHub.
+
+### Module: `src/main/github.ts`
+
+A standalone tool module (lazy-load + `ToolResult` pattern, same as Playwright/tesseract) that exports:
+
+| Export | Kind | Description |
+|---|---|---|
+| `list_open_prs` | `async function` | Fetches up to 30 open PRs sorted by most-recently-updated |
+| `get_pr_diff` | `async function` | Returns the raw unified diff, capped at 24 000 characters |
+| `post_pr_comment` | `async function` | Posts a markdown comment on the PR via the GitHub issues API |
+| `githubToolSchemas` | `ToolSchema[]` | JSON schemas for the three tools; spread into `toolSchemas` in `tools.ts` |
+| `githubRegistry` | `Record<string, Executor>` | Executor map; spread into the main `registry` in `tools.ts` |
+
+`@octokit/rest` is loaded lazily — absent package surfaces as `{ ok: false, error: "…install @octokit/rest…" }`, not a crash.
+
+### Agent trigger (`agent.ts`)
+
+```typescript
+const PR_REVIEW_RE = /\breview\b.*\bprs?\b|\bprs?\b.*\breview|\bpull\s+request/i
+```
+
+When matched, `handleChat` applies two overrides:
+
+| Normal session | PR review session |
+|---|---|
+| Tier from UI (`free` / `pro` / `enterprise`) | Always `'pro'` (Claude Sonnet) |
+| `SYSTEM_PROMPT` (general assistant) | `PR_REVIEW_SYSTEM_PROMPT` (strict reviewer mandate) |
+| `MAX_TOOL_TURNS = 8` | `maxTurns = 32` (list + diff×N + comment×N) |
+
+### `PR_REVIEW_SYSTEM_PROMPT` format
+
+Each posted comment follows this template:
+
+```
+## OpenUI Automated Code Review
+**Decision: [APPROVE / REQUEST CHANGES / COMMENT ONLY]**
+### Bugs
+### Security Issues
+### Architecture
+### Verdict
+```
+
+### Security notes
+
+- Repo names validated against `REPO_RE = /^[\w.-]+\/[\w.-]+$/`.
+- Diff capped at 24 000 chars to limit prompt-injection surface.
+- Comment capped at 65 536 chars (GitHub's hard limit).
+- Only posts comments — never merges, closes, or labels PRs.
+- `GITHUB_TOKEN` stays in the main process; never crosses the contextBridge.
+
+### Setup
+
+```
+npm install   # picks up @octokit/rest
+GITHUB_TOKEN=ghp_…    # repo read + write:discussion scope
+GITHUB_REPO=owner/repo  # optional default repo
+```
