@@ -1,0 +1,119 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Build and Release — builds OpenUI for macOS + Windows and publishes the
+# installers to a GitHub Release whenever a version tag (v*) is pushed.
+#
+#   git tag v0.1.0
+#   git push origin v0.1.0
+#
+# OPTIONAL GitHub Secrets (Settings → Secrets and variables → Actions):
+#   These are only needed if you want the packaged build to ship with the
+#   Stripe price IDs inlined into the renderer bundle. They are NOT secret
+#   (public SKU-like values) but are kept in Actions secrets for convenience.
+#   If unset, the v0.1.0 UI shell still builds fine — pricing buttons just
+#   resolve to undefined price IDs at runtime.
+#     VITE_STRIPE_PRO_PRICE_ID
+#     VITE_STRIPE_ENTERPRISE_PRICE_ID
+#
+#   Do NOT add real Anthropic/OpenAI/Supabase service-role/Stripe SECRET keys
+#   here — those are runtime-only and live in the user's local .env or the
+#   Supabase Edge Function secrets, never in the shipped binary.
+#
+#   GITHUB_TOKEN is provided automatically by Actions — no setup required.
+# ─────────────────────────────────────────────────────────────────────────────
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  release:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build the app
+        run: npm run build
+        env:
+          VITE_STRIPE_PRO_PRICE_ID: ${{ secrets.VITE_STRIPE_PRO_PRICE_ID }}
+          VITE_STRIPE_ENTERPRISE_PRICE_ID: ${{ secrets.VITE_STRIPE_ENTERPRISE_PRICE_ID }}
+
+      - name: Build macOS DMG
+        if: matrix.os == 'macos-latest'
+        run: npm run build:mac
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VITE_STRIPE_PRO_PRICE_ID: ${{ secrets.VITE_STRIPE_PRO_PRICE_ID }}
+          VITE_STRIPE_ENTERPRISE_PRICE_ID: ${{ secrets.VITE_STRIPE_ENTERPRISE_PRICE_ID }}
+
+      - name: Build Windows EXE
+        if: matrix.os == 'windows-latest'
+        run: npm run build:win
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VITE_STRIPE_PRO_PRICE_ID: ${{ secrets.VITE_STRIPE_PRO_PRICE_ID }}
+          VITE_STRIPE_ENTERPRISE_PRICE_ID: ${{ secrets.VITE_STRIPE_ENTERPRISE_PRICE_ID }}
+
+      - name: Upload macOS artifacts
+        if: matrix.os == 'macos-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-build
+          path: dist/*.dmg
+
+      - name: Upload Windows artifacts
+        if: matrix.os == 'windows-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-build
+          path: dist/*.exe
+
+  publish:
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download macOS artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: macos-build
+          path: ./artifacts/mac
+
+      - name: Download Windows artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-build
+          path: ./artifacts/win
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ./artifacts/mac/*.dmg
+            ./artifacts/win/*.exe
+          generate_release_notes: true
+          draft: false
+          prerelease: ${{ contains(github.ref, 'alpha') || contains(github.ref, 'beta') }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
