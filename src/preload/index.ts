@@ -248,7 +248,49 @@ const api = {
     ipcRenderer.invoke('openui:get-conversations'),
 
   loadConversation: (id: string): Promise<Array<{ role: string; content: string; created_at: number }>> =>
-    ipcRenderer.invoke('openui:load-conversation', id)
+    ipcRenderer.invoke('openui:load-conversation', id),
+
+  // ── Auto-update (electron-updater) ──────────────────────────────────────────
+  // Invokers are no-ops in dev (autoUpdater only runs packaged); the on* event
+  // streams stay silent there too. Driven by the UpdateBanner component.
+  getAppVersion: (): Promise<string> => ipcRenderer.invoke('openui:get-app-version'),
+  checkForUpdates: (): Promise<{ currentVersion: string }> =>
+    ipcRenderer.invoke('openui:check-for-updates'),
+  downloadUpdate: (): Promise<void> => ipcRenderer.invoke('openui:download-update'),
+  installUpdateAndRestart: (): Promise<void> => ipcRenderer.invoke('openui:install-update-restart'),
+  openReleasesPage: (): Promise<void> => ipcRenderer.invoke('openui:open-releases-page'),
+
+  onUpdateAvailable: (cb: (info: { version: string; canAutoUpdate: boolean }) => void): (() => void) => {
+    const fn = wrap<{ version: string; canAutoUpdate: boolean }>(cb)
+    ipcRenderer.on('openui:update-available', fn)
+    return (): void => { ipcRenderer.removeListener('openui:update-available', fn) }
+  },
+
+  onUpdateNotAvailable: (cb: (info: { version: string }) => void): (() => void) => {
+    const fn = wrap<{ version: string }>(cb)
+    ipcRenderer.on('openui:update-not-available', fn)
+    return (): void => { ipcRenderer.removeListener('openui:update-not-available', fn) }
+  },
+
+  onUpdateDownloadProgress: (
+    cb: (p: { percent: number; bytesPerSecond: number; transferred: number; total: number }) => void
+  ): (() => void) => {
+    const fn = wrap<{ percent: number; bytesPerSecond: number; transferred: number; total: number }>(cb)
+    ipcRenderer.on('openui:update-download-progress', fn)
+    return (): void => { ipcRenderer.removeListener('openui:update-download-progress', fn) }
+  },
+
+  onUpdateDownloaded: (cb: (info: { version: string }) => void): (() => void) => {
+    const fn = wrap<{ version: string }>(cb)
+    ipcRenderer.on('openui:update-downloaded', fn)
+    return (): void => { ipcRenderer.removeListener('openui:update-downloaded', fn) }
+  },
+
+  onUpdateError: (cb: (e: { message: string }) => void): (() => void) => {
+    const fn = wrap<{ message: string }>(cb)
+    ipcRenderer.on('openui:update-error', fn)
+    return (): void => { ipcRenderer.removeListener('openui:update-error', fn) }
+  }
 }
 
 export type OpenUIApi = typeof api

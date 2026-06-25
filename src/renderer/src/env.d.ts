@@ -25,6 +25,21 @@ export interface ConversationSummary {
   created_at: number
 }
 
+/** Emitted when a newer version is found on the update feed. */
+export interface UpdateAvailablePayload {
+  version: string
+  /** false on unsigned macOS — the UI offers a browser download instead. */
+  canAutoUpdate: boolean
+}
+
+/** Per-chunk progress while an update downloads. */
+export interface UpdateProgressPayload {
+  percent: number
+  bytesPerSecond: number
+  transferred: number
+  total: number
+}
+
 export interface ToolCallPayload {
   tool: string
   args: Record<string, unknown>
@@ -153,6 +168,17 @@ export interface OpenUIApi {
   // Conversation history.
   getConversations: () => Promise<ConversationSummary[]>
   loadConversation: (id: string) => Promise<Array<{ role: string; content: string; created_at: number }>>
+  // Auto-update (electron-updater). No-ops in dev; events stay silent there.
+  getAppVersion: () => Promise<string>
+  checkForUpdates: () => Promise<{ currentVersion: string }>
+  downloadUpdate: () => Promise<void>
+  installUpdateAndRestart: () => Promise<void>
+  openReleasesPage: () => Promise<void>
+  onUpdateAvailable: (cb: (info: UpdateAvailablePayload) => void) => () => void
+  onUpdateNotAvailable: (cb: (info: { version: string }) => void) => () => void
+  onUpdateDownloadProgress: (cb: (p: UpdateProgressPayload) => void) => () => void
+  onUpdateDownloaded: (cb: (info: { version: string }) => void) => () => void
+  onUpdateError: (cb: (e: { message: string }) => void) => () => void
 }
 
 declare global {
