@@ -1,0 +1,20 @@
+# Runs on every pull request into main to make sure the build isn't broken.
+# Type-checks and builds the app shell on Linux (fast, no packaging step).
+name: PR Check
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run build

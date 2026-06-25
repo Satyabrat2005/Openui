@@ -39,12 +39,12 @@
     ],
     "mac": {
       "category": "public.app-category.productivity",
+      "identity": null,
       "target": [
         {
           "target": "dmg",
           "arch": [
-            "arm64",
-            "x64"
+            "universal"
           ]
         }
       ],
@@ -57,7 +57,8 @@
       ]
     },
     "dmg": {
-      "title": "${productName} ${version}"
+      "title": "${productName} ${version}",
+      "artifactName": "${productName}.${ext}"
     },
     "win": {
       "target": [
@@ -73,7 +74,8 @@
       "allowToChangeInstallationDirectory": true,
       "installerIcon": "resources/icon.ico",
       "uninstallerIcon": "resources/icon.ico",
-      "shortcutName": "OpenUI"
+      "shortcutName": "OpenUI",
+      "artifactName": "${productName}.Setup.${ext}"
     }
   },
   "dependencies": {
