@@ -25,6 +25,21 @@ export interface ConversationSummary {
   created_at: number
 }
 
+/** Emitted when a newer version is found on the update feed. */
+export interface UpdateAvailablePayload {
+  version: string
+  /** false on unsigned macOS — the UI offers a browser download instead. */
+  canAutoUpdate: boolean
+}
+
+/** Per-chunk progress while an update downloads. */
+export interface UpdateProgressPayload {
+  percent: number
+  bytesPerSecond: number
+  transferred: number
+  total: number
+}
+
 export interface ToolCallPayload {
   tool: string
   args: Record<string, unknown>
@@ -91,6 +106,11 @@ export interface AuthUser {
   tier: string
 }
 
+/** Result of a `joinWaitlist` call. */
+export type WaitlistResult =
+  | { ok: true; alreadySubscribed?: boolean }
+  | { ok: false; error: string }
+
 export interface OpenUIApi {
   // Window
   hide: () => void
@@ -131,6 +151,8 @@ export interface OpenUIApi {
   logout: () => Promise<void>
   getUser: () => Promise<AuthUser | null>
   getTier: () => Promise<string>
+  // Pro-tier waitlist (Mailchimp proxy via Edge Function).
+  joinWaitlist: (email: string) => Promise<WaitlistResult>
   onAuthSuccess: (cb: (user: AuthUser) => void) => () => void
   onAuthError: (cb: (error: { message: string }) => void) => () => void
   onAuthLogout: (cb: () => void) => () => void
@@ -149,6 +171,17 @@ export interface OpenUIApi {
   // Telemetry.
   setTelemetryOptOut: (optOut: boolean) => Promise<void>
   getTelemetryStatus: () => Promise<boolean>
+  // Auto-update (electron-updater). No-ops in dev; events stay silent there.
+  getAppVersion: () => Promise<string>
+  checkForUpdates: () => Promise<{ currentVersion: string }>
+  downloadUpdate: () => Promise<void>
+  installUpdateAndRestart: () => Promise<void>
+  openReleasesPage: () => Promise<void>
+  onUpdateAvailable: (cb: (info: UpdateAvailablePayload) => void) => () => void
+  onUpdateNotAvailable: (cb: (info: { version: string }) => void) => () => void
+  onUpdateDownloadProgress: (cb: (p: UpdateProgressPayload) => void) => () => void
+  onUpdateDownloaded: (cb: (info: { version: string }) => void) => () => void
+  onUpdateError: (cb: (e: { message: string }) => void) => () => void
 }
 
 declare global {

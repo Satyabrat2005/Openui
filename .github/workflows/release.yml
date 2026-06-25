@@ -1,9 +1,19 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # Build and Release — builds OpenUI for macOS + Windows and publishes the
-# installers to a GitHub Release whenever a version tag (v*) is pushed.
+# installers AND the electron-updater feed metadata to a GitHub Release
+# whenever a version tag (v*) is pushed.
 #
 #   git tag v0.1.0
 #   git push origin v0.1.0
+#
+# AUTO-UPDATE NOTE: electron-updater discovers new versions by reading the
+# channel files that electron-builder generates next to the installers:
+#   • macOS  → latest-mac.yml
+#   • Windows → latest.yml
+# and applies differential (delta) Windows updates from the *.blockmap files.
+# These MUST be uploaded to the Release alongside the .dmg/.exe — without them
+# the app has no feed to poll and auto-update silently does nothing. The globs
+# below upload all three (installer + .yml + .blockmap) for each platform.
 #
 # OPTIONAL GitHub Secrets (Settings → Secrets and variables → Actions):
 #   These are only needed if you want the packaged build to ship with the
@@ -53,14 +63,6 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Build the app
-        run: npm run build
-        env:
-          VITE_STRIPE_PRO_PRICE_ID: ${{ secrets.VITE_STRIPE_PRO_PRICE_ID }}
-          VITE_STRIPE_ENTERPRISE_PRICE_ID: ${{ secrets.VITE_STRIPE_ENTERPRISE_PRICE_ID }}
-          POSTHOG_API_KEY: ${{ secrets.POSTHOG_API_KEY }}
-          POSTHOG_HOST: ${{ secrets.POSTHOG_HOST }}
-
       - name: Build macOS DMG
         if: matrix.os == 'macos-latest'
         run: npm run build:mac
@@ -81,19 +83,31 @@ jobs:
           POSTHOG_API_KEY: ${{ secrets.POSTHOG_API_KEY }}
           POSTHOG_HOST: ${{ secrets.POSTHOG_HOST }}
 
+      # Upload the installer, the electron-updater channel file (latest-mac.yml)
+      # and the differential-update blockmaps so the publish job can attach them.
       - name: Upload macOS artifacts
         if: matrix.os == 'macos-latest'
         uses: actions/upload-artifact@v4
         with:
           name: macos-build
-          path: dist/*.dmg
+          path: |
+            dist/*.dmg
+            dist/*.yml
+            dist/*.blockmap
+          if-no-files-found: warn
 
+      # Upload the installer, the channel file (latest.yml) and the *.exe
+      # blockmaps that drive Windows delta updates.
       - name: Upload Windows artifacts
         if: matrix.os == 'windows-latest'
         uses: actions/upload-artifact@v4
         with:
           name: windows-build
-          path: dist/*.exe
+          path: |
+            dist/*.exe
+            dist/*.yml
+            dist/*.blockmap
+          if-no-files-found: warn
 
   publish:
     needs: release
@@ -117,12 +131,19 @@ jobs:
           name: windows-build
           path: ./artifacts/win
 
+      # Attach EVERY file (installers + .yml feeds + .blockmap deltas) to the
+      # Release. The .yml files are what electron-updater polls; omitting them
+      # breaks auto-update entirely.
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
             ./artifacts/mac/*.dmg
+            ./artifacts/mac/*.yml
+            ./artifacts/mac/*.blockmap
             ./artifacts/win/*.exe
+            ./artifacts/win/*.yml
+            ./artifacts/win/*.blockmap
           generate_release_notes: true
           draft: false
           prerelease: ${{ contains(github.ref, 'alpha') || contains(github.ref, 'beta') }}

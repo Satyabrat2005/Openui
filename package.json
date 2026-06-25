@@ -18,6 +18,11 @@
   "build": {
     "appId": "com.openui.app",
     "productName": "OpenUI",
+    "publish": {
+      "provider": "github",
+      "owner": "Satyabrat2005",
+      "repo": "Openui"
+    },
     "directories": {
       "output": "dist"
     },
@@ -52,6 +57,13 @@
           "target": "dmg",
           "arch": [
             "universal"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "arm64",
+            "x64"
           ]
         }
       ],
@@ -104,6 +116,7 @@
     "@supabase/supabase-js": "^2.108.2",
     "@types/better-sqlite3": "^7.6.13",
     "better-sqlite3": "^12.11.1",
+    "electron-updater": "^6.8.9",
     "gsap": "^3.12.5",
     "node-osascript": "^2.1.0",
     "ollama": "^0.5.0",

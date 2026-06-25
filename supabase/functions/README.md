@@ -16,6 +16,7 @@ are intentionally **excluded** from the Electron TypeScript build
 | `customer-portal`    | App (checkout.ts)    | Return a Stripe Billing Portal URL (manage/cancel/invoices).       |
 | `check-subscription` | App (subscriptionSync) | Return live `{ tier, status, currentPeriodEnd, customerId }`.    |
 | `stripe-webhook`     | **Stripe**           | On subscription events, write `app_metadata.tier` (authoritative). |
+| `waitlist`           | Website + App        | Proxy a waitlist email to Mailchimp (keeps the API key server-side). |
 
 ## Secrets
 
@@ -28,6 +29,12 @@ supabase secrets set \
   STRIPE_PRO_PRICE_ID=price_... \
   STRIPE_ENTERPRISE_PRICE_ID=price_...
 # SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are provided to functions automatically.
+
+# Waitlist (Mailchimp) — required by the `waitlist` function:
+supabase secrets set \
+  MAILCHIMP_API_KEY=xxxxxxxx-us1 \
+  MAILCHIMP_SERVER_PREFIX=us1 \
+  MAILCHIMP_LIST_ID=xxxxxxxxxx
 ```
 
 ## Deploy
@@ -39,6 +46,9 @@ supabase functions deploy check-subscription
 # Stripe calls the webhook directly, so JWT verification must be disabled —
 # the Stripe signature authenticates the request instead.
 supabase functions deploy stripe-webhook --no-verify-jwt
+# The waitlist form is anonymous (no Supabase session), so JWT verification is off —
+# the function only proxies an email to Mailchimp.
+supabase functions deploy waitlist --no-verify-jwt
 ```
 
 Then register the webhook endpoint in the Stripe dashboard
