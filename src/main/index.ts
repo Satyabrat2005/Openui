@@ -16,6 +16,14 @@ import { initTelemetry, enableTelemetryAfterConsent, shutdownTelemetry, setTelem
 import { grantConsent, denyConsent, getConsentStatus, recordPendingEvent, ConsentStatus } from './telemetry/consent'
 import { initUpdater, checkForUpdates, downloadUpdate, installUpdateAndRestart, openReleasesPage } from './updater/updater'
 import { Events } from './telemetry/events'
+import {
+  isOllamaInstalled,
+  isOllamaRunning,
+  startOllama,
+  pullModel,
+  getOllamaInstallUrl,
+  dismissOllamaPrompt
+} from './local/ollamaManager'
 
 let tray: Tray | null = null
 let win: BrowserWindow | null = null
@@ -331,6 +339,39 @@ app.whenReady().then(async () => {
     if (typeof key === 'string') database.settings.setSetting(key, value)
   })
 
+  // ── Local AI / Ollama IPC ───────────────────────────────────────────────────
+  // Returns current Ollama installation and running state.
+  ipcMain.handle('openui:check-ollama', async () => {
+    const [installed, running] = await Promise.all([isOllamaInstalled(), isOllamaRunning()])
+    return { installed, running }
+  })
+
+  // Opens the official Ollama download page in the OS default browser.
+  // We deliberately never auto-install — the user must opt in.
+  ipcMain.handle('openui:install-ollama', () => {
+    void shell.openExternal(getOllamaInstallUrl())
+  })
+
+  // Attempts to start a locally-installed Ollama daemon (ollama serve).
+  ipcMain.handle('openui:start-ollama', () => startOllama())
+
+  // Records a dismiss action in settings; permanently=true suppresses future prompts.
+  ipcMain.handle('openui:dismiss-ollama-prompt', (_event, payload: unknown) => {
+    const permanent =
+      typeof payload === 'object' && payload !== null && 'permanent' in payload
+        ? Boolean((payload as Record<string, unknown>).permanent)
+        : false
+    return dismissOllamaPrompt(permanent)
+  })
+
+  // Pulls a named model via `ollama pull <modelName>`.
+  ipcMain.handle('openui:pull-model', (_event, payload: unknown) => {
+    const modelName =
+      typeof payload === 'object' && payload !== null && 'modelName' in payload
+        ? String((payload as Record<string, unknown>).modelName)
+        : 'llama3:8b'
+    return pullModel(modelName)
+  })
 
   if (win) {
     registerAgentIPC(win)
