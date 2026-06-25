@@ -250,6 +250,13 @@ const api = {
   loadConversation: (id: string): Promise<Array<{ role: string; content: string; created_at: number }>> =>
     ipcRenderer.invoke('openui:load-conversation', id),
 
+  // ── Telemetry ────────────────────────────────────────────────────────────────
+  setTelemetryOptOut: (optOut: boolean): Promise<void> =>
+    ipcRenderer.invoke('openui:set-telemetry-opt-out', optOut),
+
+  getTelemetryStatus: (): Promise<boolean> =>
+    ipcRenderer.invoke('openui:get-telemetry-status'),
+
   // ── Auto-update (electron-updater) ──────────────────────────────────────────
   // Invokers are no-ops in dev (autoUpdater only runs packaged); the on* event
   // streams stay silent there too. Driven by the UpdateBanner component.

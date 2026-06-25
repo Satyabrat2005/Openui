@@ -12,6 +12,7 @@ import { initDatabase } from './database'
 import { registerDeepLinkProtocol, setupDeepLinkHandlers } from './auth/deeplink'
 import { openAuthWindow, isAuthWebContents, isAuthWindowOpen } from './auth/authWindow'
 import { logout, getCurrentUser, getUserTier, startTokenRefreshLoop, stopTokenRefreshLoop } from './auth/sessionManager'
+import { initTelemetry, shutdownTelemetry, setTelemetryOptOut, isTelemetryActive } from './telemetry/posthog'
 import { initUpdater, checkForUpdates, downloadUpdate, installUpdateAndRestart, openReleasesPage } from './updater/updater'
 
 let tray: Tray | null = null
@@ -229,8 +230,9 @@ function createTray(): void {
 // Windows) exits immediately and hands its argv to the primary instance.
 registerDeepLinkProtocol()
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   initDatabase()
+  await initTelemetry()
 
   // True menu-bar app: no Dock icon on macOS.
   if (process.platform === 'darwin') app.dock?.hide()
@@ -274,6 +276,12 @@ app.whenReady().then(() => {
   // Cached subscription tier ('free' when unknown/expired).
   ipcMain.handle('openui:get-tier', () => getUserTier())
 
+  // ── Telemetry IPC ────────────────────────────────────────────────────────────
+  ipcMain.handle('openui:set-telemetry-opt-out', (_event, optOut: unknown) => {
+    setTelemetryOptOut(optOut === true)
+  })
+  ipcMain.handle('openui:get-telemetry-status', () => isTelemetryActive())
+
   // Pro-tier waitlist: post an email to the Mailchimp-proxy Edge Function.
   registerWaitlistIPC()
 
@@ -314,9 +322,10 @@ app.on('window-all-closed', () => {
   // Intentionally do not quit — the tray icon keeps OpenUI running.
 })
 
-// Gracefully close the Playwright browser (if open) before the process exits.
+// Gracefully close the Playwright browser (if open) and flush PostHog before the process exits.
 app.on('before-quit', () => {
   closeBrowser().catch(() => {})
+  shutdownTelemetry()
 })
 
 // Release auth resources on shutdown: stop the proactive token-refresh timer.

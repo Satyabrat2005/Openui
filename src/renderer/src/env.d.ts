@@ -168,6 +168,9 @@ export interface OpenUIApi {
   // Conversation history.
   getConversations: () => Promise<ConversationSummary[]>
   loadConversation: (id: string) => Promise<Array<{ role: string; content: string; created_at: number }>>
+  // Telemetry.
+  setTelemetryOptOut: (optOut: boolean) => Promise<void>
+  getTelemetryStatus: () => Promise<boolean>
   // Auto-update (electron-updater). No-ops in dev; events stay silent there.
   getAppVersion: () => Promise<string>
   checkForUpdates: () => Promise<{ currentVersion: string }>
