@@ -1,0 +1,17 @@
+{
+  "servers": [
+    {
+      "_comment": "Example stdio server — remove the leading underscore from 'command' to enable.",
+      "name": "example-stdio",
+      "type": "stdio",
+      "_command": "node",
+      "_args": ["path/to/mcp-server.js"]
+    },
+    {
+      "_comment": "Example SSE server — remove the leading underscore from 'url' to enable.",
+      "name": "example-sse",
+      "type": "sse",
+      "_url": "http://localhost:3000/sse"
+    }
+  ]
+}

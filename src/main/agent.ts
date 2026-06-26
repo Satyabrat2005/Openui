@@ -3,6 +3,7 @@ import OpenAI from 'openai'
 import { Ollama } from 'ollama'
 import { BrowserWindow, ipcMain } from 'electron'
 import { toolSchemas, executeTool, describeToolCall, type ToolSchema, type ToolResult, type Tier } from './tools'
+import { getMcpToolSchemas, callMcpTool } from './mcp-client'
 import { database } from './database'
 import { clampTierToEntitlement } from './stripe/pricing'
 import { getCurrentUserId } from './stripe/subscriptionSync'
@@ -56,7 +57,9 @@ function renderSchema(schema: ToolSchema): string {
   return `- ${schema.name}(${params}) — ${schema.description}`
 }
 
-const SYSTEM_PROMPT = `You are OpenUI, an intelligent desktop assistant running as a menu-bar app. You help users get things done on their computer through natural conversation.
+function buildSystemPrompt(): string {
+  const allSchemas: ToolSchema[] = [...toolSchemas, ...getMcpToolSchemas()]
+  return `You are OpenUI, an intelligent desktop assistant running as a menu-bar app. You help users get things done on their computer through natural conversation.
 
 You can control the operating system by calling tools. To call a tool, respond with ONLY a valid JSON object and nothing else:
 {"tool": "tool_name", "args": {"key": "value"}}
@@ -64,7 +67,7 @@ You can control the operating system by calling tools. To call a tool, respond w
 After each tool runs you will receive a message starting with "TOOL RESULT" describing what happened. Use it to decide the next step. Chain as many tool calls as the task needs — one per message. When the task is complete, reply to the user in plain natural language (never wrap your final answer in JSON).
 
 Available tools:
-${toolSchemas.map(renderSchema).join('\n')}
+${allSchemas.map(renderSchema).join('\n')}
 
 Browser automation workflow — use this for ALL web-based tasks (booking flights, scraping websites, filling web forms, reading prices, searching the web). Playwright targets elements directly by CSS selector: faster, more reliable, and more precise than pixel-coordinate clicking:
 1. Call browser_navigate(url) — opens the URL in a visible Chromium window the user can watch.
@@ -93,6 +96,7 @@ Figma design workflow — use this when the user mentions "Figma", asks for a de
 2. Call export_figma_frames(file_key, node_ids?) to export frames as PNGs and analyse them with Claude Vision. Prefer the most important screens (main view, key flows).
 3. Call create_figma_comment(file_key, message, node_id?) to post AI-generated feedback directly on the Figma file, anchored to specific frames.
 If the user needs to interact with the Figma web UI directly (inspect prototypes, view comments), call browser_navigate("https://www.figma.com/file/{file_key}") to open it in the Playwright browser.`
+}
 
 /**
  * A strict, focused system prompt used when the user triggers the PR review
@@ -336,7 +340,7 @@ export async function callModel(
   win: BrowserWindow,
   tier: Tier,
   messages: Message[],
-  systemPrompt: string = SYSTEM_PROMPT
+  systemPrompt: string = buildSystemPrompt()
 ): Promise<string> {
   const ollamaUp = await isOllamaRunning()
 
@@ -447,7 +451,7 @@ export async function handleChat(win: BrowserWindow, userMessage: string, tier: 
     ? PR_REVIEW_SYSTEM_PROMPT
     : isDesigner
       ? DESIGNER_SYSTEM_PROMPT
-      : SYSTEM_PROMPT
+      : buildSystemPrompt()
 
   // PR review needs more turns: list + diff×N + comment×N.
   // Designer needs more turns: get_file + export×N (with Vision calls) + comment×N.
@@ -506,8 +510,11 @@ export async function handleChat(win: BrowserWindow, userMessage: string, tier: 
         detail: 'OpenUI is working…'
       } satisfies TaskUpdate)
 
-      // Execute in Node and report the outcome to the task list.
-      const result = await executeTool(toolCall.tool, toolCall.args, { tier: effectiveTier })
+      // Execute in Node — fall back to MCP if the tool is unknown to built-ins.
+      let result = await executeTool(toolCall.tool, toolCall.args, { tier: effectiveTier })
+      if (!result.ok && result.error?.startsWith('Unknown tool')) {
+        result = await callMcpTool(toolCall.tool, toolCall.args)
+      }
 
       // If a tool detected a missing OS permission, notify the renderer so it
       // can show a modal guiding the user to System Settings.
