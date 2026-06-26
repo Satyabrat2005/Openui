@@ -2,12 +2,13 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import AssistantPopup from './components/AssistantPopup'
 import TaskListPopup from './components/TaskListPopup'
 import PermissionModal from './components/PermissionModal'
+import HitlModal from './components/HitlModal'
 import OnboardingWizard from './components/onboarding/OnboardingWizard'
 import ConsentModal from './components/ConsentModal'
 import { useAssistantAnimations } from './hooks/useAssistantAnimations'
 import { useOnboarding } from './hooks/useOnboarding'
 import { AuthProvider } from './context/AuthContext'
-import type { PermissionTarget } from './env'
+import type { PermissionTarget, HitlRequestPayload } from './env'
 
 /** Brief splash shown while the persisted onboarding flag is read. */
 function LoadingScreen(): JSX.Element {
@@ -27,6 +28,7 @@ function AppShell(): JSX.Element {
 
   const [permissionNeeded, setPermissionNeeded] = useState<PermissionTarget | null>(null)
   const [consentNeeded, setConsentNeeded] = useState(false)
+  const [hitlRequest, setHitlRequest] = useState<HitlRequestPayload | null>(null)
 
   const { isComplete, isLoading, completeOnboarding } = useOnboarding()
   // The first message typed in onboarding, replayed once the chat mounts.
@@ -39,6 +41,12 @@ function AppShell(): JSX.Element {
   useEffect(() => {
     return window.openui.onPermissionDenied((permission) => {
       setPermissionNeeded(permission as PermissionTarget)
+    })
+  }, [])
+
+  useEffect(() => {
+    return window.openui.onHitlRequest((payload) => {
+      setHitlRequest(payload)
     })
   }, [])
 
@@ -107,6 +115,19 @@ function AppShell(): JSX.Element {
         </>
       )}
       {consentNeeded && <ConsentModal onClose={() => setConsentNeeded(false)} />}
+      {hitlRequest && (
+        <HitlModal
+          request={hitlRequest}
+          onAllow={() => {
+            window.openui.respondHitl(hitlRequest.id, true)
+            setHitlRequest(null)
+          }}
+          onDeny={() => {
+            window.openui.respondHitl(hitlRequest.id, false)
+            setHitlRequest(null)
+          }}
+        />
+      )}
     </div>
   )
 }

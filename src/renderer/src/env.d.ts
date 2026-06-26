@@ -73,6 +73,15 @@ export interface TaskUpdatePayload {
   detail?: string
 }
 
+/** Payload emitted when the agent loop needs user approval before running a tool. */
+export interface HitlRequestPayload {
+  id: string
+  tool: string
+  args: Record<string, unknown>
+  /** Human-readable label from describeToolCall, e.g. "Open Safari" */
+  label: string
+}
+
 /** Where the autonomous agent pulls its tasks from. */
 export type TaskSource = 'todo' | 'github'
 
@@ -206,6 +215,9 @@ export interface OpenUIApi {
   // App settings (key/value persisted in SQLite).
   getSetting: (key: string) => Promise<unknown>
   setSetting: (key: string, value: unknown) => Promise<void>
+  // HITL (Human-in-the-Loop) confirmation.
+  onHitlRequest: (cb: (payload: HitlRequestPayload) => void) => () => void
+  respondHitl: (id: string, approved: boolean) => void
 }
 
 declare global {

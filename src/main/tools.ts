@@ -77,6 +77,33 @@ export type Tier = 'free' | 'pro' | 'enterprise'
 /** Runtime context injected by the agent loop into every tool execution. */
 export interface ExecutorContext {
   tier: Tier
+  /** Set to true after the user has approved a pending HITL request, bypassing the gate. */
+  bypassHitl?: boolean
+}
+
+/**
+ * Tools that mutate OS or machine state. executeTool returns a
+ * PendingApprovalResult for these unless bypassHitl is set in the context.
+ */
+export const STATE_CHANGING_TOOLS = new Set<string>([
+  'left_click',
+  'type_text',
+  'open_app',
+  'move_mouse',
+  'browser_navigate',
+  'browser_click',
+  'browser_fill_input',
+  'control_calendar',
+])
+
+/**
+ * Returned by executeTool when a state-changing tool needs user approval.
+ * The agent loop pauses and emits openui:hitl:request to the renderer.
+ */
+export interface PendingApprovalResult {
+  status: 'pending_approval'
+  tool: string
+  args: Record<string, unknown>
 }
 
 /**
@@ -1067,12 +1094,20 @@ function validateArgs(schema: ToolSchema, args: Record<string, unknown>): string
  * Execute a tool by name. Never throws — any failure (unknown tool, bad args,
  * platform/package error) is returned as `{ ok: false, error }` so the agent
  * loop can feed the failure back to the model and keep reasoning.
+ *
+ * State-changing tools return PendingApprovalResult unless context.bypassHitl
+ * is true (set by the agent loop after the user clicks Allow in HitlModal).
  */
 export async function executeTool(
   name: string,
   args: Record<string, unknown>,
   context: ExecutorContext = { tier: 'free' }
-): Promise<ToolResult> {
+): Promise<ToolResult | PendingApprovalResult> {
+  // Gate: require explicit user approval for any state-changing tool.
+  if (STATE_CHANGING_TOOLS.has(name) && !context.bypassHitl) {
+    return { status: 'pending_approval', tool: name, args }
+  }
+
   const schema = toolSchemas.find((s) => s.name === name)
   const fn = registry[name]
   if (!schema || !fn) return { ok: false, error: `Unknown tool "${name}".` }
