@@ -1,0 +1,489 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OpenUI WebSocket Test Client</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: #f5f5f5;
+            padding: 20px;
+            line-height: 1.5;
+        }
+
+        .container {
+            max-width: 1000px;
+            margin: 0 auto;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+        }
+
+        .panel {
+            background: white;
+            border-radius: 8px;
+            padding: 20px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+
+        h2 {
+            margin-bottom: 15px;
+            color: #333;
+            font-size: 18px;
+        }
+
+        .form-group {
+            margin-bottom: 15px;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 5px;
+            color: #555;
+            font-size: 14px;
+            font-weight: 500;
+        }
+
+        input, textarea, select {
+            width: 100%;
+            padding: 8px 12px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-family: monospace;
+            font-size: 13px;
+        }
+
+        input:focus, textarea:focus, select:focus {
+            outline: none;
+            border-color: #4CAF50;
+            box-shadow: 0 0 3px rgba(76, 175, 80, 0.3);
+        }
+
+        textarea {
+            resize: vertical;
+            min-height: 80px;
+            font-family: "Monaco", "Menlo", monospace;
+        }
+
+        .button-group {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 15px;
+        }
+
+        button {
+            flex: 1;
+            padding: 8px 16px;
+            background: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 500;
+            transition: background 0.2s;
+        }
+
+        button:hover {
+            background: #45a049;
+        }
+
+        button:active {
+            background: #3d8b40;
+        }
+
+        button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+
+        .status {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 10px;
+            border-radius: 4px;
+            margin-bottom: 15px;
+            font-size: 14px;
+        }
+
+        .status.connected {
+            background: #e8f5e9;
+            color: #2e7d32;
+            border-left: 3px solid #4CAF50;
+        }
+
+        .status.disconnected {
+            background: #ffebee;
+            color: #c62828;
+            border-left: 3px solid #f44336;
+        }
+
+        .status.pending {
+            background: #fff3e0;
+            color: #e65100;
+            border-left: 3px solid #ff9800;
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: currentColor;
+            animation: pulse 1s infinite;
+        }
+
+        .status.disconnected .status-dot {
+            animation: none;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        .messages {
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            padding: 12px;
+            height: 400px;
+            overflow-y: auto;
+            background: #fafafa;
+            font-size: 13px;
+            font-family: "Monaco", "Menlo", monospace;
+        }
+
+        .message {
+            margin-bottom: 10px;
+            padding: 8px;
+            background: white;
+            border-left: 3px solid #4CAF50;
+            border-radius: 2px;
+        }
+
+        .message.error {
+            border-left-color: #f44336;
+            background: #ffebee;
+        }
+
+        .message.sent {
+            border-left-color: #2196F3;
+            background: #e3f2fd;
+        }
+
+        .message.system {
+            border-left-color: #9C27B0;
+            background: #f3e5f5;
+        }
+
+        .message-time {
+            font-size: 11px;
+            color: #999;
+            margin-bottom: 4px;
+        }
+
+        .message-type {
+            font-weight: 600;
+            color: #2196F3;
+            margin-bottom: 2px;
+        }
+
+        .message-content {
+            color: #333;
+            word-break: break-word;
+        }
+
+        .clear-btn {
+            background: #757575;
+            width: 100%;
+            margin-top: 10px;
+        }
+
+        .clear-btn:hover {
+            background: #616161;
+        }
+
+        @media (max-width: 768px) {
+            .container {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- Control Panel -->
+        <div class="panel">
+            <h2>Connection Controls</h2>
+
+            <div id="status" class="status disconnected">
+                <span class="status-dot"></span>
+                <span id="status-text">Not connected</span>
+            </div>
+
+            <div class="form-group">
+                <label for="token">Bearer Token</label>
+                <input type="password" id="token" placeholder="sk-..." value="test-token">
+            </div>
+
+            <div class="form-group">
+                <label for="user-id">User ID</label>
+                <input type="text" id="user-id" placeholder="user123" value="user123">
+            </div>
+
+            <div class="form-group">
+                <label for="ws-url">WebSocket URL</label>
+                <input type="text" id="ws-url" placeholder="ws://localhost:8000/ws"
+                       value="ws://localhost:8000/ws">
+            </div>
+
+            <div class="button-group">
+                <button id="connect-btn" onclick="connectWebSocket()">Connect</button>
+                <button id="disconnect-btn" onclick="disconnectWebSocket()" disabled>Disconnect</button>
+            </div>
+
+            <hr style="margin: 20px 0; border: none; border-top: 1px solid #eee;">
+
+            <h2>Send Query</h2>
+
+            <div class="form-group">
+                <label for="conversation-id">Conversation ID</label>
+                <input type="text" id="conversation-id" placeholder="auto-generated"
+                       value="">
+            </div>
+
+            <div class="form-group">
+                <label for="message">User Message</label>
+                <textarea id="message" placeholder="Fix this code: ...">Fix this code: def foo(x): return x + </textarea>
+            </div>
+
+            <div class="form-group">
+                <label for="model">Model (optional)</label>
+                <input type="text" id="model" placeholder="llama3:70b or use tier default">
+            </div>
+
+            <div class="button-group">
+                <button id="send-btn" onclick="sendQuery()" disabled>Send Query</button>
+                <button id="resume-btn" onclick="resumeTask()" disabled style="background: #FF9800;">Resume Task</button>
+            </div>
+        </div>
+
+        <!-- Messages Panel -->
+        <div class="panel">
+            <h2>Messages</h2>
+            <div id="messages" class="messages"></div>
+            <button class="clear-btn" onclick="clearMessages()">Clear</button>
+        </div>
+    </div>
+
+    <script>
+        let ws = null;
+        let isConnected = false;
+
+        function setStatus(connected, message) {
+            isConnected = connected;
+            const statusEl = document.getElementById('status');
+            const textEl = document.getElementById('status-text');
+            const connectBtn = document.getElementById('connect-btn');
+            const disconnectBtn = document.getElementById('disconnect-btn');
+            const sendBtn = document.getElementById('send-btn');
+            const resumeBtn = document.getElementById('resume-btn');
+
+            textEl.textContent = message;
+
+            if (connected) {
+                statusEl.className = 'status connected';
+                connectBtn.disabled = true;
+                disconnectBtn.disabled = false;
+                sendBtn.disabled = false;
+                resumeBtn.disabled = false;
+            } else {
+                statusEl.className = 'status disconnected';
+                connectBtn.disabled = false;
+                disconnectBtn.disabled = true;
+                sendBtn.disabled = true;
+                resumeBtn.disabled = true;
+            }
+        }
+
+        function addMessage(type, content, isError = false) {
+            const messagesEl = document.getElementById('messages');
+            const now = new Date().toLocaleTimeString();
+
+            const div = document.createElement('div');
+            div.className = 'message' + (isError ? ' error' : '') +
+                           (type === 'sent' ? ' sent' : '') +
+                           (type === 'system' ? ' system' : '');
+
+            let html = `<div class="message-time">${now}</div>`;
+            if (type) {
+                html += `<div class="message-type">${type}</div>`;
+            }
+            html += `<div class="message-content">${escapeHtml(content)}</div>`;
+
+            div.innerHTML = html;
+            messagesEl.appendChild(div);
+            messagesEl.scrollTop = messagesEl.scrollHeight;
+        }
+
+        function escapeHtml(text) {
+            const map = {
+                '&': '&amp;',
+                '<': '&lt;',
+                '>': '&gt;',
+                '"': '&quot;',
+                "'": '&#039;'
+            };
+            return text.replace(/[&<>"']/g, m => map[m]);
+        }
+
+        function clearMessages() {
+            document.getElementById('messages').innerHTML = '';
+        }
+
+        function connectWebSocket() {
+            const token = document.getElementById('token').value;
+            const userId = document.getElementById('user-id').value;
+            const wsUrl = document.getElementById('ws-url').value;
+
+            if (!token || !userId || !wsUrl) {
+                alert('Please fill in all connection fields');
+                return;
+            }
+
+            const url = `${wsUrl}/${userId}`;
+
+            addMessage('system', `Connecting to ${url}...`);
+            setStatus(false, 'Connecting...');
+
+            ws = new WebSocket(url);
+
+            // Note: Standard WebSocket API doesn't support custom headers in the browser
+            // In production, pass token via URL or use a subprotocol
+            // For testing, the server should accept unsigned connections or use a different auth method
+
+            ws.addEventListener('open', () => {
+                addMessage('system', 'Connected! ✓');
+                setStatus(true, 'Connected');
+
+                // Restore conversation ID if empty
+                if (!document.getElementById('conversation-id').value) {
+                    document.getElementById('conversation-id').value =
+                        'conv-' + Date.now();
+                }
+            });
+
+            ws.addEventListener('message', (event) => {
+                const msg = JSON.parse(event.data);
+
+                if (msg.type === 'ping') {
+                    // Respond to heartbeat
+                    ws.send(JSON.stringify({ type: 'pong' }));
+                    return;
+                }
+
+                if (msg.type === 'chunk') {
+                    addMessage('chunk', msg.delta);
+                } else if (msg.type === 'done') {
+                    const latency = msg.latency_ms ? ` (${msg.latency_ms}ms)` : '';
+                    addMessage('done', `Completed using ${msg.model}${latency}`, false);
+                } else if (msg.type === 'error') {
+                    addMessage('error', msg.message, true);
+                } else if (msg.type === 'resume_state') {
+                    addMessage('system', 'Recovered task state: ' +
+                              JSON.stringify(msg.state).substring(0, 100));
+                } else {
+                    addMessage('message', JSON.stringify(msg));
+                }
+            });
+
+            ws.addEventListener('error', (event) => {
+                addMessage('error', `WebSocket error: ${event}`, true);
+                setStatus(false, 'Error');
+            });
+
+            ws.addEventListener('close', (event) => {
+                let reason = event.reason || 'Unknown reason';
+                if (event.code === 1000) {
+                    reason = 'Normal close';
+                } else if (event.code === 1008) {
+                    reason = 'Policy violation (possibly auth error)';
+                }
+                addMessage('system', `Disconnected (${event.code}): ${reason}`);
+                setStatus(false, 'Disconnected');
+            });
+        }
+
+        function disconnectWebSocket() {
+            if (ws) {
+                ws.close();
+                ws = null;
+            }
+        }
+
+        function sendQuery() {
+            if (!ws || ws.readyState !== WebSocket.OPEN) {
+                addMessage('error', 'WebSocket not connected', true);
+                return;
+            }
+
+            const message = document.getElementById('message').value;
+            const conversationId = document.getElementById('conversation-id').value;
+            const model = document.getElementById('model').value;
+
+            if (!message.trim()) {
+                alert('Please enter a message');
+                return;
+            }
+
+            const query = {
+                type: 'query',
+                conversation_id: conversationId || 'conv-' + Date.now(),
+                messages: [
+                    { role: 'user', content: message }
+                ]
+            };
+
+            if (model) {
+                query.model = model;
+            }
+
+            ws.send(JSON.stringify(query));
+            addMessage('sent', message);
+            document.getElementById('message').value = '';
+        }
+
+        function resumeTask() {
+            if (!ws || ws.readyState !== WebSocket.OPEN) {
+                addMessage('error', 'WebSocket not connected', true);
+                return;
+            }
+
+            const conversationId = document.getElementById('conversation-id').value;
+
+            ws.send(JSON.stringify({
+                type: 'resume',
+                conversation_id: conversationId || 'conv-' + Date.now()
+            }));
+
+            addMessage('sent', 'Resume request sent');
+        }
+
+        // Allow Enter to send
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' && e.ctrlKey) {
+                sendQuery();
+            }
+        });
+
+        addMessage('system', 'Ready. Configure connection and click Connect.');
+    </script>
+</body>
+</html>
