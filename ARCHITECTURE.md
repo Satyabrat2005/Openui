@@ -16,6 +16,7 @@
 | **Sub-Phase 4** | Telemetry & privacy — PostHog analytics (4A core, 4B event instrumentation), opt-in privacy consent layer with `ConsentModal` + Settings toggle (4C) | **Complete** |
 | **Phase 10** | GitHub PR review — `github.ts` tool module (`list_open_prs`, `get_pr_diff`, `post_pr_comment` via `@octokit/rest`), `PR_REVIEW_RE` trigger in `agent.ts`, strict `PR_REVIEW_SYSTEM_PROMPT`, forced Claude Sonnet (pro tier), 32-turn budget for multi-PR sessions | **Complete** |
 | **Onboarding Phase A** | Cloud-first routing — every tier works with no local setup via the `chat-proxy` Edge Function (our keys, server-side), per-tier daily limits (`usage_tracking`), Ollama demoted to optional cost-saver/offline fallback, live usage counter, no more "Ollama required" errors | **Complete** |
+| **MCP Integration** | Model Context Protocol client (`mcp-client.ts`) — connects to external stdio/SSE tool servers, merges their tool schemas into the agent loop, IPC handler `openui:mcp:connect`, config via `mcp-config.json` | **Complete** |
 
 ---
 

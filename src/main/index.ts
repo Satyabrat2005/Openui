@@ -8,6 +8,7 @@ import { openSettingsPane, type PermissionTarget } from './permissions'
 import { registerStripeIPC, isPaymentFlowWebContents } from './stripe/checkout'
 import { registerWaitlistIPC } from './waitlist'
 import { closeBrowser } from './tools'
+import { connectMcpServer, disconnectAll, type McpServerConfig } from './mcp-client'
 import { initDatabase, database } from './database'
 import { registerDeepLinkProtocol, setupDeepLinkHandlers } from './auth/deeplink'
 import { openAuthWindow, isAuthWebContents, isAuthWindowOpen } from './auth/authWindow'
@@ -392,7 +393,12 @@ app.whenReady().then(async () => {
   })
 })
 
+ipcMain.handle('openui:mcp:connect', async (_event, config: unknown) => {
+  return connectMcpServer(config as McpServerConfig)
+})
+
 app.on('before-quit', () => {
+  disconnectAll()
   trackEvent(Events.APP_CLOSED)
   shutdownTelemetry()
 })
