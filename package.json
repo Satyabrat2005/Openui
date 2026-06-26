@@ -111,6 +111,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.40.0",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "@nut-tree-fork/nut-js": "^4.2.0",
     "@octokit/rest": "^20.0.0",
     "@supabase/supabase-js": "^2.108.2",
