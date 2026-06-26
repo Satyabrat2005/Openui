@@ -20,6 +20,8 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from connections import ConnectionManager
+
 # ---------------------------------------------------------------------------
 # Settings
 # ---------------------------------------------------------------------------
@@ -73,6 +75,7 @@ logger = logging.getLogger("openui.server")
 
 class _AppState:
     redis: Optional[aioredis.Redis] = None
+    connection_manager: Optional[ConnectionManager] = None
 
 
 _state = _AppState()
@@ -93,6 +96,10 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         logger.warning("Redis unavailable: %s", exc, extra={"request_id": "startup"})
         _state.redis = None
+
+    # Initialize connection manager with optional Redis for state persistence
+    _state.connection_manager = ConnectionManager(redis_client=_state.redis)
+    logger.info("Connection manager initialized", extra={"request_id": "startup"})
 
     yield  # server is live
 
@@ -132,34 +139,6 @@ async def _request_id_middleware(request: Request, call_next):
     response.headers["X-Request-ID"] = request_id
     return response
 
-# ---------------------------------------------------------------------------
-# WebSocket connection manager
-# ---------------------------------------------------------------------------
-
-class _ConnectionManager:
-    def __init__(self) -> None:
-        self._active: dict[str, WebSocket] = {}
-
-    async def connect(self, user_id: str, ws: WebSocket) -> None:
-        await ws.accept()
-        self._active[user_id] = ws
-        logger.info("WS connected: %s", user_id, extra={"request_id": user_id})
-
-    def disconnect(self, user_id: str) -> None:
-        self._active.pop(user_id, None)
-        logger.info("WS disconnected: %s", user_id, extra={"request_id": user_id})
-
-    async def send(self, user_id: str, data: dict) -> None:
-        ws = self._active.get(user_id)
-        if ws:
-            await ws.send_json(data)
-
-    @property
-    def connected_count(self) -> int:
-        return len(self._active)
-
-
-_manager = _ConnectionManager()
 
 # ---------------------------------------------------------------------------
 # Request / response models
@@ -209,7 +188,8 @@ async def health(request: Request):
         "version": settings.version,
         "ollama_connected": ollama_ok,
         "redis_connected": redis_ok,
-        "ws_connections": _manager.connected_count,
+        "ws_users": _state.connection_manager.connected_users_count(),
+        "ws_connections": _state.connection_manager.total_connections_count(),
     }
 
 
@@ -232,32 +212,44 @@ async def chat(body: ChatRequest, request: Request):
 
 @app.websocket("/ws/{user_id}")
 async def ws_endpoint(websocket: WebSocket, user_id: str):
-    """Persistent WebSocket connection — one per Electron client."""
-    await _manager.connect(user_id, websocket)
+    """Persistent WebSocket connection — supports multiple tabs/devices per user."""
+    manager = _state.connection_manager
+    await manager.connect(user_id, websocket)
+
     try:
         while True:
             data = await websocket.receive_json()
-            message = data.get("message", "")
-            session_id = data.get("session_id") or str(uuid.uuid4())
+            msg_type = data.get("type", "message")
+            conversation_id = data.get("conversation_id", str(uuid.uuid4()))
 
+            # Handle heartbeat pong
+            if msg_type == "pong":
+                logger.debug("Pong received: user=%s", user_id)
+                continue
+
+            # Handle regular messages
+            message = data.get("message", "")
             logger.info(
-                "WS msg user=%s: %s", user_id, message[:120],
-                extra={"request_id": session_id},
+                "WS msg user=%s conv=%s: %s", user_id, conversation_id, message[:120],
+                extra={"request_id": conversation_id},
             )
+
+            # Mark conversation as active for resumption tracking
+            await manager.mark_conversation_active(user_id, conversation_id)
 
             # TODO Task 2: route through SessionManager → TaskRouter → Agent,
             # streaming partial tokens back via manager.send(user_id, {...})
-            await _manager.send(user_id, {
+            await manager.send(user_id, {
                 "type": "reply",
-                "session_id": session_id,
+                "conversation_id": conversation_id,
                 "content": f"[echo] {message}",
             })
 
     except WebSocketDisconnect:
-        _manager.disconnect(user_id)
+        await manager.disconnect(user_id, websocket)
     except Exception as exc:
         logger.error(
             "WS error user=%s: %s", user_id, exc,
             extra={"request_id": user_id},
         )
-        _manager.disconnect(user_id)
+        await manager.disconnect(user_id, websocket)
