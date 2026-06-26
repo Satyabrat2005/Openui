@@ -1810,8 +1810,12 @@
   <div class="dl-btn-row">
 
     <!-- macOS -->
+    <!-- Static href points at the releases page (safe default that never 404s):
+         the published DMGs are per-arch (OpenUI-arm64.dmg / OpenUI-x64.dmg),
+         so there is no single "OpenUI.dmg". The JS below upgrades this to a
+         direct, architecture-matched download once the latest release loads. -->
     <a id="dl-mac" class="dl-btn primary"
-       href="https://github.com/Satyabrat2005/Openui/releases/latest/download/OpenUI.dmg"
+       href="https://github.com/Satyabrat2005/Openui/releases/latest"
        aria-label="Download OpenUI for Mac (checking latest version)">
       <span class="dl-btn-icon" aria-hidden="true">
         <!-- Apple logo -->
@@ -1954,6 +1958,44 @@
       setComingSoon(winBtn, winSub, winMain, "Windows");
     }
 
+    /* Best-effort Apple Silicon vs Intel detection via the WebGL renderer
+       string. Returns "arm64", "x64", or null when it can't tell. We only
+       act on a confident answer; otherwise the visitor chooses on the
+       releases page, so a wrong guess never serves the wrong build. */
+    function detectMacArch() {
+      try {
+        var canvas = document.createElement("canvas");
+        var gl = canvas.getContext("webgl") ||
+                 canvas.getContext("experimental-webgl");
+        if (!gl) return null;
+        var dbg = gl.getExtension("WEBGL_debug_renderer_info");
+        if (!dbg) return null;
+        var renderer = String(
+          gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) || ""
+        );
+        if (/apple/i.test(renderer)) return "arm64";
+        if (/intel|amd|radeon|nvidia|geforce/i.test(renderer)) return "x64";
+      } catch (e) {}
+      return null;
+    }
+
+    /* Choose the best macOS download URL from the release's .dmg assets.
+       One DMG → link straight to it. Multiple per-arch DMGs → match the
+       visitor's chip when we can, else fall back to the releases page so
+       they can pick. Returns null when no .dmg is published. */
+    function pickMacHref(macAssets, release) {
+      if (!macAssets.length) return null;
+      if (macAssets.length === 1) return macAssets[0].browser_download_url;
+      var arch = detectMacArch();
+      if (arch) {
+        var match = macAssets.filter(function (a) {
+          return new RegExp(arch, "i").test(a.name);
+        })[0];
+        if (match) return match.browser_download_url;
+      }
+      return release.html_url || (RELEASES + "/latest");
+    }
+
     /* ── 3. Fetch the latest release from the GitHub API ── */
     fetch(API_LATEST, { headers: { Accept: "application/vnd.github+json" } })
       .then(function (r) {
@@ -1966,8 +2008,14 @@
           version = "v" + version;
         }
         var assets = release.assets || [];
-        var macAsset = assets.filter(function (a) { return /\.dmg$/i.test(a.name); })[0];
+        var macAssets = assets.filter(function (a) { return /\.dmg$/i.test(a.name); });
+        var macAsset = macAssets[0];
         var winAsset = assets.filter(function (a) { return /\.exe$/i.test(a.name); })[0];
+
+        // Point the Mac button at the right .dmg (or the releases page) so it
+        // never falls back to the non-existent OpenUI.dmg static URL.
+        macBtn.setAttribute("href",
+          pickMacHref(macAssets, release) || release.html_url || (RELEASES + "/latest"));
 
         // Per-platform: a missing asset means that build isn't published yet.
         if (macAsset || version) {
