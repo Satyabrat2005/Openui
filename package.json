@@ -56,7 +56,8 @@
         {
           "target": "dmg",
           "arch": [
-            "universal"
+            "arm64",
+            "x64"
           ]
         },
         {
@@ -79,7 +80,7 @@
     },
     "dmg": {
       "title": "${productName} ${version}",
-      "artifactName": "${productName}.${ext}"
+      "artifactName": "${productName}-${arch}.${ext}"
     },
     "win": {
       "target": [
@@ -119,7 +120,6 @@
     "better-sqlite3": "^12.11.1",
     "electron-updater": "^6.8.9",
     "gsap": "^3.12.5",
-    "hnswlib-node": "^3.0.0",
     "node-osascript": "^2.1.0",
     "ollama": "^0.5.0",
     "openai": "^4.0.0",
@@ -129,6 +129,9 @@
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "tesseract.js": "^5.1.0"
+  },
+  "optionalDependencies": {
+    "hnswlib-node": "^3.0.0"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
