@@ -1,253 +1,254 @@
 """
-CodeAgent — Coding-specialized agent that routes to Ollama with WebSocket streaming.
+CodeAgent — Coding-specialized agent that routes to Ollama.
 
-Usage:
-    agent = CodeAgent(router, tier="free")
-    for event in agent.stream(messages):
-        ws.send(json.dumps(event))
+Streams responses token-by-token over a WebSocket channel.
+Falls back to claude-haiku-4-5-20251001 when Ollama is unreachable.
 
-Event protocol:
-    {"type": "chunk",  "delta": "<token>"}
-    {"type": "done",   "model": "<name>", "latency_ms": <n>}
-    {"type": "error",  "message": "<msg>"}   # error notified, then cloud fallback begins
+WebSocket message protocol:
+  chunk:  { "type": "chunk", "delta": "..." }
+  done:   { "type": "done", "model": "<name>", "latency_ms": N }
+  error:  { "type": "error", "message": "..." }
 """
 
 import os
+import sys
 import time
-from typing import List, Dict, Optional, Generator, Any
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Union
 
-from openai import OpenAI, APIConnectionError, APIError, APITimeoutError
+from openai import AsyncOpenAI, APIConnectionError, APIError, APITimeoutError
+import anthropic
 
+# Allow imports from project root (core/)
+_PROJECT_ROOT = str(Path(__file__).resolve().parents[2])
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
+
+from core.config import Config
 from core.router import ModelRouter
-from server.tiers import TierId
 
+
+# ---------------------------------------------------------------------------
+# Tier identifiers — intentionally mirroring server/tiers.py TierId values
+# so callers may pass either the TierId enum or bare strings.
+# ---------------------------------------------------------------------------
+TIER_FREE = "free"
+TIER_PRO = "pro"
+TIER_ENTERPRISE = "enterprise"
+
+# Type alias: accepts TierId enum instances or plain tier strings
+TierLike = Union[str, Any]
 
 CODE_SYSTEM_PROMPT = (
-    "You are a coding assistant integrated into OpenUI, an AI desktop agent.\n\n"
-    "Guidelines:\n"
-    "- Write clean, readable, well-structured code\n"
-    "- Explain your changes clearly and concisely\n"
-    "- Follow the existing patterns and conventions in the codebase\n"
-    "- Add a comment only where the intent is non-obvious\n"
-    "- Prefer idiomatic solutions over clever ones\n"
-    "- When modifying existing code, preserve the surrounding style\n"
-    "- Point out potential bugs or edge cases in code under review\n"
-    "- Suggest tests when introducing new functionality"
+    "You are a coding assistant integrated into OpenUI. "
+    "Write clean, idiomatic, well-structured code. "
+    "Explain each change and why it is needed. "
+    "Follow patterns and conventions already present in the codebase. "
+    "Add comments only for non-obvious logic, edge cases, or important invariants — "
+    "never describe what the code obviously does. "
+    "Prefer small, focused changes over large rewrites. "
+    "Always handle errors and edge cases. "
+    "When debugging, identify the root cause before suggesting a fix."
 )
 
-# Ollama models available per subscription tier (ordered best-first)
-TIER_MODELS: Dict[TierId, List[str]] = {
-    TierId.FREE:       ["llama3:8b", "codellama:7b"],
-    TierId.PRO:        ["llama3:70b", "codellama:34b"],
-    TierId.ENTERPRISE: ["llama3:70b", "codellama:34b"],  # + any user-configured endpoint
+# First model in each list is the tier default
+_TIER_MODELS: Dict[str, List[str]] = {
+    TIER_FREE:       ["llama3:8b", "codellama:7b"],
+    TIER_PRO:        ["llama3:70b", "codellama:34b"],
+    TIER_ENTERPRISE: ["llama3:70b", "codellama:34b"],
 }
 
-FALLBACK_MODEL = "claude-haiku-4-5-20251001"
+_FALLBACK_MODEL = "claude-haiku-4-5-20251001"
+_OLLAMA_BASE_URL = "http://localhost:11434/v1"
 
 
 class CodeAgent:
     """
-    Coding-specialized agent that streams Ollama responses over a WebSocket channel.
+    Coding-specialized agent backed by Ollama with Anthropic cloud fallback.
 
-    Wraps ModelRouter to reuse its OpenAI client and config.  Adds:
-    - Token-by-token streaming
-    - Tier-based Ollama model selection
-    - Graceful cloud fallback (claude-haiku-4-5-20251001) when Ollama is offline
+    Tier-based model selection:
+      free:       llama3:8b  /  codellama:7b
+      pro:        llama3:70b /  codellama:34b
+      enterprise: same + any model on a user-configured endpoint
+
+    Usage::
+
+        agent = CodeAgent(tier="free")
+        await agent.stream(messages, websocket)
+
+        # or with a TierId enum from server.tiers:
+        from server.tiers import TierId
+        agent = CodeAgent(tier=TierId.PRO)
     """
 
     def __init__(
         self,
-        router: ModelRouter,
-        tier: str = TierId.FREE,
-        model_override: Optional[str] = None,
-        custom_ollama_url: Optional[str] = None,
-    ):
+        tier: TierLike,
+        model: Optional[str] = None,
+        custom_endpoint: Optional[str] = None,
+    ) -> None:
         """
         Args:
-            router: Existing ModelRouter — its config and client are reused.
-            tier: Subscription tier string ("free" | "pro" | "enterprise").
-            model_override: Force a specific Ollama model, bypassing tier defaults.
-            custom_ollama_url: Enterprise custom Ollama endpoint (e.g. http://gpu-box:11434/v1).
+            tier: Subscription tier — "free" / "pro" / "enterprise" or a TierId enum.
+            model: Override the default model; must be in the tier's allowed list
+                   (Enterprise accepts any model when custom_endpoint is provided).
+            custom_endpoint: Custom Ollama-compatible base URL (Enterprise only).
         """
-        self.router = router
-        self.tier = TierId(tier) if isinstance(tier, str) else tier
+        # Normalise enum or string to a plain string key
+        self.tier: str = str(tier.value if hasattr(tier, "value") else tier).lower()
 
-        # Determine which Ollama model to use
-        if model_override:
-            self.model = model_override
+        allowed = _TIER_MODELS.get(self.tier, _TIER_MODELS[TIER_FREE])
+        if model and model in allowed:
+            self.model = model
+        elif model and self.tier == TIER_ENTERPRISE and custom_endpoint:
+            # Enterprise with a custom endpoint may run any user-configured model
+            self.model = model
         else:
-            self.model = TIER_MODELS.get(self.tier, TIER_MODELS[TierId.FREE])[0]
+            self.model = allowed[0]
 
-        # Reuse router's OpenAI client; swap base_url for Enterprise custom endpoints
-        if custom_ollama_url:
-            self._ollama_client = OpenAI(
-                base_url=custom_ollama_url,
-                api_key=router.config.model_api_key,
-                timeout=router.config.model_timeout,
-            )
-        else:
-            self._ollama_client = router.client  # shared, no extra cost
+        base_url = custom_endpoint or _OLLAMA_BASE_URL
 
-        self._anthropic_client: Optional[Any] = None  # lazy-initialized on first fallback
+        # Build a Config pointing at Ollama (or the custom Enterprise endpoint)
+        cfg = Config()
+        cfg.model_provider = "ollama"
+        cfg.model_base_url = base_url
+        cfg.model_name = self.model
+        cfg.model_api_key = "ollama"
+        cfg.model_timeout = 120
+        cfg.model_temperature = 0.1
+        cfg.model_max_tokens = 4096
+
+        # Reuse ModelRouter for config management and sync operations
+        self.router = ModelRouter(cfg)
+
+        # Separate async client — ModelRouter's sync client cannot stream
+        self._async_client = AsyncOpenAI(
+            base_url=self.router.config.model_base_url,
+            api_key=self.router.config.model_api_key,
+            timeout=float(self.router.config.model_timeout),
+        )
 
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
-    def stream(
-        self,
-        messages: List[Dict],
-        temperature: Optional[float] = None,
-        max_tokens: Optional[int] = None,
-    ) -> Generator[Dict, None, None]:
+    async def stream(self, messages: List[Dict], websocket: Any) -> None:
         """
-        Stream a code completion, yielding WebSocket-ready event dicts.
+        Stream a chat completion over the WebSocket.
+
+        Prepends the coding system prompt, streams from Ollama, and
+        automatically falls back to Anthropic if Ollama is unreachable.
 
         Args:
             messages: Conversation history in OpenAI message format.
-            temperature: Override temperature (defaults to router config).
-            max_tokens: Override max tokens (defaults to router config).
-
-        Yields:
-            {"type": "chunk",  "delta": str}
-            {"type": "done",   "model": str, "latency_ms": float}
-            {"type": "error",  "message": str}
+            websocket: Any object exposing ``async send_json(dict) -> None``.
         """
-        full_messages = self._inject_system_prompt(messages)
-        temp = temperature if temperature is not None else self.router.config.model_temperature
-        tokens = max_tokens or self.router.config.model_max_tokens
+        full_messages = [
+            {"role": "system", "content": CODE_SYSTEM_PROMPT},
+            *messages,
+        ]
 
-        yield from self._ollama_stream(full_messages, temp, tokens)
-
-    def is_model_allowed(self, model: str) -> bool:
-        """Return True if *model* is accessible under the current tier."""
-        if self.tier == TierId.ENTERPRISE:
-            return True
-        return model in TIER_MODELS.get(self.tier, [])
+        start = time.time()
+        try:
+            await self._stream_ollama(full_messages, websocket, start)
+        except (APIConnectionError, APITimeoutError, APIError, OSError) as exc:
+            print(f"[CodeAgent] Ollama unavailable ({type(exc).__name__}): {exc}")
+            await websocket.send_json({
+                "type": "error",
+                "message": "Local AI offline. Falling back to cloud...",
+            })
+            await self._stream_anthropic_fallback(full_messages, websocket)
+        except Exception as exc:
+            # Catch-all: surface Ollama error then fall back so the client isn't left hanging
+            print(f"[CodeAgent] Unexpected streaming error: {exc}")
+            await websocket.send_json({
+                "type": "error",
+                "message": "Local AI offline. Falling back to cloud...",
+            })
+            await self._stream_anthropic_fallback(full_messages, websocket)
 
     def available_models(self) -> List[str]:
-        """Return the list of Ollama models available for the current tier."""
-        if self.tier == TierId.ENTERPRISE:
-            return TIER_MODELS[TierId.ENTERPRISE] + ["<any user-configured endpoint>"]
-        return TIER_MODELS.get(self.tier, TIER_MODELS[TierId.FREE])
+        """Return the Ollama models allowed for this agent's tier."""
+        return list(_TIER_MODELS.get(self.tier, _TIER_MODELS[TIER_FREE]))
 
     # ------------------------------------------------------------------
-    # Internal helpers
+    # Private helpers
     # ------------------------------------------------------------------
 
-    def _inject_system_prompt(self, messages: List[Dict]) -> List[Dict]:
-        """Prepend the coding system prompt unless one already exists."""
-        if messages and messages[0].get("role") == "system":
-            return messages
-        return [{"role": "system", "content": CODE_SYSTEM_PROMPT}] + messages
-
-    def _ollama_stream(
+    async def _stream_ollama(
         self,
         messages: List[Dict],
-        temperature: float,
-        max_tokens: int,
-    ) -> Generator[Dict, None, None]:
-        """Attempt streaming from Ollama; fall back to cloud on connection failure."""
-        start = time.time()
-        emitted_chunks = False
+        websocket: Any,
+        start: float,
+    ) -> None:
+        """Stream tokens from Ollama and emit chunk / done events."""
+        response_stream = await self._async_client.chat.completions.create(
+            model=self.model,
+            messages=messages,
+            temperature=self.router.config.model_temperature,
+            max_tokens=self.router.config.model_max_tokens,
+            stream=True,
+        )
 
-        try:
-            stream = self._ollama_client.chat.completions.create(
-                model=self.model,
-                messages=messages,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                stream=True,
-            )
-            for chunk in stream:
-                if not chunk.choices:
-                    continue
-                delta = chunk.choices[0].delta.content
-                if delta:
-                    emitted_chunks = True
-                    yield {"type": "chunk", "delta": delta}
+        async for chunk in response_stream:
+            delta = chunk.choices[0].delta.content
+            if delta:
+                await websocket.send_json({"type": "chunk", "delta": delta})
 
-            if emitted_chunks:
-                latency = round((time.time() - start) * 1000, 1)
-                yield {"type": "done", "model": self.model, "latency_ms": latency}
-                return
+        latency_ms = round((time.time() - start) * 1000)
+        await websocket.send_json({
+            "type": "done",
+            "model": self.model,
+            "latency_ms": latency_ms,
+        })
 
-            # Stream completed but no tokens — treat as Ollama unavailable
-            raise APIConnectionError(
-                request=None,  # type: ignore[arg-type]
-                message="Ollama returned empty stream",
-            )
+    async def _stream_anthropic_fallback(
+        self,
+        messages: List[Dict],
+        websocket: Any,
+    ) -> None:
+        """Fallback: stream from claude-haiku when Ollama is down."""
+        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+        if not api_key:
+            await websocket.send_json({
+                "type": "error",
+                "message": "Cloud fallback unavailable: ANTHROPIC_API_KEY not set.",
+            })
+            return
 
-        except (APIConnectionError, APITimeoutError):
-            # Ollama unreachable or timed out — cloud fallback
-            pass
-        except APIError as exc:
-            err = str(exc).lower()
-            if any(k in err for k in ("connect", "connection", "refused", "unreachable")):
-                pass  # Ollama down — fall through to cloud
+        # Anthropic separates system text from the conversation history
+        system_parts: List[str] = []
+        user_messages: List[Dict] = []
+        for msg in messages:
+            if msg["role"] == "system":
+                system_parts.append(msg["content"])
             else:
-                yield {"type": "error", "message": str(exc)}
-                return
-        except Exception as exc:
-            if emitted_chunks:
-                # Partial response already sent; surface the error without retrying
-                yield {"type": "error", "message": str(exc)}
-                return
-            # No chunks yet — assume startup failure, fall through
+                user_messages.append(msg)
 
-        yield {
-            "type": "error",
-            "message": "Local AI offline. Falling back to cloud...",
-        }
-        yield from self._anthropic_stream(messages, temperature, max_tokens)
+        system_text = "\n".join(system_parts).strip() or CODE_SYSTEM_PROMPT
 
-    def _anthropic_stream(
-        self,
-        messages: List[Dict],
-        temperature: float,
-        max_tokens: int,
-    ) -> Generator[Dict, None, None]:
-        """Stream from Anthropic claude-haiku-4-5-20251001 as the cloud fallback."""
+        client = anthropic.AsyncAnthropic(api_key=api_key)
         start = time.time()
+
         try:
-            client = self._get_anthropic_client()
-
-            # Separate system message from the conversation
-            system_content = CODE_SYSTEM_PROMPT
-            chat_messages: List[Dict] = []
-            for m in messages:
-                if m["role"] == "system":
-                    system_content = m["content"]
-                else:
-                    chat_messages.append({"role": m["role"], "content": m["content"]})
-
-            with client.messages.stream(
-                model=FALLBACK_MODEL,
-                system=system_content,
-                messages=chat_messages,
-                temperature=temperature,
-                max_tokens=max_tokens,
+            async with client.messages.stream(
+                model=_FALLBACK_MODEL,
+                max_tokens=4096,
+                system=system_text,
+                messages=user_messages,
             ) as stream:
-                for text in stream.text_stream:
-                    yield {"type": "chunk", "delta": text}
+                async for text in stream.text_stream:
+                    await websocket.send_json({"type": "chunk", "delta": text})
 
-            latency = round((time.time() - start) * 1000, 1)
-            yield {"type": "done", "model": FALLBACK_MODEL, "latency_ms": latency}
+            latency_ms = round((time.time() - start) * 1000)
+            await websocket.send_json({
+                "type": "done",
+                "model": _FALLBACK_MODEL,
+                "latency_ms": latency_ms,
+            })
 
         except Exception as exc:
-            yield {"type": "error", "message": f"Cloud fallback failed: {exc}"}
-
-    def _get_anthropic_client(self) -> Any:
-        """Lazy-initialize the Anthropic client (avoids import cost when unused)."""
-        if self._anthropic_client is None:
-            try:
-                import anthropic
-            except ImportError as exc:
-                raise ImportError(
-                    "anthropic package is required for cloud fallback. "
-                    "Install it: pip install anthropic"
-                ) from exc
-            self._anthropic_client = anthropic.Anthropic(
-                api_key=os.environ.get("ANTHROPIC_API_KEY", "")
-            )
-        return self._anthropic_client
+            await websocket.send_json({
+                "type": "error",
+                "message": f"Cloud fallback also failed: {exc}",
+            })
