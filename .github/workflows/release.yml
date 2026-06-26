@@ -73,6 +73,17 @@ jobs:
           POSTHOG_API_KEY: ${{ secrets.POSTHOG_API_KEY }}
           POSTHOG_HOST: ${{ secrets.POSTHOG_HOST }}
 
+      # hnswlib-node (RAG vector index) cannot be rebuilt against Electron's ABI
+      # on the Windows runner (C2666 under the runner's MSVC), and there is no
+      # newer release that fixes it. It is an optionalDependency, so remove it
+      # before packaging — electron-builder then skips it and rag.ts degrades
+      # gracefully (RAG ships on macOS only for now). Without this the whole
+      # Windows installer build fails.
+      - name: Drop hnswlib-node before packaging (Windows — RAG disabled)
+        if: matrix.os == 'windows-latest'
+        shell: bash
+        run: rm -rf node_modules/hnswlib-node
+
       - name: Build Windows EXE
         if: matrix.os == 'windows-latest'
         run: npm run build:win

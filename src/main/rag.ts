@@ -84,11 +84,28 @@ async function embedText(text: string): Promise<number[]> {
 
 // ── HNSWLIB helpers ───────────────────────────────────────────────────────────
 
+/**
+ * Message surfaced when the native vector-index module is missing. The Windows
+ * trial build ships without `hnswlib-node` because it cannot be compiled against
+ * Electron's ABI on the build runner, so RAG is unavailable there.
+ */
+export const RAG_UNAVAILABLE_MSG =
+  'Local knowledge base (RAG) is not available in this build — it currently ships on macOS only.'
+
+/**
+ * Returns the `HierarchicalNSW` constructor, or `null` when `hnswlib-node` is
+ * not present in this build. Callers must degrade gracefully on `null` rather
+ * than crashing the main process.
+ */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function loadHnsw(): any {
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const mod = require('hnswlib-node')
-  return mod.HierarchicalNSW ?? mod.default?.HierarchicalNSW
+function loadHnsw(): any | null {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const mod = require('hnswlib-node')
+    return mod.HierarchicalNSW ?? mod.default?.HierarchicalNSW ?? null
+  } catch {
+    return null
+  }
 }
 
 // ── public API ────────────────────────────────────────────────────────────────
@@ -108,6 +125,11 @@ export interface IndexResult {
  * stale documents are removed automatically.
  */
 export async function indexDirectory(dirPath: string): Promise<IndexResult> {
+  // ── 0. Native vector index available? ──────────────────────────────────────
+  if (!loadHnsw()) {
+    return { indexed: 0, chunks: 0, error: RAG_UNAVAILABLE_MSG }
+  }
+
   // ── 1. Collect supported files ─────────────────────────────────────────────
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let entries: any[]
@@ -178,9 +200,10 @@ export async function indexDirectory(dirPath: string): Promise<IndexResult> {
  * index exists yet (user has not run indexDirectory).
  */
 export async function searchLocalKnowledge(query: string, topK = 5): Promise<SearchResult[]> {
-  if (!existsSync(indexPath()) || !existsSync(metaPath())) return []
-
   const HierarchicalNSW = loadHnsw()
+  // No native module (e.g. Windows build) or no index built yet → no results.
+  if (!HierarchicalNSW || !existsSync(indexPath()) || !existsSync(metaPath())) return []
+
   const index = new HierarchicalNSW('cosine', VECTOR_DIM)
   index.readIndex(indexPath())
 
