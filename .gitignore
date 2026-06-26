@@ -53,3 +53,4 @@ Desktop.ini
 # ── Internal docs (live in OpenUI-Confidential, not this public repo) ──
 /ARCHITECTURE.md
 /SECURITY_AUDIT.md
+server/__pycache__/
