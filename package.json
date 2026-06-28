@@ -1,6 +1,6 @@
 {
     "name":  "openui",
-    "version":  "6.9.0",
+    "version":  "7.0.0",
     "description":  "OpenUI â€” a macOS menu-bar AI assistant (Electron + Vite + React + TypeScript)",
     "main":  "./out/main/index.js",
     "author":  "OpenUI",
