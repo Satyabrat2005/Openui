@@ -506,6 +506,20 @@ npm run build:win    # → dist/OpenUI.Setup.exe (NSIS x64 + ia32)
 npm run build:mac    # → dist/OpenUI.dmg (universal arm64 + x64)
 ```
 
+**Signed releases** require the following GitHub Actions secrets (Settings → Secrets and variables → Actions):
+
+| Secret | Platform | Description |
+|--------|----------|-------------|
+| `CSC_LINK` | macOS | Base64-encoded Developer ID Application `.p12` cert (`base64 -i cert.p12 \| pbcopy`) |
+| `CSC_KEY_PASSWORD` | macOS | Passphrase for the `.p12` |
+| `APPLE_ID` | macOS | Apple ID email used for notarization |
+| `APPLE_APP_SPECIFIC_PASSWORD` | macOS | App-specific password from [appleid.apple.com](https://appleid.apple.com) |
+| `APPLE_TEAM_ID` | macOS | 10-character Team ID from [developer.apple.com/account](https://developer.apple.com/account) |
+| `WIN_CSC_LINK` | Windows | Base64-encoded EV/OV `.pfx` cert |
+| `WIN_CSC_KEY_PASSWORD` | Windows | Passphrase for the `.pfx` |
+
+All signing secrets are optional — if absent, builds succeed but ship unsigned (Gatekeeper / SmartScreen warnings apply).
+
 **Icon generation** runs automatically on `npm install` via `scripts/convert-icon.js` (synthesises a 1024×1024 orb PNG, emits `.ico` and `.icns` — no external tooling required).
 
 **Native modules** (`@nut-tree-fork/nut-js`, `better-sqlite3`) are rebuilt against the target Electron ABI by `electron-builder`'s `npmRebuild: true` setting. On macOS, run `npx electron-rebuild` after install to compile `better-sqlite3` locally.
