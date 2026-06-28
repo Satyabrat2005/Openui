@@ -1,0 +1,700 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OpenUI — Admin</title>
+  <style>
+    :root {
+      --bg:      #0f0f0f;
+      --bg2:     #161616;
+      --bg3:     #1f1f1f;
+      --border:  #282828;
+      --text:    #f0ede6;
+      --muted:   #8a8480;
+      --accent:  #7c6fec;
+      --green:   #3fb06a;
+      --red:     #d95656;
+    }
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 14px;
+      line-height: 1.5;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* ── Header ────────────────────────────────────────────────────────────── */
+    .header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 14px 32px;
+      border-bottom: 1px solid var(--border);
+      position: sticky;
+      top: 0;
+      background: var(--bg);
+      z-index: 20;
+    }
+    .header-left { display: flex; align-items: center; gap: 10px; }
+    .logo {
+      width: 24px; height: 24px;
+      background: var(--accent);
+      border-radius: 6px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 13px; font-weight: 700; color: #fff; flex-shrink: 0;
+    }
+    .header h1 { font-size: 14px; font-weight: 600; letter-spacing: -0.01em; }
+    .header-right { display: flex; align-items: center; gap: 12px; }
+    .ts { font-size: 12px; color: var(--muted); }
+
+    /* ── Buttons ───────────────────────────────────────────────────────────── */
+    .btn {
+      display: inline-flex; align-items: center; gap: 6px;
+      background: var(--bg3); color: var(--text);
+      border: 1px solid var(--border);
+      padding: 5px 13px; border-radius: 6px;
+      font-size: 13px; font-family: inherit; cursor: pointer;
+      transition: background 0.12s, border-color 0.12s;
+      white-space: nowrap;
+    }
+    .btn:hover  { background: #2a2a2a; border-color: #3a3a3a; }
+    .btn:active { background: #333; }
+    .btn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+    /* ── Main ──────────────────────────────────────────────────────────────── */
+    main { padding: 36px 32px; max-width: 1180px; margin: 0 auto; }
+
+    section { margin-bottom: 52px; }
+
+    .sec-header {
+      display: flex; align-items: baseline; gap: 8px;
+      margin-bottom: 16px;
+    }
+    .sec-title {
+      font-size: 11px; font-weight: 600;
+      text-transform: uppercase; letter-spacing: 0.07em;
+      color: var(--muted);
+    }
+    .sec-sub { font-size: 12px; color: var(--muted); }
+
+    /* ── Overview cards ────────────────────────────────────────────────────── */
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 14px;
+    }
+    @media (max-width: 800px) { .cards { grid-template-columns: repeat(2, 1fr); } }
+
+    .card {
+      background: var(--bg2);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 20px 22px 18px;
+    }
+    .card-label { font-size: 12px; color: var(--muted); margin-bottom: 10px; }
+    .card-value {
+      font-size: 34px; font-weight: 700;
+      letter-spacing: -0.04em; line-height: 1;
+      min-height: 34px;
+    }
+    .card-sub { font-size: 12px; color: var(--muted); margin-top: 6px; }
+
+    /* ── Chart ─────────────────────────────────────────────────────────────── */
+    .chart-box {
+      background: var(--bg2);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 20px 20px 12px;
+      overflow: hidden;
+    }
+    .chart-inner { width: 100%; overflow-x: auto; }
+    svg.dau { display: block; width: 100%; min-width: 500px; }
+
+    /* ── Tables ────────────────────────────────────────────────────────────── */
+    .tbl-wrap {
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      overflow: hidden;
+      overflow-x: auto;
+    }
+    table { width: 100%; border-collapse: collapse; }
+    thead th {
+      padding: 9px 16px;
+      text-align: left;
+      font-size: 11px; font-weight: 600;
+      text-transform: uppercase; letter-spacing: 0.06em;
+      color: var(--muted);
+      background: var(--bg2);
+      border-bottom: 1px solid var(--border);
+      white-space: nowrap;
+    }
+    tbody td {
+      padding: 10px 16px;
+      font-size: 13px;
+      border-bottom: 1px solid var(--border);
+      vertical-align: middle;
+    }
+    tbody tr:last-child td { border-bottom: none; }
+    tbody tr:hover td { background: var(--bg2); }
+
+    /* ── Tier badges ───────────────────────────────────────────────────────── */
+    .badge {
+      display: inline-block;
+      padding: 2px 7px; border-radius: 4px;
+      font-size: 11px; font-weight: 600;
+      text-transform: uppercase; letter-spacing: 0.04em;
+    }
+    .badge-free       { background: #202020; color: var(--muted); }
+    .badge-pro        { background: #1c1733; color: #9b8fe8; }
+    .badge-enterprise { background: #122112; color: var(--green); }
+
+    /* ── Placeholder ───────────────────────────────────────────────────────── */
+    .placeholder {
+      background: var(--bg2);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 36px 24px;
+      text-align: center;
+      color: var(--muted);
+    }
+    .placeholder strong {
+      display: block;
+      font-size: 14px; color: var(--text);
+      margin-bottom: 4px;
+    }
+    .placeholder code {
+      font-size: 12px;
+      background: var(--bg3);
+      padding: 1px 6px; border-radius: 3px;
+      color: #a89ee8;
+    }
+
+    /* ── Spinner ───────────────────────────────────────────────────────────── */
+    .spinner {
+      display: inline-block;
+      width: 16px; height: 16px;
+      border: 2px solid var(--border);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin 0.65s linear infinite;
+      vertical-align: middle;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ── Error / empty ─────────────────────────────────────────────────────── */
+    .cell-center {
+      text-align: center; padding: 28px !important;
+      color: var(--muted) !important;
+    }
+    .err { color: var(--red); font-size: 12px; }
+
+    /* ── Email ─────────────────────────────────────────────────────────────── */
+    .email { font-variant-numeric: tabular-nums; }
+    .mono  { font-family: ui-monospace, monospace; font-size: 12px; color: var(--muted); }
+  </style>
+</head>
+<body>
+
+<header class="header">
+  <div class="header-left">
+    <div class="logo">O</div>
+    <h1>OpenUI Admin</h1>
+  </div>
+  <div class="header-right">
+    <span class="ts" id="lastUpdated"></span>
+    <button class="btn" id="refreshBtn" onclick="loadAll()">
+      <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+        <path d="M10.5 6A4.5 4.5 0 1 1 6 1.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+        <path d="M6 1.5L8 3.5M6 1.5L8 0" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+      Refresh
+    </button>
+  </div>
+</header>
+
+<main>
+
+  <!-- Section 1 — Overview ─────────────────────────────────────────────────── -->
+  <section>
+    <div class="sec-header">
+      <span class="sec-title">Overview</span>
+    </div>
+    <div class="cards">
+      <div class="card">
+        <div class="card-label">Total Users</div>
+        <div class="card-value" id="cTotal"><span class="spinner"></span></div>
+      </div>
+      <div class="card">
+        <div class="card-label">Active Today</div>
+        <div class="card-value" id="cToday"><span class="spinner"></span></div>
+        <div class="card-sub" id="cTodaySub"></div>
+      </div>
+      <div class="card">
+        <div class="card-label">Free Tier</div>
+        <div class="card-value" id="cFree"><span class="spinner"></span></div>
+        <div class="card-sub" id="cFreeSub"></div>
+      </div>
+      <div class="card">
+        <div class="card-label">Pro + Enterprise</div>
+        <div class="card-value" id="cPaid"><span class="spinner"></span></div>
+        <div class="card-sub" id="cPaidSub"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Section 3 — DAU chart ───────────────────────────────────────────────── -->
+  <section>
+    <div class="sec-header">
+      <span class="sec-title">Daily Active Users</span>
+      <span class="sec-sub">last 30 days</span>
+    </div>
+    <div class="chart-box">
+      <div class="chart-inner" id="chartArea">
+        <div style="padding:40px;text-align:center"><span class="spinner"></span></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Section 2 — Waitlist ────────────────────────────────────────────────── -->
+  <section>
+    <div class="sec-header">
+      <span class="sec-title">Waitlist</span>
+      <span class="sec-sub" id="waitlistMeta"></span>
+    </div>
+    <div class="tbl-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Email</th>
+            <th>Signed Up</th>
+          </tr>
+        </thead>
+        <tbody id="waitlistBody">
+          <tr><td class="cell-center" colspan="2"><span class="spinner"></span></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- Section 4 — Top commands ────────────────────────────────────────────── -->
+  <section>
+    <div class="sec-header">
+      <span class="sec-title">Top Commands</span>
+    </div>
+    <div class="placeholder">
+      <strong>Connect PostHog for event-level analytics</strong>
+      Set <code>POSTHOG_API_KEY</code> in your Supabase Edge Function secrets to enable command tracking and funnel analysis.
+    </div>
+  </section>
+
+  <!-- Section 5 — Recent signups ──────────────────────────────────────────── -->
+  <section>
+    <div class="sec-header">
+      <span class="sec-title">Recent Signups</span>
+      <span class="sec-sub">last 10</span>
+    </div>
+    <div class="tbl-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Email</th>
+            <th>Signed Up</th>
+            <th>Tier</th>
+            <th>Last Seen</th>
+          </tr>
+        </thead>
+        <tbody id="recentBody">
+          <tr><td class="cell-center" colspan="4"><span class="spinner"></span></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+</main>
+
+<script>
+// ── CONFIG — set these before opening the dashboard ──────────────────────────
+const SUPABASE_URL     = 'YOUR_SUPABASE_URL';       // https://xxxxxxxxxxxx.supabase.co
+const SERVICE_ROLE_KEY = 'YOUR_SERVICE_ROLE_KEY';   // Project Settings → API → service_role
+const ANON_KEY         = 'YOUR_ANON_KEY';           // Project Settings → API → anon (public)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── Shared headers ────────────────────────────────────────────────────────────
+const REST_HEADERS = {
+  'Authorization': `Bearer ${SERVICE_ROLE_KEY}`,
+  'apikey': ANON_KEY,
+  'Content-Type': 'application/json',
+};
+
+const ADMIN_HEADERS = {
+  'Authorization': `Bearer ${SERVICE_ROLE_KEY}`,
+  'apikey': SERVICE_ROLE_KEY,
+};
+
+// ── Utilities ─────────────────────────────────────────────────────────────────
+const todayStr = () => new Date().toISOString().slice(0, 10);
+
+function nDaysAgo(n) {
+  const d = new Date();
+  d.setDate(d.getDate() - n);
+  return d.toISOString().slice(0, 10);
+}
+
+const fmt     = n  => (n == null ? '—' : Number(n).toLocaleString());
+const pct     = (a, b) => b > 0 ? `${Math.round((a / b) * 100)}%` : '0%';
+const escHtml = s  => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+
+function fmtDate(iso) {
+  if (!iso) return '—';
+  return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+function fmtTime(iso) {
+  if (!iso) return '—';
+  return new Date(iso).toLocaleDateString('en-US', {
+    month: 'short', day: 'numeric', year: 'numeric',
+    hour: '2-digit', minute: '2-digit',
+  });
+}
+
+// ── REST helpers ──────────────────────────────────────────────────────────────
+async function restGet(table, params = {}, extraHeaders = {}) {
+  const url = new URL(`${SUPABASE_URL}/rest/v1/${table}`);
+  for (const [k, v] of Object.entries(params)) {
+    url.searchParams.set(k, v);
+  }
+  const res = await fetch(url.toString(), {
+    headers: { ...REST_HEADERS, ...extraHeaders },
+  });
+  if (!res.ok) {
+    const body = await res.text().catch(() => '');
+    throw new Error(`[${table}] ${res.status}: ${body}`);
+  }
+  return res.json();
+}
+
+async function restGetWithTotal(table, params = {}) {
+  const url = new URL(`${SUPABASE_URL}/rest/v1/${table}`);
+  for (const [k, v] of Object.entries(params)) {
+    url.searchParams.set(k, v);
+  }
+  const res = await fetch(url.toString(), {
+    headers: { ...REST_HEADERS, 'Prefer': 'count=exact' },
+  });
+  if (!res.ok) {
+    const body = await res.text().catch(() => '');
+    throw new Error(`[${table}] ${res.status}: ${body}`);
+  }
+  const data  = await res.json();
+  const cr    = res.headers.get('Content-Range') || '';
+  const match = cr.match(/\/(\d+)$/);
+  const total = match ? parseInt(match[1], 10) : data.length;
+  return { data, total };
+}
+
+// ── Admin auth endpoint ───────────────────────────────────────────────────────
+async function adminFetchAllUsers() {
+  let all  = [];
+  let page = 1;
+  const perPage = 1000;
+
+  while (true) {
+    const url = `${SUPABASE_URL}/auth/v1/admin/users?page=${page}&per_page=${perPage}`;
+    const res = await fetch(url, { headers: ADMIN_HEADERS });
+    if (!res.ok) {
+      const body = await res.text().catch(() => '');
+      throw new Error(`[auth/users] ${res.status}: ${body}`);
+    }
+    const json  = await res.json();
+    const users = json.users || [];
+    all = all.concat(users);
+    if (users.length < perPage) break;
+    page++;
+  }
+
+  return all;
+}
+
+// ── Data fetchers ─────────────────────────────────────────────────────────────
+async function fetchActiveToday() {
+  const rows = await restGet('usage_tracking', {
+    select: 'user_id',
+    date: `eq.${todayStr()}`,
+  });
+  return new Set(rows.map(r => r.user_id)).size;
+}
+
+async function fetchDauLast30() {
+  const rows = await restGet('usage_tracking', {
+    select: 'date,user_id',
+    date:   `gte.${nDaysAgo(29)}`,
+    order:  'date.asc',
+  });
+
+  // Group by date → distinct users
+  const byDate = new Map();
+  for (const row of rows) {
+    if (!byDate.has(row.date)) byDate.set(row.date, new Set());
+    byDate.get(row.date).add(row.user_id);
+  }
+
+  const result = [];
+  for (let i = 29; i >= 0; i--) {
+    const d = nDaysAgo(i);
+    result.push({ date: d, count: byDate.has(d) ? byDate.get(d).size : 0 });
+  }
+  return result;
+}
+
+async function fetchWaitlist() {
+  return restGetWithTotal('waitlist', {
+    select: 'email,created_at',
+    order:  'created_at.desc',
+    limit:  '200',
+  });
+}
+
+async function fetchLastSeen(userIds) {
+  if (!userIds.length) return {};
+  const rows = await restGet('usage_tracking', {
+    select:  'user_id,date',
+    user_id: `in.(${userIds.join(',')})`,
+    order:   'date.desc',
+  });
+  const map = {};
+  for (const row of rows) {
+    if (!map[row.user_id] || row.date > map[row.user_id]) {
+      map[row.user_id] = row.date;
+    }
+  }
+  return map;
+}
+
+// ── Renderers ─────────────────────────────────────────────────────────────────
+function renderCards(users, activeToday) {
+  const total      = users.length;
+  const freeCount  = users.filter(u => { const t = u.app_metadata?.tier; return !t || t === 'free'; }).length;
+  const proCount   = users.filter(u => u.app_metadata?.tier === 'pro').length;
+  const entCount   = users.filter(u => u.app_metadata?.tier === 'enterprise').length;
+  const paidCount  = proCount + entCount;
+
+  document.getElementById('cTotal').textContent   = fmt(total);
+
+  document.getElementById('cToday').textContent   = fmt(activeToday);
+  document.getElementById('cTodaySub').textContent = total ? `${pct(activeToday, total)} of users` : '';
+
+  document.getElementById('cFree').textContent    = fmt(freeCount);
+  document.getElementById('cFreeSub').textContent  = total ? pct(freeCount, total) + ' of users' : '';
+
+  document.getElementById('cPaid').textContent    = fmt(paidCount);
+  document.getElementById('cPaidSub').textContent  = `${fmt(proCount)} pro · ${fmt(entCount)} enterprise`;
+}
+
+function renderChart(data) {
+  const el = document.getElementById('chartArea');
+  if (!data.length) {
+    el.innerHTML = '<p style="padding:36px;text-align:center;color:var(--muted)">No usage data</p>';
+    return;
+  }
+
+  const max = Math.max(...data.map(d => d.count), 1);
+
+  const W        = 1100;
+  const H        = 160;
+  const PAD_L    = 34;
+  const PAD_R    = 8;
+  const PAD_T    = 8;
+  const PAD_B    = 28;
+  const CHART_W  = W - PAD_L - PAD_R;
+  const CHART_H  = H - PAD_T - PAD_B;
+
+  const slotW  = CHART_W / data.length;
+  const barW   = Math.max(1, Math.floor(slotW * 0.72));
+
+  let gridLines = '';
+  let bars      = '';
+  let xLabels   = '';
+  let yLabels   = '';
+
+  // Gridlines + y-axis labels (3 levels)
+  const yTicks = [0, Math.ceil(max / 2), max];
+  for (const tick of yTicks) {
+    const y = PAD_T + CHART_H - Math.round((tick / max) * CHART_H);
+    gridLines += `<line x1="${PAD_L}" y1="${y}" x2="${W - PAD_R}" y2="${y}" stroke="#282828" stroke-width="1"/>`;
+    yLabels   += `<text x="${PAD_L - 5}" y="${y + 4}" text-anchor="end" fill="#8a8480" font-size="10">${tick}</text>`;
+  }
+
+  // Bars
+  data.forEach((d, i) => {
+    const cx   = PAD_L + i * slotW + slotW / 2;
+    const x    = cx - barW / 2;
+    const barH = max > 0 ? Math.round((d.count / max) * CHART_H) : 0;
+    const y    = PAD_T + CHART_H - barH;
+
+    // Color: today's bar slightly different
+    const isToday = d.date === todayStr();
+    const fill    = isToday ? '#9b8fe8' : '#7c6fec';
+
+    if (barH > 0) {
+      bars += `<rect x="${x.toFixed(1)}" y="${y}" width="${barW}" height="${barH}" fill="${fill}" rx="2" opacity="0.85"><title>${d.date} — ${d.count} active user${d.count === 1 ? '' : 's'}</title></rect>`;
+    }
+
+    // x-axis date label every 5 ticks, plus first and last
+    if (i % 5 === 0 || i === data.length - 1) {
+      const label = d.date.slice(5); // MM-DD
+      xLabels += `<text x="${cx.toFixed(1)}" y="${H - 6}" text-anchor="middle" fill="#8a8480" font-size="10">${label}</text>`;
+    }
+  });
+
+  el.innerHTML = `
+    <svg class="dau" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" style="height:160px">
+      ${gridLines}
+      ${yLabels}
+      ${bars}
+      ${xLabels}
+    </svg>
+  `;
+}
+
+function renderWaitlist({ data, total }) {
+  document.getElementById('waitlistMeta').textContent = `${fmt(total)} total`;
+
+  const tbody = document.getElementById('waitlistBody');
+  if (!data.length) {
+    tbody.innerHTML = `<tr><td class="cell-center" colspan="2">No waitlist entries</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = data.map(r => `
+    <tr>
+      <td class="email">${escHtml(r.email || '—')}</td>
+      <td class="mono">${fmtDate(r.created_at)}</td>
+    </tr>
+  `).join('');
+}
+
+function renderRecent(users, lastSeen) {
+  const sorted = [...users]
+    .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
+    .slice(0, 10);
+
+  const tbody = document.getElementById('recentBody');
+  if (!sorted.length) {
+    tbody.innerHTML = `<tr><td class="cell-center" colspan="4">No users found</td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = sorted.map(u => {
+    const tier = u.app_metadata?.tier || 'free';
+    const ls   = lastSeen[u.id];
+    return `
+      <tr>
+        <td class="email">${escHtml(u.email || '—')}</td>
+        <td class="mono">${fmtDate(u.created_at)}</td>
+        <td><span class="badge badge-${escHtml(tier)}">${escHtml(tier)}</span></td>
+        <td class="mono">${ls ? fmtDate(ls) : '—'}</td>
+      </tr>
+    `;
+  }).join('');
+}
+
+function showCardError(ids) {
+  for (const id of ids) {
+    const el = document.getElementById(id);
+    if (el) el.innerHTML = '<span class="err">error</span>';
+  }
+}
+
+// ── Reset spinners ─────────────────────────────────────────────────────────────
+function resetSpinners() {
+  const spinner = () => '<span class="spinner"></span>';
+  document.getElementById('cTotal').innerHTML   = spinner();
+  document.getElementById('cToday').innerHTML   = spinner();
+  document.getElementById('cTodaySub').textContent = '';
+  document.getElementById('cFree').innerHTML    = spinner();
+  document.getElementById('cFreeSub').textContent  = '';
+  document.getElementById('cPaid').innerHTML    = spinner();
+  document.getElementById('cPaidSub').textContent  = '';
+  document.getElementById('chartArea').innerHTML = `<div style="padding:40px;text-align:center">${spinner()}</div>`;
+  document.getElementById('waitlistMeta').textContent = '';
+  document.getElementById('waitlistBody').innerHTML = `<tr><td class="cell-center" colspan="2">${spinner()}</td></tr>`;
+  document.getElementById('recentBody').innerHTML  = `<tr><td class="cell-center" colspan="4">${spinner()}</td></tr>`;
+}
+
+// ── Main load ──────────────────────────────────────────────────────────────────
+async function loadAll() {
+  const btn = document.getElementById('refreshBtn');
+  btn.disabled = true;
+
+  resetSpinners();
+
+  // Fire independent fetches in parallel
+  const [usersResult, activeTodayResult, dauResult, waitlistResult] = await Promise.allSettled([
+    adminFetchAllUsers(),
+    fetchActiveToday(),
+    fetchDauLast30(),
+    fetchWaitlist(),
+  ]);
+
+  const users = usersResult.status === 'fulfilled' ? usersResult.value : null;
+
+  // Render overview cards
+  if (users && activeTodayResult.status === 'fulfilled') {
+    renderCards(users, activeTodayResult.value);
+  } else {
+    if (!users) showCardError(['cTotal', 'cFree', 'cPaid']);
+    if (activeTodayResult.status === 'rejected') showCardError(['cToday']);
+    if (users && activeTodayResult.status === 'rejected') renderCards(users, '—');
+  }
+
+  // Render DAU chart
+  if (dauResult.status === 'fulfilled') {
+    renderChart(dauResult.value);
+  } else {
+    document.getElementById('chartArea').innerHTML =
+      '<p style="padding:36px;text-align:center;color:var(--red)">Failed to load chart data</p>';
+    console.error('DAU fetch error:', dauResult.reason);
+  }
+
+  // Render waitlist
+  if (waitlistResult.status === 'fulfilled') {
+    renderWaitlist(waitlistResult.value);
+  } else {
+    document.getElementById('waitlistBody').innerHTML =
+      '<tr><td class="cell-center err" colspan="2">Failed to load waitlist</td></tr>';
+    console.error('Waitlist fetch error:', waitlistResult.reason);
+  }
+
+  // Render recent signups (needs users first, then last-seen lookup)
+  if (users) {
+    const top10 = [...users]
+      .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
+      .slice(0, 10)
+      .map(u => u.id);
+
+    const lastSeen = top10.length
+      ? await fetchLastSeen(top10).catch(e => { console.error('lastSeen', e); return {}; })
+      : {};
+
+    renderRecent(users, lastSeen);
+  } else {
+    document.getElementById('recentBody').innerHTML =
+      '<tr><td class="cell-center err" colspan="4">Failed to load user data</td></tr>';
+    console.error('Users fetch error:', usersResult.reason);
+  }
+
+  document.getElementById('lastUpdated').textContent =
+    'Updated ' + new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+
+  btn.disabled = false;
+}
+
+// Auto-load on open
+loadAll();
+</script>
+</body>
+</html>
