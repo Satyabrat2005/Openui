@@ -5,10 +5,10 @@ interface Props {
   onNext: () => void
 }
 
-const FEATURES: ReadonlyArray<{ emoji: string; label: string }> = [
-  { emoji: '🖥️', label: 'Runs on your device' },
-  { emoji: '🔒', label: 'Your data stays local' },
-  { emoji: '⚡', label: 'Works instantly' }
+const FEATURES: ReadonlyArray<{ label: string }> = [
+  { label: 'Runs on your device' },
+  { label: 'Your data stays local' },
+  { label: 'Works instantly' }
 ]
 
 /**
@@ -41,7 +41,7 @@ export default function WelcomeStep({ onNext }: Props): JSX.Element {
       <div ref={featuresRef} className="ob-feature-card" style={{ marginTop: 26 }}>
         {FEATURES.map((f) => (
           <div key={f.label} className="ob-feature-row">
-            <span className="ob-feature-emoji">{f.emoji}</span>
+            <span className="ob-feature-icon" style={{width:14,height:14,borderRadius:'50%',background:'#a78bfa',display:'inline-block',flexShrink:0}} />
             <span>{f.label}</span>
           </div>
         ))}

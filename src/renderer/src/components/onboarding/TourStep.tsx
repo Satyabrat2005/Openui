@@ -10,7 +10,6 @@ interface Props {
 }
 
 interface Card {
-  emoji: string
   title: string
   example: string
   subtitle: string
@@ -18,19 +17,16 @@ interface Card {
 
 const CARDS: ReadonlyArray<Card> = [
   {
-    emoji: '🖥️',
     title: 'Control your computer',
     example: 'Open Spotify and play my Discover Weekly',
     subtitle: 'Open apps, search files, manage your calendar — all by asking.'
   },
   {
-    emoji: '👁️',
     title: 'See your screen',
     example: 'Click the blue Submit button',
     subtitle: 'OpenUI can see and interact with anything on your screen.'
   },
   {
-    emoji: '✨',
     title: 'Always available',
     example: 'Just click the icon or press a hotkey',
     subtitle: 'Living in your menu bar, always one click away.'
@@ -97,7 +93,7 @@ export default function TourStep({ onNext, onSkip }: Props): JSX.Element {
 
       <div ref={cardRef} className="ob-tour-card">
         <div className="ob-tour-illustration ob-tour-el">
-          <span style={{ fontSize: 46 }}>{card.emoji}</span>
+          <div style={{width:44,height:44,borderRadius:10,background:'rgba(167,139,250,0.15)',margin:'0 auto 12px'}} />
         </div>
         <div className="ob-tour-title ob-tour-el">{card.title}</div>
         <div className="ob-bubble ob-tour-el">{card.example}</div>

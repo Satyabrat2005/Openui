@@ -76,7 +76,6 @@ export default function TierUpgradeModal({ payload, onDismiss }: Props): JSX.Ele
               marginBottom: 12
             }}
           >
-            <span style={{ fontSize: 22 }}>⚡</span>
           </div>
           <div style={{ fontSize: 18, fontWeight: 700, color: '#1c1c1e', letterSpacing: '-0.03em' }}>
             Upgrade your plan
