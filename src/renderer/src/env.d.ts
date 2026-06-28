@@ -210,6 +210,7 @@ export interface OpenUIApi {
   // Conversation history.
   getConversations: () => Promise<ConversationSummary[]>
   loadConversation: (id: string) => Promise<Array<{ role: string; content: string; created_at: number }>>
+  resumeConversation: (id: string) => Promise<Array<{ role: string; content: string | null; created_at: number }>>
   // Telemetry.
   setTelemetryOptOut: (optOut: boolean) => Promise<void>
   getTelemetryStatus: () => Promise<boolean>
@@ -247,7 +248,6 @@ export interface OpenUIApi {
   dismissOllamaPrompt: (permanent: boolean) => Promise<void>
   pullModel: (modelName: string) => Promise<boolean>
   onLocalAIAvailable: (cb: () => void) => () => void
-  onOllamaSuggestion: (cb: (payload: { message: string }) => void) => () => void
   // Action Recorder / Macros.
   recorderStart: () => Promise<void>
   recorderStop: () => Promise<RecorderAction[]>

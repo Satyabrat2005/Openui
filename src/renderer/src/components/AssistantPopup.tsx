@@ -12,6 +12,9 @@ import SettingsModal from './SettingsModal'
 import { useUpdater } from '../hooks/useUpdater'
 import OllamaSuggestion from './OllamaSuggestion'
 import LocalAIStatus from './LocalAIStatus'
+import ConversationList from './ConversationList'
+
+type HistoryMsg = { role: string; content: string | null; created_at: number }
 
 type VoiceState = 'idle' | 'recording' | 'transcribing' | 'processing' | 'done'
 
@@ -46,6 +49,9 @@ export default function AssistantPopup({
   const initialSentRef = useRef(false)
   const [showSettings, setShowSettings] = useState(false)
   const [showLocalAIToast, setShowLocalAIToast] = useState(false)
+  const [showHistory, setShowHistory] = useState(false)
+  const [historyMessages, setHistoryMessages] = useState<HistoryMsg[] | null>(null)
+  const [activeConvId, setActiveConvId] = useState<string | null>(null)
 
   const { updateState, appVersion, checkForUpdates, downloadUpdate, installAndRestart, openDownloadPage, dismiss } =
     useUpdater()
@@ -235,6 +241,36 @@ export default function AssistantPopup({
     setVoiceState('recording')
   }, [voiceState, recordingRef, captionLockedRef, setCaption])
 
+  // ── History sidebar handlers ──────────────────────────────────────────
+  const handleNewChat = useCallback(() => {
+    window.openui.clearHistory()
+    setHistoryMessages(null)
+    setActiveConvId(null)
+    setShowHistory(false)
+    setTranscript(null)
+    setVoiceState('idle')
+    setCaption('')
+    captionLockedRef.current = false
+  }, [setCaption, captionLockedRef])
+
+  const handleConvSelect = useCallback(
+    async (id: string): Promise<void> => {
+      setActiveConvId(id)
+      setShowHistory(false)
+      try {
+        const msgs = await window.openui.resumeConversation(id)
+        const thread = msgs.filter((m) => m.role === 'user' || m.role === 'assistant')
+        setHistoryMessages(thread)
+        setTranscript(null)
+        captionLockedRef.current = false
+        setVoiceState('idle')
+      } catch {
+        setHistoryMessages(null)
+      }
+    },
+    [captionLockedRef]
+  )
+
   // ── Text input send ────────────────────────────────────────────────────
   const handleSend = useCallback(
     async (text: string): Promise<void> => {
@@ -243,6 +279,8 @@ export default function AssistantPopup({
       if (voiceState === 'recording' || voiceState === 'processing' || voiceState === 'transcribing')
         return
 
+      // Exit thread view so streaming response lands in the caption area.
+      setHistoryMessages(null)
       setTranscript(trimmed)
       setInputText('')
       captionLockedRef.current = true
@@ -272,7 +310,78 @@ export default function AssistantPopup({
   const isBusy = voiceState === 'transcribing' || voiceState === 'processing'
 
   return (
-    <div id="openui-popup">
+    <div id="openui-popup" style={{ overflow: 'hidden' }}>
+      {/* History sidebar — slides in from the left over the popup content */}
+      <div
+        style={{
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          bottom: 0,
+          width: 280,
+          zIndex: 100,
+          transform: showHistory ? 'translateX(0)' : 'translateX(-100%)',
+          transition: 'transform 0.24s cubic-bezier(0.4,0,0.2,1)',
+          background: 'rgba(18,18,22,0.96)',
+          backdropFilter: 'blur(20px)',
+          WebkitBackdropFilter: 'blur(20px)',
+          borderRight: '1px solid rgba(255,255,255,0.08)',
+          display: 'flex',
+          flexDirection: 'column',
+        }}
+      >
+        {/* New Chat button */}
+        <button
+          type="button"
+          onClick={handleNewChat}
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 7,
+            margin: '12px 10px 4px',
+            padding: '7px 12px',
+            background: 'rgba(255,255,255,0.07)',
+            border: '1px solid rgba(255,255,255,0.1)',
+            borderRadius: 8,
+            cursor: 'pointer',
+            color: '#e5e5e7',
+            fontSize: 12,
+            fontFamily: '-apple-system, sans-serif',
+            fontWeight: 500,
+            transition: 'background 0.12s',
+          }}
+          onMouseEnter={(e) => {
+            ;(e.currentTarget as HTMLButtonElement).style.background = 'rgba(255,255,255,0.12)'
+          }}
+          onMouseLeave={(e) => {
+            ;(e.currentTarget as HTMLButtonElement).style.background = 'rgba(255,255,255,0.07)'
+          }}
+        >
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none">
+            <path d="M12 5v14M5 12h14" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+          </svg>
+          New chat
+        </button>
+
+        {/* Section label */}
+        <div
+          style={{
+            padding: '10px 14px 4px',
+            fontSize: 10,
+            fontWeight: 600,
+            color: '#636366',
+            fontFamily: '-apple-system, sans-serif',
+            textTransform: 'uppercase',
+            letterSpacing: '0.06em',
+          }}
+        >
+          Recent
+        </div>
+
+        {/* Conversation list */}
+        <ConversationList onSelect={handleConvSelect} selectedId={activeConvId ?? undefined} />
+      </div>
+
       {/* Header */}
       <div className="popup-header">
         <div className="popup-logo-row">
@@ -286,6 +395,32 @@ export default function AssistantPopup({
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <UsageCounter />
           <SubscriptionStatus />
+          <button
+            type="button"
+            aria-label="History"
+            title="Conversation history"
+            onClick={() => setShowHistory((v) => !v)}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              width: 26,
+              height: 26,
+              borderRadius: 7,
+              border: 'none',
+              background: showHistory ? 'rgba(167,139,250,0.15)' : 'transparent',
+              cursor: 'pointer',
+              color: showHistory ? '#a78bfa' : '#8e8e93',
+              padding: 0,
+              transition: 'background 0.15s, color 0.15s',
+            }}
+          >
+            {/* Clock / history icon */}
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none">
+              <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="1.7" />
+              <path d="M12 7v5l3 3" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </button>
           <button
             type="button"
             aria-label="Settings"
@@ -359,8 +494,62 @@ export default function AssistantPopup({
         />
       )}
 
-      {/* Mic stage */}
-      <div className="mic-stage">
+      {/* Thread view — shown when a past conversation is loaded */}
+      {historyMessages !== null && (
+        <div
+          style={{
+            maxHeight: 300,
+            overflowY: 'auto',
+            padding: '10px 14px',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 8,
+            borderBottom: '1px solid rgba(0,0,0,0.06)',
+          }}
+        >
+          {historyMessages.map((msg, i) => (
+            <div
+              key={i}
+              style={{
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: msg.role === 'user' ? 'flex-end' : 'flex-start',
+                gap: 2,
+              }}
+            >
+              <span
+                style={{
+                  fontSize: 10,
+                  color: '#aeaeb2',
+                  fontFamily: '-apple-system, sans-serif',
+                }}
+              >
+                {msg.role === 'user' ? 'You' : 'AI'}
+              </span>
+              <div
+                style={{
+                  maxWidth: '85%',
+                  background:
+                    msg.role === 'user' ? 'rgba(167,139,250,0.12)' : 'rgba(0,0,0,0.05)',
+                  borderRadius:
+                    msg.role === 'user' ? '10px 10px 2px 10px' : '10px 10px 10px 2px',
+                  padding: '6px 10px',
+                  fontSize: 12,
+                  color: '#1c1c1e',
+                  fontFamily: '-apple-system, sans-serif',
+                  lineHeight: 1.45,
+                  wordBreak: 'break-word',
+                }}
+              >
+                {msg.content ?? ''}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Mic stage — hidden while a loaded thread is displayed */}
+      <div className="mic-stage" style={{ display: historyMessages !== null ? 'none' : undefined }}>
         <div id="ring-1" className="mic-ring" />
         <div id="ring-2" className="mic-ring" />
         <div id="ring-3" className="mic-ring" />

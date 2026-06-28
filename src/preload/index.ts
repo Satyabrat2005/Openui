@@ -286,6 +286,9 @@ const api = {
   loadConversation: (id: string): Promise<Array<{ role: string; content: string; created_at: number }>> =>
     ipcRenderer.invoke('openui:load-conversation', id),
 
+  resumeConversation: (id: string): Promise<Array<{ role: string; content: string | null; created_at: number }>> =>
+    ipcRenderer.invoke('openui:resume-conversation', id),
+
   // ── Telemetry ────────────────────────────────────────────────────────────────
   setTelemetryOptOut: (optOut: boolean): Promise<void> =>
     ipcRenderer.invoke('openui:set-telemetry-opt-out', optOut),
@@ -399,13 +402,6 @@ const api = {
     const fn = (() => cb()) as IpcListener
     ipcRenderer.on('openui:local-ai-available', fn)
     return (): void => { ipcRenderer.removeListener('openui:local-ai-available', fn) }
-  },
-
-  // Fired when a free-tier user attempts a coding/heavy task without Ollama running.
-  onOllamaSuggestion: (cb: (payload: { message: string }) => void): (() => void) => {
-    const fn = wrap<{ message: string }>(cb)
-    ipcRenderer.on('openui:ollama-suggestion', fn)
-    return (): void => { ipcRenderer.removeListener('openui:ollama-suggestion', fn) }
   },
 
   // ── Action Recorder / Macros ───────────────────────────────────────────────

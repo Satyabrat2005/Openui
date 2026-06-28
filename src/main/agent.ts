@@ -217,17 +217,6 @@ function modelForTier(tier: Tier): string {
   return process.env.GLM_MODEL ?? 'glm-4'
 }
 
-/**
- * Returns true when a free-tier message should be routed to local Ollama
- * rather than consuming cloud quota. Only applies to free tier — Pro and
- * Enterprise always use cloud models unchanged.
- */
-function shouldRouteToOllama(tier: Tier, messages: Message[]): boolean {
-  if (tier !== 'free') return false
-  if (!classifyTaskComplexity(messages)) return false
-  return true
-}
-
 function classifyChatError(err: unknown): string {
   const msg = (err instanceof Error ? err.message : String(err)).toLowerCase()
   if (msg.includes('api key') || msg.includes('unauthorized') || msg.includes('401')) return 'auth_error'
@@ -378,18 +367,11 @@ export async function callModel(
   const ollamaUp = await isOllamaRunning()
 
   if (tier === 'free') {
-    if (shouldRouteToOllama(tier, messages)) {
-      if (ollamaUp) {
-        // Heavy/coding task → local Ollama preserves the 20/day cloud quota.
-        emitLocalUsage(win, tier)
-        return callOllama(win, messages, systemPrompt)
-      }
-      // Ollama not running — nudge user to install it, then fall through to cloud.
-      emit(win, 'openui:ollama-suggestion', {
-        message: 'Install Ollama for unlimited coding help without using your daily quota.'
-      })
+    if (ollamaUp) {
+      // Local Ollama → free + unlimited, saves our API costs.
+      emitLocalUsage(win, tier)
+      return callOllama(win, messages, systemPrompt)
     }
-    // Simple Q&A or Ollama unavailable → cloud haiku (uses quota).
     return routeCloudOrDirect(win, 'free', messages, systemPrompt, 'free-default')
   }
 
@@ -690,6 +672,22 @@ export function registerConversationIPC(win: BrowserWindow): void {
   ipcMain.handle('openui:load-conversation', async (_event, conversationId: unknown) => {
     if (typeof conversationId !== 'string') return []
     return database.messages.getMessagesByConversation(conversationId)
+  })
+
+  // Resume a past conversation: loads its messages into the in-memory history
+  // so that the next chat turn is contextually aware, then returns the messages
+  // for the renderer to display as a thread.
+  ipcMain.handle('openui:resume-conversation', async (_event, conversationId: unknown) => {
+    if (typeof conversationId !== 'string') return []
+    const messages = database.messages.getMessagesByConversation(conversationId)
+    history.length = 0
+    for (const msg of messages) {
+      if (msg.role === 'user' || msg.role === 'assistant') {
+        history.push({ role: msg.role, content: msg.content ?? '' })
+      }
+    }
+    currentConversationId = conversationId
+    return messages
   })
 
   win // referenced to satisfy linter — win is used for future push events
