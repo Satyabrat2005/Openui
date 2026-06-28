@@ -16,6 +16,7 @@ import {
 } from './cloudFreeTier'
 import { trackEvent } from './telemetry/posthog'
 import { Events } from './telemetry/events'
+import { classifyFeedbackSignal, getCustomSystemPrompt } from './improvement'
 
 export interface Message {
   role: 'user' | 'assistant'
@@ -79,7 +80,18 @@ function renderSchema(schema: ToolSchema): string {
   return `- ${schema.name}(${params}) — ${schema.description}`
 }
 
+/**
+ * The system prompt for the interactive assistant. Prefers the locally-refined
+ * prompt produced by the weekly self-improvement job (promptRefiner.ts) when one
+ * exists and the AI-Improvement toggle is on; otherwise uses the built-in
+ * default. The refiner is instructed to preserve the tool list verbatim, so the
+ * learned prompt still carries an accurate "Available tools" section.
+ */
 function buildSystemPrompt(): string {
+  return getCustomSystemPrompt() ?? buildDefaultSystemPrompt()
+}
+
+export function buildDefaultSystemPrompt(): string {
   const allSchemas: ToolSchema[] = [...toolSchemas, ...getMcpToolSchemas()]
   return `You are OpenUI, an intelligent desktop assistant running as a menu-bar app. You help users get things done on their computer through natural conversation.
 
@@ -444,6 +456,16 @@ export async function handleChat(win: BrowserWindow, userMessage: string, tier: 
   }
   const convId = currentConversationId
 
+  // Self-improvement loop: treat this message as an implicit reaction to the
+  // PREVIOUS assistant turn. "wrong"/"try again" downgrades it to 1, "perfect"/
+  // "thanks" upgrades it to 5. Best-effort and never allowed to break the chat.
+  try {
+    const signal = classifyFeedbackSignal(userMessage)
+    if (signal) database.feedback.applySignalToLast(convId, signal)
+  } catch (err) {
+    console.error('[improvement] failed to score previous turn:', err)
+  }
+
   history.push({ role: 'user', content: userMessage })
   database.messages.addMessage(convId, 'user', userMessage)
   emit(win, 'openui:task:reset')
@@ -595,6 +617,14 @@ export async function handleChat(win: BrowserWindow, userMessage: string, tier: 
       }
     }
 
+    // Record this completed turn for the self-improvement loop. Starts neutral
+    // (3); the user's next message (or a 👍/👎) re-scores it. Best-effort.
+    try {
+      database.feedback.recordTurn(convId, userMessage, finalText)
+    } catch (err) {
+      console.error('[improvement] failed to record turn feedback:', err)
+    }
+
     emit(win, 'openui:chat:done', { text: finalText, toolCall: null })
   } catch (err) {
     history.length = rollbackLen // roll back the entire failed turn
@@ -644,6 +674,20 @@ export function registerAgentIPC(win: BrowserWindow): void {
     await handleChat(win, message, coerceTier(tier))
   })
   ipcMain.on('openui:clear-history', () => clearHistory())
+
+  // Explicit 👍/👎 on the last response → set the explicit_rating on the most
+  // recent conversation_feedback row (1 = 👎, 5 = 👍). Untrusted IPC: coerce to
+  // the two allowed values and ignore anything else.
+  ipcMain.handle('openui:rate-last', (_event, rating: unknown) => {
+    const value = rating === 1 || rating === 5 ? rating : null
+    if (value === null) return false
+    try {
+      return database.feedback.setExplicitRatingOnLast(value) !== null
+    } catch (err) {
+      console.error('[improvement] failed to set explicit rating:', err)
+      return false
+    }
+  })
 
   // Poll for Ollama state changes every 60 s. When Ollama comes online after
   // being absent, notify the renderer so it can switch to local mode and show

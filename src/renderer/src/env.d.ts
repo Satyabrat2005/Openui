@@ -159,6 +159,8 @@ export interface OpenUIApi {
   // Chat
   chat: (message: string, tier: Tier) => Promise<void>
   clearHistory: () => void
+  /** Rate the last assistant response: 5 = 👍, 1 = 👎. */
+  rateLast: (rating: 1 | 5) => Promise<boolean>
   onChunk: (cb: (chunk: string) => void) => () => void
   onToolCall: (cb: (tool: ToolCallPayload) => void) => () => void
   onDone: (cb: (result: ChatDonePayload) => void) => () => void

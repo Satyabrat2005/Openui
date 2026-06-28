@@ -1,6 +1,7 @@
 import { app, BrowserWindow, Tray, Menu, ipcMain, screen, nativeImage, session, shell } from 'electron'
 import { join } from 'path'
 import { registerAgentIPC, registerConversationIPC } from './agent'
+import { startPromptRefiner, stopPromptRefiner } from './promptRefiner'
 import { registerVoiceIPC } from './voice'
 import { registerInterviewerIPC } from './interviewer'
 import { startScheduler } from './scheduler'
@@ -550,6 +551,8 @@ app.whenReady().then(async () => {
     registerInterviewerIPC(win)
     // Phase 8: activity monitor + Autonomous Coding Mode IPC.
     startScheduler(win)
+    // Weekly local self-improvement: refine the system prompt from feedback.
+    startPromptRefiner(win)
     // Stripe/subscription IPC + periodic sync loop (idles until a user signs in).
     registerStripeIPC(win)
     // Auto-update via electron-updater + GitHub Releases. Schedules its own
@@ -583,7 +586,9 @@ app.on('before-quit', () => {
   shutdownTelemetry()
 })
 
-// Release auth resources on shutdown: stop the proactive token-refresh timer.
+// Release auth resources on shutdown: stop the proactive token-refresh timer
+// and the weekly prompt-refinement scheduler.
 app.on('will-quit', () => {
   stopTokenRefreshLoop()
+  stopPromptRefiner()
 })

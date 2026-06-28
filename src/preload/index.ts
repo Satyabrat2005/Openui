@@ -86,6 +86,10 @@ const api = {
 
   clearHistory: (): void => ipcRenderer.send('openui:clear-history'),
 
+  // Rate the last assistant response (self-improvement loop). 5 = 👍, 1 = 👎.
+  // Updates the explicit_rating on the most recent conversation_feedback row.
+  rateLast: (rating: 1 | 5): Promise<boolean> => ipcRenderer.invoke('openui:rate-last', rating),
+
   onChunk: (cb: (chunk: string) => void): (() => void) => {
     const fn = wrap<string>(cb)
     ipcRenderer.on('openui:chat:chunk', fn)

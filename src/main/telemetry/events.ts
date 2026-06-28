@@ -51,6 +51,11 @@ export const Events = {
   // Telemetry itself
   TELEMETRY_OPT_OUT: 'telemetry_opt_out',
   TELEMETRY_OPT_IN: 'telemetry_opt_in',
+
+  // Self-improvement loop (local prompt refinement)
+  FEEDBACK_RATED: 'feedback_rated',               // properties: { rating: 1 | 5, source: 'explicit' }
+  PROMPT_REFINED: 'prompt_refined',               // properties: { failing_count, clusters, model }
+  PROMPT_REFINE_SKIPPED: 'prompt_refine_skipped', // properties: { reason }
 } as const
 
 export type EventName = typeof Events[keyof typeof Events]

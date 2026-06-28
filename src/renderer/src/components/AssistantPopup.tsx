@@ -52,6 +52,9 @@ export default function AssistantPopup({
   const [showHistory, setShowHistory] = useState(false)
   const [historyMessages, setHistoryMessages] = useState<HistoryMsg[] | null>(null)
   const [activeConvId, setActiveConvId] = useState<string | null>(null)
+  // 👍/👎 on the last response (self-improvement loop). Null until the user
+  // rates; reset to null whenever a new turn starts.
+  const [feedbackGiven, setFeedbackGiven] = useState<null | 'up' | 'down'>(null)
 
   const { updateState, appVersion, checkForUpdates, downloadUpdate, installAndRestart, openDownloadPage, dismiss } =
     useUpdater()
@@ -99,6 +102,7 @@ export default function AssistantPopup({
     const offTranscript = window.openui.onTranscript((text) => {
       setTranscript(text)
       setVoiceState('processing')
+      setFeedbackGiven(null) // new turn → allow rating the upcoming response
       setCaption('') // clear so onChunk can stream into a blank caption
     })
 
@@ -285,6 +289,7 @@ export default function AssistantPopup({
       setInputText('')
       captionLockedRef.current = true
       setVoiceState('processing')
+      setFeedbackGiven(null) // new turn → allow rating the upcoming response
       setCaption('')
 
       try {
@@ -296,6 +301,12 @@ export default function AssistantPopup({
     },
     [voiceState, captionLockedRef, setCaption]
   )
+
+  // ── Rate the last response (self-improvement loop) ──────────────────────
+  const rate = useCallback((kind: 'up' | 'down'): void => {
+    setFeedbackGiven(kind) // optimistic — the rating is best-effort and local
+    void window.openui.rateLast(kind === 'up' ? 5 : 1).catch(() => {})
+  }, [])
 
   // Fire the message handed over from onboarding exactly once, after the IPC
   // listeners above are wired so the streamed reply is captured here.
@@ -604,6 +615,11 @@ export default function AssistantPopup({
             <div className="sbar" style={{ height: 12 }} id="sb8" />
           </div>
         </div>
+
+        {/* Was-this-helpful rating — feeds the local self-improvement loop. */}
+        {voiceState === 'done' && historyMessages === null && (
+          <FeedbackButtons given={feedbackGiven} onRate={rate} />
+        )}
       </div>
 
       {/* Transcript bubble — shows what the user said while the agent replies */}
@@ -702,5 +718,95 @@ export default function AssistantPopup({
         </div>
       )}
     </div>
+  )
+}
+
+/**
+ * Compact "Was this helpful?" rating shown under a completed response. Sends a
+ * 👍 (rating 5) or 👎 (rating 1) to the local self-improvement loop, then shows a
+ * brief thank-you. Purely additive — ignoring it has no effect on the chat.
+ */
+function FeedbackButtons({
+  given,
+  onRate
+}: {
+  given: null | 'up' | 'down'
+  onRate: (kind: 'up' | 'down') => void
+}): JSX.Element {
+  if (given) {
+    return (
+      <div
+        style={{
+          textAlign: 'center',
+          marginTop: 8,
+          fontSize: 11,
+          color: 'rgba(255,255,255,0.55)',
+          fontFamily: '-apple-system, BlinkMacSystemFont, sans-serif'
+        }}
+      >
+        Thanks — OpenUI learns from your feedback.
+      </div>
+    )
+  }
+
+  return (
+    <div
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: 8,
+        marginTop: 8
+      }}
+    >
+      <span
+        style={{
+          fontSize: 11,
+          color: 'rgba(255,255,255,0.5)',
+          fontFamily: '-apple-system, BlinkMacSystemFont, sans-serif'
+        }}
+      >
+        Was this helpful?
+      </span>
+      <RatingButton label="Good response" emoji="👍" onClick={() => onRate('up')} />
+      <RatingButton label="Not right" emoji="👎" onClick={() => onRate('down')} />
+    </div>
+  )
+}
+
+function RatingButton({
+  label,
+  emoji,
+  onClick
+}: {
+  label: string
+  emoji: string
+  onClick: () => void
+}): JSX.Element {
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      title={label}
+      onClick={onClick}
+      style={{
+        border: 'none',
+        background: 'rgba(255,255,255,0.10)',
+        borderRadius: 14,
+        width: 28,
+        height: 24,
+        fontSize: 13,
+        lineHeight: 1,
+        cursor: 'pointer',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        transition: 'background 0.15s ease'
+      }}
+      onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(255,255,255,0.22)')}
+      onMouseLeave={(e) => (e.currentTarget.style.background = 'rgba(255,255,255,0.10)')}
+    >
+      {emoji}
+    </button>
   )
 }

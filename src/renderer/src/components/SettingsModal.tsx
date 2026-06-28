@@ -20,6 +20,8 @@ interface Props {
 export default function SettingsModal({ onClose, appVersion, updateStatus, onCheckForUpdates }: Props): JSX.Element {
   const [enabled, setEnabled] = useState(false)
   const [busy, setBusy] = useState(false)
+  // AI Improvement (local self-improvement loop). Default ON: absent setting → on.
+  const [aiImprovement, setAiImprovement] = useState(true)
 
   useEffect(() => {
     let cancelled = false
@@ -27,6 +29,13 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
       .getConsentStatus()
       .then((status) => {
         if (!cancelled) setEnabled(status === 'granted')
+      })
+      .catch(() => {})
+
+    window.openui
+      .getSetting('ai_improvement_enabled')
+      .then((value) => {
+        if (!cancelled) setAiImprovement(value !== false) // null/undefined ⇒ on
       })
       .catch(() => {})
 
@@ -38,6 +47,14 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
       off()
     }
   }, [])
+
+  const toggleAiImprovement = (): void => {
+    const next = !aiImprovement
+    setAiImprovement(next) // optimistic; persisted below
+    void window.openui.setSetting('ai_improvement_enabled', next).catch(() => {
+      setAiImprovement(!next)
+    })
+  }
 
   const toggle = async (): Promise<void> => {
     if (busy) return
@@ -122,7 +139,38 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
               collected.
             </div>
           </div>
-          <Switch on={enabled} disabled={busy} onClick={() => void toggle()} />
+          <Switch
+            on={enabled}
+            disabled={busy}
+            label="Anonymous Usage Analytics"
+            onClick={() => void toggle()}
+          />
+        </div>
+
+        {/* AI Improvement: local self-improvement loop */}
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'flex-start',
+            gap: 14,
+            borderTop: '1px solid rgba(0,0,0,0.06)',
+            paddingTop: 14,
+            marginTop: 14
+          }}
+        >
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 13.5, fontWeight: 600, color: '#1c1c1e' }}>AI Improvement</div>
+            <div style={{ fontSize: 12, color: '#8e8e93', lineHeight: 1.5, marginTop: 3 }}>
+              OpenUI learns from your usage patterns to improve its responses over time. No data
+              leaves your machine — improvement happens locally.
+            </div>
+          </div>
+          <Switch
+            on={aiImprovement}
+            disabled={false}
+            label="AI Improvement"
+            onClick={toggleAiImprovement}
+          />
         </div>
 
         {/* App version & update check */}
@@ -179,10 +227,12 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
 function Switch({
   on,
   disabled,
+  label,
   onClick
 }: {
   on: boolean
   disabled: boolean
+  label: string
   onClick: () => void
 }): JSX.Element {
   return (
@@ -190,7 +240,7 @@ function Switch({
       type="button"
       role="switch"
       aria-checked={on}
-      aria-label="Anonymous Usage Analytics"
+      aria-label={label}
       disabled={disabled}
       onClick={onClick}
       style={{

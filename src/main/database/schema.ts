@@ -70,10 +70,27 @@ export function applySchema(): void {
       PRIMARY KEY (user_id, date)
     );
 
+    -- Self-improvement loop: one row per completed assistant turn, scored by an
+    -- implicit signal derived from the user's NEXT message ("wrong"/"try again"
+    -- → 1, "perfect"/"thanks" → 5, otherwise 3) plus an optional explicit
+    -- thumbs up/down. The weekly prompt refiner reads the low-rated rows to
+    -- improve the system prompt. See promptRefiner.ts.
+    CREATE TABLE IF NOT EXISTS conversation_feedback (
+      id TEXT PRIMARY KEY,
+      conversation_id TEXT,
+      user_message TEXT,
+      assistant_response TEXT,
+      implicit_rating INTEGER DEFAULT 3,
+      explicit_rating INTEGER,
+      timestamp INTEGER DEFAULT (strftime('%s','now'))
+    );
+
     CREATE INDEX IF NOT EXISTS idx_conversations_user_id ON conversations(user_id);
     CREATE INDEX IF NOT EXISTS idx_messages_conversation_id ON messages(conversation_id);
     CREATE INDEX IF NOT EXISTS idx_messages_created_at ON messages(created_at);
     CREATE INDEX IF NOT EXISTS idx_tool_executions_message_id ON tool_executions(message_id);
     CREATE INDEX IF NOT EXISTS idx_settings_key ON settings(key);
+    CREATE INDEX IF NOT EXISTS idx_feedback_timestamp ON conversation_feedback(timestamp);
+    CREATE INDEX IF NOT EXISTS idx_feedback_conversation ON conversation_feedback(conversation_id);
   `)
 }
