@@ -140,6 +140,7 @@
     "hnswlib-node": "^3.0.0"
   },
   "devDependencies": {
+    "@electron/notarize": "^2.5.0",
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^22.10.1",
     "@types/pdf-parse": "^1.1.5",
@@ -149,7 +150,6 @@
     "autoprefixer": "^10.4.20",
     "electron": "^42.4.1",
     "electron-builder": "^26.15.3",
-    "@electron/notarize": "^2.5.0",
     "electron-vite": "^5.0.0",
     "png2icons": "^2.0.1",
     "postcss": "^8.4.49",
