@@ -15,16 +15,24 @@
 # the app has no feed to poll and auto-update silently does nothing. The globs
 # below upload all three (installer + .yml + .blockmap) for each platform.
 #
+# REQUIRED GitHub Secrets (Settings → Secrets and variables → Actions):
+#   These are baked into the packaged build at compile time. Without them the
+#   shipped app cannot reach Supabase, so Google sign-in fails with
+#   "Cannot start auth — SUPABASE_URL is not set." They are PUBLISHABLE values
+#   (the anon/publishable key is designed to ship in clients — NOT the
+#   service-role key), so it is safe to inline them into the binary.
+#     SUPABASE_URL
+#     SUPABASE_ANON_KEY
+#
 # OPTIONAL GitHub Secrets (Settings → Secrets and variables → Actions):
-#   These are only needed if you want the packaged build to ship with the
-#   Stripe price IDs inlined into the renderer bundle. They are NOT secret
-#   (public SKU-like values) but are kept in Actions secrets for convenience.
-#   If unset, the v0.1.0 UI shell still builds fine — pricing buttons just
-#   resolve to undefined price IDs at runtime.
+#   These let the packaged build ship with the Stripe price IDs inlined. They
+#   are NOT secret (public SKU-like values) but are kept in Actions secrets for
+#   convenience. If unset, the UI shell still builds fine — pricing buttons just
+#   resolve to undefined price IDs and the upgrade/checkout flow is disabled.
 #     VITE_STRIPE_PRO_PRICE_ID
 #     VITE_STRIPE_ENTERPRISE_PRICE_ID
 #
-#   Do NOT add real Anthropic/OpenAI/Supabase service-role/Stripe SECRET keys
+#   Do NOT add real Anthropic/OpenAI/Supabase SERVICE-ROLE/Stripe SECRET keys
 #   here — those are runtime-only and live in the user's local .env or the
 #   Supabase Edge Function secrets, never in the shipped binary.
 #
@@ -68,10 +76,8 @@ jobs:
         run: npm run build:mac
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Disable macOS code signing — no certificate is configured.
-          # electron-builder will still find the system keychain on the runner
-          # and try to sign unless we explicitly opt out here.
-          CSC_IDENTITY_AUTO_DISCOVERY: false
+          # Supabase URL + anon key are PUBLISHABLE (safe to ship) and are baked
+          # into the main bundle so Google sign-in works in the packaged app.
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
           VITE_STRIPE_PRO_PRICE_ID: ${{ secrets.VITE_STRIPE_PRO_PRICE_ID }}
@@ -90,43 +96,13 @@ jobs:
         shell: bash
         run: rm -rf node_modules/hnswlib-node
 
-      # ── Azure Trusted Signing (Windows code signing) ─────────────────────────
-      # Removes the "Windows protected your PC" SmartScreen warning.
-      # FREE for open-source projects: https://aka.ms/trustedsigning
-      #
-      # Required GitHub Actions secrets (Settings → Secrets → Actions):
-      #   AZURE_CLIENT_ID         — App Registration client ID
-      #   AZURE_TENANT_ID         — Azure tenant ID
-      #   AZURE_SUBSCRIPTION_ID   — Azure subscription ID
-      #   AZURE_SIGNING_ACCOUNT   — Trusted Signing account name
-      #   AZURE_CERT_PROFILE      — Certificate profile name
-      #   AZURE_ENDPOINT          — e.g. https://eus.codesigning.azure.net
-      #
-      # Setup guide: https://learn.microsoft.com/en-us/azure/trusted-signing/
-      # electron-builder reads SIGNTOOL_PATH + CSC_* env vars automatically.
-      - name: Sign Windows EXE (Azure Trusted Signing)
-        if: matrix.os == 'windows-latest' && env.AZURE_CLIENT_ID != ''
-        uses: azure/trusted-signing-action@v0.5.0
-        with:
-          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          azure-subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-          endpoint: ${{ secrets.AZURE_ENDPOINT }}
-          trusted-signing-account-name: ${{ secrets.AZURE_SIGNING_ACCOUNT }}
-          certificate-profile-name: ${{ secrets.AZURE_CERT_PROFILE }}
-          files-folder: dist
-          files-folder-filter: exe
-          file-digest: SHA256
-          timestamp-rfc3161: http://timestamp.acs.microsoft.com
-          timestamp-digest: SHA256
-        env:
-          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-
       - name: Build Windows EXE
         if: matrix.os == 'windows-latest'
         run: npm run build:win
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Supabase URL + anon key are PUBLISHABLE (safe to ship) and are baked
+          # into the main bundle so Google sign-in works in the packaged .exe.
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
           VITE_STRIPE_PRO_PRICE_ID: ${{ secrets.VITE_STRIPE_PRO_PRICE_ID }}
@@ -198,17 +174,5 @@ jobs:
           generate_release_notes: true
           draft: false
           prerelease: ${{ contains(github.ref, 'alpha') || contains(github.ref, 'beta') }}
-          body: |
-            ## Install
-
-            | Platform | Download |
-            |---|---|
-            | Windows | `OpenUI.Setup.exe` |
-            | macOS Apple Silicon | `OpenUI-arm64.dmg` |
-            | macOS Intel | `OpenUI-x64.dmg` |
-
-            > **Windows users:** If you see "Windows protected your PC", click **More info → Run anyway**.
-            > This is a SmartScreen reputation warning for new apps — not a virus alert.
-            > [Full install guide →](https://github.com/Satyabrat2005/Openui/blob/main/WINDOWS_INSTALL.md)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
