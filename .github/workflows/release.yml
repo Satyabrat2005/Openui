@@ -30,18 +30,6 @@
 #
 #   GITHUB_TOKEN is provided automatically by Actions — no setup required.
 #
-#   Code-signing / notarization (Settings → Secrets and variables → Actions):
-#   macOS — Developer ID Application certificate:
-#     CSC_LINK                   — base64-encoded .p12 cert  (base64 -i cert.p12 | pbcopy)
-#     CSC_KEY_PASSWORD           — passphrase for the .p12
-#     APPLE_ID                   — Apple ID email used for notarization
-#     APPLE_APP_SPECIFIC_PASSWORD — app-specific password from appleid.apple.com
-#     APPLE_TEAM_ID              — 10-char Team ID from developer.apple.com/account
-#   Windows — EV or OV code-signing certificate (.pfx):
-#     WIN_CSC_LINK               — base64-encoded .pfx cert
-#     WIN_CSC_KEY_PASSWORD       — passphrase for the .pfx
-#   All signing vars are optional: if absent, builds succeed but remain unsigned.
-#
 #   Optional PostHog telemetry (runtime — not baked into the binary):
 #     POSTHOG_API_KEY    — PostHog project API key (phc_…)
 #     POSTHOG_HOST       — PostHog ingest host (default: https://us.i.posthog.com)
@@ -80,17 +68,14 @@ jobs:
         run: npm run build:mac
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Disable macOS code signing — no certificate is configured.
+          # electron-builder will still find the system keychain on the runner
+          # and try to sign unless we explicitly opt out here.
+          CSC_IDENTITY_AUTO_DISCOVERY: false
           VITE_STRIPE_PRO_PRICE_ID: ${{ secrets.VITE_STRIPE_PRO_PRICE_ID }}
           VITE_STRIPE_ENTERPRISE_PRICE_ID: ${{ secrets.VITE_STRIPE_ENTERPRISE_PRICE_ID }}
           POSTHOG_API_KEY: ${{ secrets.POSTHOG_API_KEY }}
           POSTHOG_HOST: ${{ secrets.POSTHOG_HOST }}
-          # Code signing — electron-builder reads CSC_LINK/CSC_KEY_PASSWORD automatically.
-          # Notarization — scripts/notarize.js skips if any of these are absent.
-          CSC_LINK: ${{ secrets.CSC_LINK }}
-          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
 
       # hnswlib-node (RAG vector index) cannot be rebuilt against Electron's ABI
       # on the Windows runner (C2666 under the runner's MSVC), and there is no
@@ -103,6 +88,38 @@ jobs:
         shell: bash
         run: rm -rf node_modules/hnswlib-node
 
+      # ── Azure Trusted Signing (Windows code signing) ─────────────────────────
+      # Removes the "Windows protected your PC" SmartScreen warning.
+      # FREE for open-source projects: https://aka.ms/trustedsigning
+      #
+      # Required GitHub Actions secrets (Settings → Secrets → Actions):
+      #   AZURE_CLIENT_ID         — App Registration client ID
+      #   AZURE_TENANT_ID         — Azure tenant ID
+      #   AZURE_SUBSCRIPTION_ID   — Azure subscription ID
+      #   AZURE_SIGNING_ACCOUNT   — Trusted Signing account name
+      #   AZURE_CERT_PROFILE      — Certificate profile name
+      #   AZURE_ENDPOINT          — e.g. https://eus.codesigning.azure.net
+      #
+      # Setup guide: https://learn.microsoft.com/en-us/azure/trusted-signing/
+      # electron-builder reads SIGNTOOL_PATH + CSC_* env vars automatically.
+      - name: Sign Windows EXE (Azure Trusted Signing)
+        if: matrix.os == 'windows-latest' && env.AZURE_CLIENT_ID != ''
+        uses: azure/trusted-signing-action@v0.5.0
+        with:
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          endpoint: ${{ secrets.AZURE_ENDPOINT }}
+          trusted-signing-account-name: ${{ secrets.AZURE_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ secrets.AZURE_CERT_PROFILE }}
+          files-folder: dist
+          files-folder-filter: exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+        env:
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+
       - name: Build Windows EXE
         if: matrix.os == 'windows-latest'
         run: npm run build:win
@@ -112,9 +129,6 @@ jobs:
           VITE_STRIPE_ENTERPRISE_PRICE_ID: ${{ secrets.VITE_STRIPE_ENTERPRISE_PRICE_ID }}
           POSTHOG_API_KEY: ${{ secrets.POSTHOG_API_KEY }}
           POSTHOG_HOST: ${{ secrets.POSTHOG_HOST }}
-          # Code signing — electron-builder reads WIN_CSC_LINK/WIN_CSC_KEY_PASSWORD automatically.
-          WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
-          WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
 
       # Upload the installer, the electron-updater channel file (latest-mac.yml)
       # and the differential-update blockmaps so the publish job can attach them.
@@ -180,5 +194,17 @@ jobs:
           generate_release_notes: true
           draft: false
           prerelease: ${{ contains(github.ref, 'alpha') || contains(github.ref, 'beta') }}
+          body: |
+            ## Install
+
+            | Platform | Download |
+            |---|---|
+            | Windows | `OpenUI.Setup.exe` |
+            | macOS Apple Silicon | `OpenUI-arm64.dmg` |
+            | macOS Intel | `OpenUI-x64.dmg` |
+
+            > **Windows users:** If you see "Windows protected your PC", click **More info → Run anyway**.
+            > This is a SmartScreen reputation warning for new apps — not a virus alert.
+            > [Full install guide →](https://github.com/Satyabrat2005/Openui/blob/main/WINDOWS_INSTALL.md)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
