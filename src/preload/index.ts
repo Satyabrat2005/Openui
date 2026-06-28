@@ -404,6 +404,13 @@ const api = {
     return (): void => { ipcRenderer.removeListener('openui:local-ai-available', fn) }
   },
 
+  // Fired by main when a free user attempts a coding task without Ollama running.
+  onOllamaSuggestion: (cb: () => void): (() => void) => {
+    const fn = (() => cb()) as IpcListener
+    ipcRenderer.on('openui:ollama-suggestion', fn)
+    return (): void => { ipcRenderer.removeListener('openui:ollama-suggestion', fn) }
+  },
+
   // ── Action Recorder / Macros ───────────────────────────────────────────────
   recorderStart: (): Promise<void> =>
     ipcRenderer.invoke('openui:recorder:start'),
