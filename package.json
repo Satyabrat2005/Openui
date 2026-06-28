@@ -93,7 +93,7 @@
         }
       ],
       "icon": "resources/icon.ico",
-      "artifactName": "${productName}.Setup.${ext}"
+      "artifactName": "OpenUI-Setup-${version}.${ext}"
     },
     "nsis": {
       "oneClick": false,
@@ -101,13 +101,19 @@
       "installerIcon": "resources/icon.ico",
       "uninstallerIcon": "resources/icon.ico",
       "uninstallDisplayName": "OpenUI",
+      "installerHeaderBitmap": "resources/installer-header.bmp",
+      "installerSidebar": "resources/installer-sidebar.bmp",
       "license": "LICENSE",
       "installerLanguages": [
         "en_US"
       ],
       "language": "1033",
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
       "shortcutName": "OpenUI",
-      "artifactName": "${productName}.Setup.${ext}"
+      "runAfterFinish": true,
+      "menuCategory": "OpenUI",
+      "deleteAppDataOnUninstall": false
     }
   },
   "dependencies": {

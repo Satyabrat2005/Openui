@@ -77,7 +77,7 @@ export default function WelcomeStep({ onNext }: Props): JSX.Element {
       <div ref={featuresRef} className="ob-feature-card" style={{ marginTop: 26 }}>
         {FEATURES.map((f) => (
           <div key={f.label} className="ob-feature-row">
-            <span className="ob-feature-emoji"><f.icon /></span>
+            <span className="ob-feature-icon"><f.icon /></span>
             <span>{f.label}</span>
           </div>
         ))}
