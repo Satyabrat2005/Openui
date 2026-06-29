@@ -151,11 +151,15 @@ export async function callCloudProxy(
   tier: Tier,
   messages: Message[],
   systemPrompt: string,
-  modelKey: string
+  modelKey: string,
+  // Sink for every streamed token (and any user-facing notice). The interactive
+  // agent loop passes a StreamGate here so tool-call JSON never reaches the UI;
+  // defaults to a direct renderer push for other callers.
+  onDelta: (delta: string) => void = (delta) => send(win, 'openui:chat:chunk', delta)
 ): Promise<string> {
   // Route through the new backend when configured; Supabase proxy is the fallback.
   if (process.env.VITE_SERVER_URL) {
-    return serverSendMessage(win, tier, messages, systemPrompt, modelKey)
+    return serverSendMessage(win, tier, messages, systemPrompt, modelKey, onDelta)
   }
 
   const userId = getCurrentUserId()
@@ -169,7 +173,7 @@ export async function callCloudProxy(
   const token = await getProxyAccessToken(userId)
   if (!token) {
     const msg = 'Your session has expired. Please sign in again to keep chatting.'
-    send(win, 'openui:chat:chunk', msg)
+    onDelta(msg)
     return msg
   }
 
@@ -211,7 +215,7 @@ export async function callCloudProxy(
       })
     }
     const msg = limitReachedMessage(tier)
-    send(win, 'openui:chat:chunk', msg)
+    onDelta(msg)
     return msg
   }
 
@@ -246,7 +250,7 @@ export async function callCloudProxy(
         const delta = typeof parsed.delta === 'string' ? parsed.delta : ''
         if (delta) {
           full += delta
-          send(win, 'openui:chat:chunk', delta)
+          onDelta(delta)
         }
       } catch {
         /* keepalive / partial frame — ignore */

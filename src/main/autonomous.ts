@@ -14,7 +14,7 @@
  * so the unattended loop can only touch the sandbox, never the live desktop.
  */
 import type { BrowserWindow } from 'electron'
-import { callModel, parseToolCall, emit, type Message } from './agent'
+import { callModel, parseToolCall, emit, StreamGate, type Message } from './agent'
 import { codingToolSchemas, executeCodingTool, describeCodingToolCall } from './codingTools'
 import { getNextTask, recordTaskOutcome, type TaskSource, type AgentTask } from './tasks'
 import type { Tier, ToolResult, ToolSchema } from './tools'
@@ -116,10 +116,13 @@ async function workOnTask(win: BrowserWindow, tier: Tier, task: AgentTask): Prom
       return { success: false, summary: 'Paused: the user returned before the task finished.' }
     }
 
-    const responseText = await callModel(win, tier, messages, CODING_SYSTEM_PROMPT)
+    // Withhold tool-call JSON from the UI, same as the interactive loop.
+    const gate = new StreamGate((delta) => emit(win, 'openui:chat:chunk', delta))
+    const responseText = await callModel(win, tier, messages, CODING_SYSTEM_PROMPT, gate.push)
     messages.push({ role: 'assistant', content: responseText })
 
     const toolCall = parseToolCall(responseText)
+    gate.finalize(toolCall !== null)
     if (!toolCall) {
       // Plain-language reply ⇒ the agent considers the task finished (or gave up).
       const gaveUp = /^\s*GIVE UP:/i.test(responseText)

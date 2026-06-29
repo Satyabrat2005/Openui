@@ -56,6 +56,9 @@ class ServerClient {
   private pendingResolve: ((text: string) => void) | null = null
   private pendingReject: ((err: Error) => void) | null = null
   private pendingWin: BrowserWindow | null = null
+  // Sink for streamed tokens of the in-flight call. Set per send; the agent loop
+  // supplies a StreamGate so tool-call JSON is withheld from the renderer.
+  private pendingOnDelta: ((delta: string) => void) | null = null
   private accumulated = ''
 
   // ── configuration ───────────────────────────────────────────────────────────
@@ -82,6 +85,7 @@ class ServerClient {
     this.pendingResolve = null
     this.pendingReject = null
     this.pendingWin = null
+    this.pendingOnDelta = null
     this.accumulated = ''
   }
 
@@ -103,7 +107,10 @@ class ServerClient {
         const delta = typeof event.delta === 'string' ? event.delta : ''
         if (delta) {
           this.accumulated += delta
-          send(win, 'openui:chat:chunk', delta)
+          // Route through the gate (when set) so tool JSON is withheld; fall back
+          // to a direct push for any non-agent caller.
+          if (this.pendingOnDelta) this.pendingOnDelta(delta)
+          else send(win, 'openui:chat:chunk', delta)
         }
         break
       }
@@ -214,7 +221,8 @@ class ServerClient {
     tier: Tier,
     messages: Message[],
     systemPrompt: string,
-    modelKey: string
+    modelKey: string,
+    onDelta: (delta: string) => void
   ): Promise<string> {
     return new Promise<string>((resolve, reject) => {
       this.pendingResolve = (text) => {
@@ -226,6 +234,7 @@ class ServerClient {
         reject(err)
       }
       this.pendingWin = win
+      this.pendingOnDelta = onDelta
       this.accumulated = ''
 
       try {
@@ -253,7 +262,8 @@ class ServerClient {
     tier: Tier,
     messages: Message[],
     systemPrompt: string,
-    modelKey: string
+    modelKey: string,
+    onDelta: (delta: string) => void
   ): Promise<string> {
     const serverUrl = this.serverUrl()
     if (!serverUrl) throw new Error('No VITE_SERVER_URL configured')
@@ -284,7 +294,7 @@ class ServerClient {
 
     const data = (await response.json()) as { text?: string; content?: string }
     const text = data.text ?? data.content ?? ''
-    send(win, 'openui:chat:chunk', text)
+    onDelta(text)
     return text
   }
 
@@ -295,7 +305,8 @@ class ServerClient {
     tier: Tier,
     messages: Message[],
     systemPrompt: string,
-    modelKey: string
+    modelKey: string,
+    onDelta: (delta: string) => void = (delta) => send(win, 'openui:chat:chunk', delta)
   ): Promise<string> {
     if (!this.serverUrl()) {
       throw new Error('VITE_SERVER_URL is not set — use callCloudProxy() instead')
@@ -306,14 +317,14 @@ class ServerClient {
       try {
         const connected = await this.ensureConnected(win)
         if (connected && this.ws?.readyState === WebSocket.OPEN) {
-          return await this.sendOverWs(win, tier, messages, systemPrompt, modelKey)
+          return await this.sendOverWs(win, tier, messages, systemPrompt, modelKey, onDelta)
         }
       } catch {
         // fall through to HTTP below
       }
     }
 
-    return this.httpFallback(win, tier, messages, systemPrompt, modelKey)
+    return this.httpFallback(win, tier, messages, systemPrompt, modelKey, onDelta)
   }
 }
 
@@ -330,7 +341,8 @@ export function sendMessage(
   tier: Tier,
   messages: Message[],
   systemPrompt: string,
-  modelKey: string
+  modelKey: string,
+  onDelta?: (delta: string) => void
 ): Promise<string> {
-  return serverClient.sendMessage(win, tier, messages, systemPrompt, modelKey)
+  return serverClient.sendMessage(win, tier, messages, systemPrompt, modelKey, onDelta)
 }

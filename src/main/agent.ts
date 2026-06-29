@@ -95,8 +95,10 @@ export function buildDefaultSystemPrompt(): string {
   const allSchemas: ToolSchema[] = [...toolSchemas, ...getMcpToolSchemas()]
   return `You are OpenUI, an intelligent desktop assistant running as a menu-bar app. You help users get things done on their computer through natural conversation.
 
-You can control the operating system by calling tools. To call a tool, respond with ONLY a valid JSON object and nothing else:
+You can control the operating system by calling tools. To call a tool, respond with ONLY a raw JSON object — no prose before or after it, and NO markdown code fences:
 {"tool": "tool_name", "args": {"key": "value"}}
+
+The very first character of a tool-call message MUST be "{". Do not say things like "Sure, I'll do that" before the JSON, and never wrap it in markdown code fences (no triple-backtick blocks).
 
 After each tool runs you will receive a message starting with "TOOL RESULT" describing what happened. Use it to decide the next step. Chain as many tool calls as the task needs — one per message. When the task is complete, reply to the user in plain natural language (never wrap your final answer in JSON).
 
@@ -243,29 +245,145 @@ export function emit(win: BrowserWindow, channel: string, ...args: unknown[]): v
   }
 }
 
-export function parseToolCall(text: string): ToolCall | null {
-  const trimmed = text.trim()
-  if (!trimmed.startsWith('{') || !trimmed.endsWith('}')) return null
-  try {
-    const parsed: unknown = JSON.parse(trimmed)
-    if (
-      typeof parsed === 'object' &&
-      parsed !== null &&
-      'tool' in parsed &&
-      typeof (parsed as Record<string, unknown>).tool === 'string' &&
-      'args' in parsed
-    ) {
-      const call = parsed as { tool: string; args: unknown }
-      const args =
-        typeof call.args === 'object' && call.args !== null
-          ? (call.args as Record<string, unknown>)
-          : {}
-      return { tool: call.tool, args }
+/**
+ * Extract the first *balanced* JSON object from `text`, starting at the first
+ * `{`. String-aware so braces inside string values don't end the object early,
+ * and tolerant of trailing prose/newlines after the closing `}` (models often
+ * append an explanation). Returns the object's source text, or null.
+ */
+function extractFirstJsonObject(text: string): string | null {
+  const start = text.indexOf('{')
+  if (start === -1) return null
+  let depth = 0
+  let inString = false
+  let escaped = false
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i]
+    if (inString) {
+      if (escaped) escaped = false
+      else if (ch === '\\') escaped = true
+      else if (ch === '"') inString = false
+      continue
     }
-  } catch {
-    // Not valid JSON — not a tool call
+    if (ch === '"') inString = true
+    else if (ch === '{') depth++
+    else if (ch === '}') {
+      depth--
+      if (depth === 0) return text.slice(start, i + 1)
+    }
   }
-  return null
+  return null // unbalanced — likely a still-streaming fragment
+}
+
+/**
+ * Parse a model response into a tool call, or null for a natural-language answer.
+ *
+ * Robust by design — real models (especially local Ollama models) wrap calls in
+ * markdown fences, add leading/trailing whitespace, or append a trailing newline.
+ * We therefore:
+ *   1. unwrap a surrounding ```json … ``` / ``` … ``` code fence,
+ *   2. require the result to be tool-SHAPED (begins with a JSON object) so a
+ *      natural-language answer that merely *mentions* JSON is never executed —
+ *      this mirrors StreamGate, which withholds exactly these shapes from the UI,
+ *   3. extract the first balanced {...} (tolerating trailing prose), and
+ *   4. accept the common field aliases models emit (tool/name/tool_name,
+ *      args/arguments/parameters/input).
+ */
+export function parseToolCall(text: string): ToolCall | null {
+  if (!text) return null
+
+  let candidate = text.trim()
+  // Unwrap a full markdown code fence: ```json\n{...}\n```  or  ```\n{...}\n```
+  const fence = candidate.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i)
+  if (fence) candidate = fence[1].trim()
+
+  // Only tool-shaped responses are ever executed (see step 2 above).
+  if (!candidate.startsWith('{')) return null
+
+  const jsonText = extractFirstJsonObject(candidate)
+  if (!jsonText) return null
+
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(jsonText)
+  } catch {
+    return null // not valid JSON — treat as natural language
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return null
+
+  const obj = parsed as Record<string, unknown>
+  const toolRaw = obj.tool ?? obj.tool_name ?? obj.name
+  if (typeof toolRaw !== 'string' || !toolRaw.trim()) return null
+
+  const argsRaw = obj.args ?? obj.arguments ?? obj.parameters ?? obj.input
+  const args =
+    typeof argsRaw === 'object' && argsRaw !== null && !Array.isArray(argsRaw)
+      ? (argsRaw as Record<string, unknown>)
+      : {}
+  return { tool: toolRaw.trim(), args }
+}
+
+/**
+ * Buffers a streaming model response and decides, from the first non-whitespace
+ * characters, whether it is a tool call (JSON object, optionally fenced) or a
+ * natural-language answer:
+ *
+ *   • tool-shaped  → WITHHELD from the UI (the user must never see raw tool JSON);
+ *   • text-shaped  → flushed and then streamed live, token by token.
+ *
+ * This is the architectural fix for "the assistant prints JSON": the gate sits
+ * between every model transport and the renderer, so JSON can never reach the UI
+ * regardless of which provider produced it. `finalize()` performs false-positive
+ * recovery — if something looked like JSON but wasn't a real tool call, it is
+ * flushed so the user still sees the answer.
+ */
+export class StreamGate {
+  private buffer = ''
+  private decided: 'tool' | 'text' | null = null
+
+  constructor(private readonly forward: (delta: string) => void) {}
+
+  /** Feed one streamed delta. Forwards to the UI only once classified as text. */
+  push = (delta: string): void => {
+    if (!delta) return
+    this.buffer += delta
+
+    if (this.decided === 'text') {
+      this.forward(delta)
+      return
+    }
+    if (this.decided === 'tool') return // keep withholding
+
+    // Undecided: inspect the leading non-whitespace character(s).
+    const lead = this.buffer.replace(/^\s+/, '')
+    if (lead === '') return // only whitespace so far — wait for more
+
+    if (lead[0] === '`') {
+      // Possibly the start of a ``` code fence — wait until we can be sure.
+      if (lead.length < 3) return
+      this.decided = 'tool'
+      return
+    }
+    if (lead[0] === '{') {
+      this.decided = 'tool'
+      return
+    }
+
+    // Natural language → flush everything buffered so far, then stream live.
+    this.decided = 'text'
+    this.forward(this.buffer)
+  }
+
+  /**
+   * Call once the full response is known and classified by the agent. When we
+   * withheld output that turned out NOT to be a real tool call, flush it now so
+   * the user still sees the answer.
+   */
+  finalize(isToolCall: boolean): void {
+    if (!isToolCall && this.decided === 'tool') {
+      this.forward(this.buffer)
+    }
+  }
 }
 
 /** Turn a tool execution into a message the model can read on the next turn. */
@@ -276,7 +394,12 @@ function formatToolResult(call: ToolCall, result: ToolResult): string {
   return `TOOL RESULT [${call.tool}] error: ${result.error ?? 'unknown error'}`
 }
 
-async function callOllama(win: BrowserWindow, messages: Message[], systemPrompt: string): Promise<string> {
+async function callOllama(
+  _win: BrowserWindow,
+  messages: Message[],
+  systemPrompt: string,
+  onDelta: (delta: string) => void
+): Promise<string> {
   const ollama = new Ollama({ host: process.env.OLLAMA_HOST ?? 'http://127.0.0.1:11434' })
   const stream = await ollama.chat({
     model: process.env.OLLAMA_MODEL ?? 'llama3:8b',
@@ -291,7 +414,7 @@ async function callOllama(win: BrowserWindow, messages: Message[], systemPrompt:
     const delta = part.message?.content ?? ''
     if (delta) {
       full += delta
-      emit(win, 'openui:chat:chunk', delta)
+      onDelta(delta)
     }
   }
   return full
@@ -304,10 +427,11 @@ const DIRECT_PRO_MODEL = 'claude-sonnet-4-6'
 const DIRECT_FREE_MODEL = 'claude-3-5-haiku-latest'
 
 async function callAnthropic(
-  win: BrowserWindow,
+  _win: BrowserWindow,
   messages: Message[],
   systemPrompt: string,
-  model: string = DIRECT_PRO_MODEL
+  model: string,
+  onDelta: (delta: string) => void
 ): Promise<string> {
   const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
   const stream = client.messages.stream({
@@ -321,13 +445,18 @@ async function callAnthropic(
     if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
       const delta = event.delta.text
       full += delta
-      emit(win, 'openui:chat:chunk', delta)
+      onDelta(delta)
     }
   }
   return full
 }
 
-async function callEnterprise(win: BrowserWindow, messages: Message[], systemPrompt: string): Promise<string> {
+async function callEnterprise(
+  _win: BrowserWindow,
+  messages: Message[],
+  systemPrompt: string,
+  onDelta: (delta: string) => void
+): Promise<string> {
   const client = new OpenAI({
     baseURL: process.env.GLM_BASE_URL ?? 'http://127.0.0.1:8080/v1',
     apiKey: process.env.GLM_API_KEY ?? 'no-key'
@@ -345,7 +474,7 @@ async function callEnterprise(win: BrowserWindow, messages: Message[], systemPro
     const delta = chunk.choices[0]?.delta?.content ?? ''
     if (delta) {
       full += delta
-      emit(win, 'openui:chat:chunk', delta)
+      onDelta(delta)
     }
   }
   return full
@@ -374,7 +503,11 @@ export async function callModel(
   win: BrowserWindow,
   tier: Tier,
   messages: Message[],
-  systemPrompt: string = buildSystemPrompt()
+  systemPrompt: string = buildSystemPrompt(),
+  // Every streamed token is delivered here. The default forwards straight to the
+  // renderer (legacy behaviour, used by autonomous.ts); the interactive loop
+  // passes a StreamGate so tool-call JSON is withheld from the UI.
+  onDelta: (delta: string) => void = (delta) => emit(win, 'openui:chat:chunk', delta)
 ): Promise<string> {
   const ollamaUp = await isOllamaRunning()
 
@@ -382,21 +515,21 @@ export async function callModel(
     if (ollamaUp) {
       // Local Ollama → free + unlimited, saves our API costs.
       emitLocalUsage(win, tier)
-      return callOllama(win, messages, systemPrompt)
+      return callOllama(win, messages, systemPrompt, onDelta)
     }
-    return routeCloudOrDirect(win, 'free', messages, systemPrompt, 'free-default')
+    return routeCloudOrDirect(win, 'free', messages, systemPrompt, 'free-default', onDelta)
   }
 
   if (tier === 'pro') {
     // Keep cheap/simple work local when Ollama is available; send the rest to cloud.
     if (ollamaUp && !classifyTaskComplexity(messages)) {
       emitLocalUsage(win, tier)
-      return callOllama(win, messages, systemPrompt)
+      return callOllama(win, messages, systemPrompt, onDelta)
     }
-    return routeCloudOrDirect(win, 'pro', messages, systemPrompt, 'pro-default')
+    return routeCloudOrDirect(win, 'pro', messages, systemPrompt, 'pro-default', onDelta)
   }
 
-  return routeCloudOrDirect(win, 'enterprise', messages, systemPrompt, 'enterprise-default')
+  return routeCloudOrDirect(win, 'enterprise', messages, systemPrompt, 'enterprise-default', onDelta)
 }
 
 /**
@@ -414,30 +547,31 @@ async function routeCloudOrDirect(
   tier: Tier,
   messages: Message[],
   systemPrompt: string,
-  modelKey: string
+  modelKey: string,
+  onDelta: (delta: string) => void
 ): Promise<string> {
   if (isCloudProxyConfigured()) {
-    return callCloudProxy(win, tier, messages, systemPrompt, modelKey)
+    return callCloudProxy(win, tier, messages, systemPrompt, modelKey, onDelta)
   }
 
   // ── Local-dev / unauthenticated fallback (direct API keys) ──────────────────
   emitLocalUsage(win, tier)
-  if (tier === 'enterprise') return callEnterprise(win, messages, systemPrompt)
-  if (tier === 'pro') return callAnthropic(win, messages, systemPrompt, DIRECT_PRO_MODEL)
+  if (tier === 'enterprise') return callEnterprise(win, messages, systemPrompt, onDelta)
+  if (tier === 'pro') return callAnthropic(win, messages, systemPrompt, DIRECT_PRO_MODEL, onDelta)
 
   // Free fallback: prefer a direct Anthropic (Haiku) call if a key exists.
   if (process.env.ANTHROPIC_API_KEY) {
-    return callAnthropic(win, messages, systemPrompt, DIRECT_FREE_MODEL)
+    return callAnthropic(win, messages, systemPrompt, DIRECT_FREE_MODEL, onDelta)
   }
   // No cloud key configured locally — try Ollama, but degrade gracefully so the
   // user never sees an "Ollama not installed" error if it isn't there.
   try {
-    return await callOllama(win, messages, systemPrompt)
+    return await callOllama(win, messages, systemPrompt, onDelta)
   } catch {
     const msg =
       "I'm not able to reach an AI model right now. Sign in to use cloud AI, " +
       'or set up local AI for offline use.'
-    emit(win, 'openui:chat:chunk', msg)
+    onDelta(msg)
     return msg
   }
 }
@@ -527,7 +661,11 @@ export async function handleChat(win: BrowserWindow, userMessage: string, tier: 
         reason: isPrReview ? 'pr_review' : isDesigner ? 'designer' : 'tier_routing'
       })
       const callStart = Date.now()
-      const responseText = await callModel(win, effectiveTier, history, effectiveSystemPrompt)
+      // Gate every streamed token: tool-call JSON is withheld from the renderer,
+      // natural language streams through live. This is what keeps raw JSON off
+      // the screen regardless of which provider/transport produced the response.
+      const gate = new StreamGate((delta) => emit(win, 'openui:chat:chunk', delta))
+      const responseText = await callModel(win, effectiveTier, history, effectiveSystemPrompt, gate.push)
       trackEvent(Events.CHAT_RESPONSE_RECEIVED, {
         tier: effectiveTier,
         model,
@@ -537,6 +675,11 @@ export async function handleChat(win: BrowserWindow, userMessage: string, tier: 
       history.push({ role: 'assistant', content: responseText })
 
       const toolCall = parseToolCall(responseText)
+      // Reveal any withheld output that turned out NOT to be a real tool call.
+      gate.finalize(toolCall !== null)
+      console.log(
+        `[agent] turn ${turn}: ${toolCall ? `tool=${toolCall.tool}` : 'natural-language reply'} (${responseText.length} chars)`
+      )
       if (!toolCall) {
         finalText = responseText // natural-language answer ⇒ turn complete
         database.messages.addMessage(convId, 'assistant', finalText)
