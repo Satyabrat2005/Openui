@@ -12,7 +12,7 @@
  * schema and Supabase's `session.expires_at`), so this module works in seconds.
  */
 import { BrowserWindow } from 'electron'
-import { getSupabaseClient } from './supabaseClient'
+import { getSupabaseClient, isSupabaseConfigured } from './supabaseClient'
 import { database, type UserRow } from '../database'
 import { resetTelemetryIdentity } from '../telemetry/posthog'
 
@@ -106,6 +106,62 @@ export async function refreshSession(): Promise<boolean> {
     return true
   } catch (err) {
     console.error('[openui] refreshSession failed:', err)
+    return false
+  }
+}
+
+/**
+ * Guarantee the app has a usable session so cloud AI works the instant OpenUI
+ * launches — no account screen, no local model setup. If nobody is signed in we
+ * create a lightweight **anonymous** Supabase session (Supabase's built-in
+ * `signInAnonymously`): it yields a real user id + JWT, which is all the
+ * `chat-proxy` Edge Function needs to serve the free tier. A real Google sign-in
+ * later (completeAuth) simply replaces this guest as the active user.
+ *
+ * Best-effort and never throws: if Supabase is unconfigured (local dev) or the
+ * project has anonymous sign-ins disabled, we return false and the caller keeps
+ * working through whatever other path is available — the user is never blocked.
+ *
+ * Returns true when a session (existing or freshly created) is in place.
+ */
+export async function ensureGuestSession(win?: BrowserWindow | null): Promise<boolean> {
+  if (isAuthenticated()) return true
+  if (!isSupabaseConfigured()) return false
+
+  try {
+    const supabase = getSupabaseClient()
+    const { data, error } = await supabase.auth.signInAnonymously()
+    const session = data?.session
+    const user = data?.user
+    if (error || !session || !user) {
+      console.warn(
+        '[openui] Anonymous session unavailable (enable "Anonymous sign-ins" in Supabase Auth settings):',
+        error?.message ?? 'no session returned'
+      )
+      return false
+    }
+
+    // Persist exactly like a real sign-in so the cloud router + refresh loop work
+    // unchanged. Guests have no email — that absence is how the renderer tells a
+    // guest from a signed-in user and keeps nudging an optional Google sign-in.
+    const expiresAtSec = session.expires_at ?? nowSeconds() + (session.expires_in ?? 3600)
+    database.users.upsertUser({ id: user.id, tier: 'free' })
+    database.users.updateAuthTokens(user.id, session.access_token, session.refresh_token ?? '', expiresAtSec)
+    cacheUserTier(user.id, 'free')
+    setActiveUser(user.id)
+
+    const profile: UserProfile = {
+      id: user.id,
+      email: null,
+      display_name: null,
+      avatar_url: null,
+      tier: 'free'
+    }
+    if (win && !win.isDestroyed()) win.webContents.send('openui:auth-success', profile)
+    console.log('[openui] Guest session ready — cloud AI available with no setup.')
+    return true
+  } catch (err) {
+    console.error('[openui] ensureGuestSession failed:', err)
     return false
   }
 }

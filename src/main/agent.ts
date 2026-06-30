@@ -568,9 +568,12 @@ async function routeCloudOrDirect(
   try {
     return await callOllama(win, messages, systemPrompt, onDelta)
   } catch {
+    // No cloud session and no local model: surface a neutral connectivity
+    // message. We never instruct the user to install anything — cloud is the
+    // product's default path and a guest session normally guarantees it.
     const msg =
-      "I'm not able to reach an AI model right now. Sign in to use cloud AI, " +
-      'or set up local AI for offline use.'
+      "I couldn't reach the AI service just now. Please check your internet " +
+      'connection and try again in a moment.'
     onDelta(msg)
     return msg
   }

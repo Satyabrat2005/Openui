@@ -10,10 +10,12 @@ const TERMS_URL = 'https://openui.app/terms'
 const PRIVACY_URL = 'https://openui.app/privacy'
 
 /**
- * Step 2 — required sign-in (we need the user's tier for model routing, so this
- * step has no Skip). The Google button fires the login IPC; we advance as soon
- * as auth succeeds (observed via AuthContext) and surface a friendly message on
- * failure rather than a raw error string.
+ * Step 2 — optional sign-in. A silent guest session already makes the app fully
+ * usable on the free tier, so signing in is an upgrade (syncs plan + preferences
+ * across devices), not a gate: "Continue without an account" advances the wizard.
+ * The Google button fires the login IPC; we advance as soon as auth succeeds
+ * (observed via AuthContext) and surface a friendly message on failure rather
+ * than a raw error string.
  *
  * External links are opened with `window.open`, which the main process'
  * window-open handler routes to the OS browser.
@@ -90,6 +92,14 @@ export default function SignInStep({ onAuthed }: Props): JSX.Element {
       </button>
 
       {error && <p className="ob-error">{error}</p>}
+
+      <button
+        className="ob-link"
+        style={{ marginTop: 18, fontSize: 13, opacity: 0.7 }}
+        onClick={onAuthed}
+      >
+        Continue without an account
+      </button>
 
       <p className="ob-legal" style={{ marginTop: error ? 14 : 22 }}>
         By signing in, you agree to our{' '}
