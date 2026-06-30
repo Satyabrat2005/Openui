@@ -57,8 +57,8 @@
 | **Node.js** | 20+ | [nodejs.org](https://nodejs.org) |
 | **npm** | 10+ | Bundled with Node.js |
 | **macOS** | 12+ | Primary target; Windows dev supported |
-| **Supabase project** | — | Required for auth + cloud chat proxy |
-| **Ollama** _(optional)_ | v0.5+ | Local fallback only; not required to run |
+| **Supabase project** | — | Required for cloud chat proxy + guest/anon sessions (enable Anonymous sign-ins) |
+| **Ollama** _(optional)_ | v0.5+ | Hidden power-user local path; never required, never prompted |
 
 ---
 
@@ -486,10 +486,14 @@ Step completion and timing are tracked via telemetry (`onboarding_started`, `onb
 
 ### Cloud-first routing
 
-The product promise is **sign in and it works — no Ollama, no local setup**. The `chat-proxy` Supabase Edge Function holds our API keys server-side. Ollama is shown as an optional enhancement:
+The product promise is **launch it and it works — no account screen, no Ollama, no local setup**. On first launch the app mints a silent **anonymous Supabase session** (`ensureGuestSession` in `sessionManager.ts`); that token is all the `chat-proxy` Edge Function needs to serve the free tier, so cloud Claude is available immediately. Signing in with Google later is an optional upgrade that syncs the plan/preferences and unlocks Pro — never a gate.
 
-- `LocalAIStatus` component shows whether Ollama is running and its impact on your daily message count.
-- `OllamaSuggestion` prompts users to set it up for unlimited offline use.
+> **Ops note:** anonymous sessions require **Authentication → Sign In / Providers → Anonymous sign-ins = enabled** in the Supabase dashboard. If it's disabled, `ensureGuestSession` no-ops and unsigned users fall back to whatever local model is present.
+
+Local AI (Ollama) is a hidden power-user path only — auto-detected and routed to if it happens to be running, but never advertised as something to install:
+
+- `LocalAIStatus` shows the active plan ("Cloud AI · 20 messages/day free"), or "Local AI · Unlimited" when an Ollama server is detected.
+- `OllamaSuggestion` is disabled (no install prompts).
 - The **daily usage counter** (`UsageCounter`) shows "15/20 messages today" drawn from `x-ratelimit-remaining` headers returned by `chat-proxy`.
 
 A 429 from the proxy triggers a friendly upsell message and `TierUpgradeModal` — never a raw error.

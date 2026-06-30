@@ -40,7 +40,10 @@ export function AuthProvider({ children }: { children: ReactNode }): JSX.Element
   }, [])
 
   const tier: Tier = user?.tier ?? 'free'
-  const isAnonymous = !user || user.id === 'anonymous'
+  // A guest (silent anonymous cloud session) has a real id but no email — treat
+  // it as anonymous so we keep nudging an optional Google sign-in, even though
+  // the app is already fully usable on the free tier.
+  const isAnonymous = !user || user.id === 'anonymous' || !user.email
 
   return (
     <AuthContext.Provider value={{ user, tier, isAnonymous }}>

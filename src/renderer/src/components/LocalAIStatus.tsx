@@ -23,10 +23,9 @@ export default function LocalAIStatus(): JSX.Element {
     return off
   }, [])
 
-  const handleSetUp = (): void => {
-    window.openui.installOllama().catch(() => {})
-  }
-
+  // When a power user happens to be running Ollama we route to it and say so;
+  // otherwise we simply show the active cloud plan. We never prompt to install
+  // anything — cloud is the default and works with no setup.
   if (running) {
     return (
       <div style={rowStyle}>
@@ -38,11 +37,8 @@ export default function LocalAIStatus(): JSX.Element {
 
   return (
     <div style={rowStyle}>
-      <span style={{ ...dotStyle, background: '#c7c7cc' }} />
-      <span style={labelStyle}>Cloud · {CLOUD_LIMIT[tier]}</span>
-      <button style={linkBtnStyle} onClick={handleSetUp}>
-        Set up local AI
-      </button>
+      <span style={{ ...dotStyle, background: '#34c759' }} />
+      <span style={labelStyle}>Cloud AI · {CLOUD_LIMIT[tier]}</span>
     </div>
   )
 }
@@ -68,15 +64,4 @@ const labelStyle: React.CSSProperties = {
   color: '#8e8e93',
   fontWeight: 500,
   flex: 1
-}
-
-const linkBtnStyle: React.CSSProperties = {
-  fontSize: 11,
-  fontWeight: 500,
-  color: '#007aff',
-  background: 'none',
-  border: 'none',
-  padding: 0,
-  cursor: 'pointer',
-  fontFamily: '-apple-system, sans-serif'
 }

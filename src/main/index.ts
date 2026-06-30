@@ -13,7 +13,7 @@ import { connectMcpServer, disconnectAll, type McpServerConfig } from './mcp-cli
 import { initDatabase, database } from './database'
 import { registerDeepLinkProtocol, setupDeepLinkHandlers } from './auth/deeplink'
 import { openAuthWindow, isAuthWebContents, isAuthWindowOpen } from './auth/authWindow'
-import { logout, getCurrentUser, getUserTier, startTokenRefreshLoop, stopTokenRefreshLoop } from './auth/sessionManager'
+import { logout, getCurrentUser, getUserTier, startTokenRefreshLoop, stopTokenRefreshLoop, ensureGuestSession } from './auth/sessionManager'
 import { initTelemetry, enableTelemetryAfterConsent, shutdownTelemetry, setTelemetryOptOut, isTelemetryActive, trackEvent } from './telemetry/posthog'
 import { grantConsent, denyConsent, getConsentStatus, recordPendingEvent, ConsentStatus } from './telemetry/consent'
 import { initUpdater, checkForUpdates, downloadUpdate, installUpdateAndRestart, openReleasesPage } from './updater/updater'
@@ -347,6 +347,12 @@ app.whenReady().then(async () => {
   // Route deep links to the main window and keep the access token fresh.
   setupDeepLinkHandlers(win)
   startTokenRefreshLoop(win)
+
+  // Zero-setup guarantee: if nobody is signed in, mint a silent anonymous cloud
+  // session so OpenUI works the instant it launches — no account screen, no local
+  // model to download. Best-effort and non-blocking; if it can't (offline / dev
+  // without Supabase) the app still launches and the user is never shown an error.
+  void ensureGuestSession(win)
 
   ipcMain.on('openui:hide', () => hideWindow())
   ipcMain.on('openui:quit', () => app.quit())
