@@ -15,7 +15,7 @@
 | **Phase 7** | Auth + subscription gating — Google OAuth via Supabase, SQLite persistence, tier-based model routing, Stripe checkout, voice tier routing, `AuthContext`, `TierUpgradeModal`, `ConversationList` | **Complete** |
 | **Sub-Phase 4** | Telemetry & privacy — PostHog analytics (4A core, 4B event instrumentation), opt-in privacy consent layer with `ConsentModal` + Settings toggle (4C) | **Complete** |
 | **Phase 10** | GitHub PR review — `github.ts` tool module (`list_open_prs`, `get_pr_diff`, `post_pr_comment` via `@octokit/rest`), `PR_REVIEW_RE` trigger in `agent.ts`, strict `PR_REVIEW_SYSTEM_PROMPT`, forced Claude Sonnet (pro tier), 32-turn budget for multi-PR sessions | **Complete** |
-| **Onboarding Phase A** | Cloud-first routing — every tier works with no local setup via the `chat-proxy` Edge Function (our keys, server-side), per-tier daily limits (`usage_tracking`), Ollama demoted to optional cost-saver/offline fallback, live usage counter, no more "Ollama required" errors | **Complete** |
+| **Onboarding Phase A** | Cloud-only routing — every tier works with no local setup via the `chat-proxy` Edge Function (our keys, server-side), per-tier daily/monthly limits (`usage_tracking`), no local-model routing path anywhere, live usage counter | **Complete** |
 | **MCP Integration** | Model Context Protocol client (`mcp-client.ts`) — connects to external stdio/SSE tool servers, merges their tool schemas into the agent loop, IPC handler `openui:mcp:connect`, config via `mcp-config.json` | **Complete** |
 
 ---
@@ -268,42 +268,34 @@ openui:quit IPC  ──→  app.quit()
 
 ### Model router — cloud-first (Onboarding Phase A)
 
-The product promise: **sign in and it works — no Ollama, no local setup.** So the
-**default for every tier is the cloud**, served by the `chat-proxy` Supabase Edge
-Function which holds OUR LLM API keys server-side (`src/main/cloudFreeTier.ts`).
-Ollama is an **optional** enhancement only: a cost-saver for Free and an offline
-fallback. A missing/stopped Ollama is never an error — the turn silently routes to
-the cloud.
+The product promise: **sign in and it works — no local setup.** Every tier is
+served **exclusively** by the cloud, via the `chat-proxy` Supabase Edge Function
+which holds OUR LLM API keys server-side (`src/main/cloudFreeTier.ts`). There is
+no local-model (Ollama) routing path anywhere in the app: nothing a user installs
+on their own machine can change how a message is billed or capped. Free is 5
+cloud messages/day and 120 voice minutes/month; Pro and Enterprise raise those
+caps (see `src/main/stripe/pricing.ts`).
 
 `callModel(win, tier, messages, systemPrompt)` is an async router:
 
 ```
 callModel(tier)
-  │
-  ├─ ollamaUp = await isOllamaRunning()   (2s probe of /api/tags; false on any failure)
-  │
-  ├─ free:
-  │     ├─ ollamaUp → callOllama          (local, unlimited, saves our $; emitLocalUsage)
-  │     └─ else     → routeCloudOrDirect('free-default')
-  │
-  ├─ pro:
-  │     ├─ ollamaUp AND !classifyTaskComplexity(messages) → callOllama   (cheap work stays local)
-  │     └─ else     → routeCloudOrDirect('pro-default')
-  │
+  ├─ free:           → routeCloudOrDirect('free-default')
+  ├─ pro:            → routeCloudOrDirect('pro-default')
   └─ enterprise:     → routeCloudOrDirect('enterprise-default')
 
 routeCloudOrDirect(modelKey)
   ├─ isCloudProxyConfigured()  (Supabase env set AND a user is signed in)
   │     └─ true  → callCloudProxy(win, tier, messages, system, modelKey)   ← SHIPPED PATH
-  │     └─ false → local-dev direct fallback (uses .env keys):
+  │     └─ false → local-dev direct fallback (uses .env keys, unreachable in production):
   │                   enterprise → callEnterprise (GLM)
   │                   pro        → callAnthropic(DIRECT_PRO_MODEL = claude-sonnet-4-6)
   │                   free       → callAnthropic(DIRECT_FREE_MODEL = claude-3-5-haiku)
-  │                                or Ollama, degrading to a neutral message — never an Ollama error
+  │                                or a neutral "couldn't reach the AI service" message
 ```
 
-`callCloudProxy` streams over the **same** `openui:chat:chunk` channel as the local
-paths, so the agentic loop is provider-agnostic. It:
+`callCloudProxy` streams over the `openui:chat:chunk` channel, so the agentic loop
+is provider-agnostic. It:
 
 1. Resolves the signed-in user's Supabase access token (refreshing once if expired).
 2. `fetch`es `${SUPABASE_URL}/functions/v1/chat-proxy` with `Authorization: Bearer <token>`,
@@ -315,7 +307,7 @@ paths, so the agentic loop is provider-agnostic. It:
 5. Reads `x-ratelimit-{tier,limit,remaining}` headers and emits `openui:usage-update`
    → the renderer's `UsageCounter` shows "15/20 today".
 
-The clients (`ollama`, `@anthropic-ai/sdk`, `openai`) are created inside their call
+The clients (`@anthropic-ai/sdk`, `openai`) are created inside their call
 functions (not at module load), so env vars are read at first-request time.
 
 ### Cloud proxy + daily limits (`chat-proxy` Edge Function)
@@ -357,7 +349,7 @@ window.openui.chat(msg, tier)               [renderer]
                     │
                     └── loop (≤ MAX_TOOL_TURNS = 8):
                           │
-                          ├── callModel (Ollama / Anthropic / Enterprise)
+                          ├── callModel (cloud proxy / direct Anthropic / Enterprise dev fallback)
                           │     └── for await (token of stream)
                           │           └── send('openui:chat:chunk', delta)
                           │
@@ -428,8 +420,7 @@ extension icons, or any Electron app):
 | `SUPABASE_URL` | *(required for the cloud chat path)* | `callCloudProxy` (Edge Function URL), auth, sync |
 | `SUPABASE_ANON_KEY` | *(required for the cloud chat path)* | `callCloudProxy` (`apikey` header), auth |
 | `ANTHROPIC_API_KEY` | *(read_screen vision + local-dev chat fallback only)* | `read_screen`, `callAnthropic` fallback |
-| `OLLAMA_HOST` | `http://127.0.0.1:11434` | `isOllamaRunning`, `callOllama` *(optional)* |
-| `OLLAMA_MODEL` | `llama3:8b` | `callOllama` *(optional)* |
+| `OLLAMA_HOST` | `http://127.0.0.1:11434` | `promptRefiner`'s internal self-improvement job only *(never used for chat)* |
 | `GLM_BASE_URL` | `http://127.0.0.1:8080/v1` | `callEnterprise` *(dev fallback)* |
 | `GLM_API_KEY` | `no-key` | `callEnterprise` *(dev fallback)* |
 | `GLM_MODEL` | `glm-4` | `callEnterprise` *(dev fallback)* |
@@ -858,7 +849,7 @@ CREATE INDEX idx_messages_conv ON messages(conversation_id, created_at);
 
 ### Overview
 
-OpenUI uses Supabase Auth (Google OAuth) for sign-in. Auth state is stored locally in SQLite; the renderer holds it in `AuthContext`. Once signed in, chat works immediately via the cloud proxy — no local model or Ollama install is required (see §4, "Model router — cloud-first").
+OpenUI uses Supabase Auth (Google OAuth) for sign-in. Auth state is stored locally in SQLite; the renderer holds it in `AuthContext`. Once signed in, chat works immediately via the cloud proxy — every tier, no local model required (see §4, "Model router — cloud-first").
 
 ```
 User clicks "Sign in"
@@ -880,12 +871,10 @@ User clicks "Sign in"
                                               └─ AuthContext: setUser(u) → re-render AuthButton + SubscriptionStatus
 ```
 
-**No-Ollama path (cloud-first):**
+**Cloud-only path:**
 ```
-handleChat() — Ollama is NEVER a prerequisite
-  ├─ isOllamaRunning() → true  → use local Ollama (free + unlimited)
-  └─ isOllamaRunning() → false → callCloudProxy (our keys via chat-proxy)
-                                  → the app just works; no "install Ollama" error is ever shown
+handleChat() — every tier is metered, every turn goes through our backend
+  └─ callCloudProxy (our keys via chat-proxy) → the app just works, capped per tier
 ```
 
 ### IPC channels added in Phase 7

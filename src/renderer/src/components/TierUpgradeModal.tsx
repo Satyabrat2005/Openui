@@ -12,7 +12,7 @@ const TIERS = [
     label: 'Free',
     color: '#636366',
     bg: '#f2f2f7',
-    features: ['Local Ollama models', 'Tesseract.js OCR', 'All OS automation tools'],
+    features: ['5 cloud messages/day', '120 voice minutes/month', 'Tesseract.js OCR', 'All OS automation tools'],
     priceLabel: 'Always free'
   },
   {

@@ -6,6 +6,7 @@ import { BrowserWindow, ipcMain } from 'electron'
 import { coerceTier, handleChat } from './agent'
 import { getUserTier, getCurrentUser } from './auth/sessionManager'
 import { getDb } from './database/init'
+import { monthlyVoiceMinuteLimit } from './stripe/pricing'
 import { trackEvent } from './telemetry/posthog'
 import { Events } from './telemetry/events'
 
@@ -151,6 +152,22 @@ function getVoiceSecondsToday(userId: string): number {
   }
 }
 
+/** Sum of voice seconds used across every day in the current calendar month. */
+function getVoiceSecondsThisMonth(userId: string): number {
+  try {
+    const db = getDb()
+    const monthPrefix = new Date().toISOString().slice(0, 7) // "YYYY-MM"
+    const row = db
+      .prepare(
+        "SELECT COALESCE(SUM(seconds_used), 0) AS total FROM voice_usage WHERE user_id = ? AND date LIKE ? || '%'"
+      )
+      .get(userId, monthPrefix) as { total: number } | undefined
+    return row?.total ?? 0
+  } catch {
+    return 0
+  }
+}
+
 function recordVoiceUsage(userId: string, seconds: number): void {
   try {
     const db = getDb()
@@ -188,13 +205,22 @@ export function registerVoiceIPC(win: BrowserWindow): void {
     const serverTier = getUserTier()
     const userId = (await getCurrentUser())?.id ?? 'anonymous'
 
-    // Enforce per-tier daily Whisper transcription cap before hitting the API.
-    // Free: 300 s/day (5 min). Pro: 3600 s/day (1 h). Enterprise: unlimited.
-    if (serverTier !== 'enterprise') {
-      const cap = serverTier === 'pro' ? 3600 : 300
+    // Enforce the per-tier Whisper transcription cap before hitting the API.
+    // Free is metered monthly (120 min/month); Pro keeps a generous daily cap;
+    // Enterprise is unlimited. Free's cap is monthly (not daily) specifically so
+    // it can't be topped up by simply waiting for the next day.
+    if (serverTier === 'free') {
+      const capSeconds = monthlyVoiceMinuteLimit('free') * 60
+      const used = getVoiceSecondsThisMonth(userId)
+      if (used >= capSeconds) {
+        emit(win, 'openui:chat:error', 'Monthly voice limit reached. Upgrade to Pro for more voice time.')
+        return
+      }
+    } else if (serverTier === 'pro') {
+      const cap = 3600
       const used = getVoiceSecondsToday(userId)
       if (used >= cap) {
-        emit(win, 'openui:chat:error', 'Daily voice limit reached. Upgrade to Pro for more voice time.')
+        emit(win, 'openui:chat:error', 'Daily voice limit reached. Upgrade to Enterprise for unlimited voice time.')
         return
       }
     }

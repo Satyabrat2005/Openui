@@ -27,8 +27,8 @@ class TestTierDefinitions(unittest.TestCase):
     def test_free_tier(self):
         """Free tier definition."""
         free = TIERS[TierId.FREE]
-        self.assertEqual(free.daily_chat_limit, 20)
-        self.assertEqual(free.daily_voice_limit, 20)
+        self.assertEqual(free.daily_chat_limit, 5)
+        self.assertEqual(free.monthly_voice_limit_minutes, 120)
         self.assertEqual(free.max_browser_tabs, 1)
         self.assertFalse(free.has_terminal)
         self.assertFalse(free.has_ppt_excel)
@@ -39,7 +39,7 @@ class TestTierDefinitions(unittest.TestCase):
         """Pro tier definition."""
         pro = TIERS[TierId.PRO]
         self.assertEqual(pro.daily_chat_limit, 500)
-        self.assertEqual(pro.daily_voice_limit, 200)
+        self.assertEqual(pro.monthly_voice_limit_minutes, 600)
         self.assertEqual(pro.max_browser_tabs, 3)
         self.assertFalse(pro.has_terminal)
         self.assertTrue(pro.has_ppt_excel)
@@ -51,7 +51,7 @@ class TestTierDefinitions(unittest.TestCase):
         """Enterprise tier definition."""
         enterprise = TIERS[TierId.ENTERPRISE]
         self.assertEqual(enterprise.daily_chat_limit, float('inf'))
-        self.assertEqual(enterprise.daily_voice_limit, float('inf'))
+        self.assertEqual(enterprise.monthly_voice_limit_minutes, float('inf'))
         self.assertEqual(enterprise.max_browser_tabs, 10)
         self.assertTrue(enterprise.has_terminal)
         self.assertTrue(enterprise.has_ppt_excel)
@@ -115,12 +115,12 @@ class TestTierGuard(unittest.TestCase):
             self.fail("Enterprise tier should allow 10 tabs")
 
     def test_model_allowed(self):
-        """Check model access per tier."""
+        """Check model access per tier — cloud-only, no local/Ollama bypass."""
         # Free: no GPT-4o
         self.assertFalse(self.tier_guard.is_model_allowed("user-1", "gpt-4o"))
 
-        # Free: allows Ollama local models
-        self.assertTrue(self.tier_guard.is_model_allowed("user-1", "llama3:8b"))
+        # Free: no local models either — there is no local routing path
+        self.assertFalse(self.tier_guard.is_model_allowed("user-1", "llama3:8b"))
 
         # Pro: allows GPT-4o
         # (This uses tier override, so we patch get_tier)
@@ -129,10 +129,10 @@ class TestTierGuard(unittest.TestCase):
 
     def test_daily_limits_exceeded(self):
         """Check daily usage limits."""
-        # Free: 20 chat/day
-        self.tier_guard.check_daily_limit("user-1", "chat", 19, )  # OK
+        # Free: 5 chat/day
+        self.tier_guard.check_daily_limit("user-1", "chat", 4)  # OK
         with self.assertRaises(PermissionError):
-            self.tier_guard.check_daily_limit("user-1", "chat", 20)  # Exceeded
+            self.tier_guard.check_daily_limit("user-1", "chat", 5)  # Exceeded
 
         # Pro: 500 chat/day
         with patch.object(self.tier_guard, 'get_tier', return_value=TierId.PRO):
@@ -143,6 +143,17 @@ class TestTierGuard(unittest.TestCase):
         # Enterprise: unlimited
         with patch.object(self.tier_guard, 'get_tier', return_value=TierId.ENTERPRISE):
             self.tier_guard.check_daily_limit("user-1", "chat", 999999)  # OK
+
+    def test_monthly_voice_limit_exceeded(self):
+        """Check monthly voice-minute limits."""
+        # Free: 120 min/month
+        self.tier_guard.check_monthly_voice_limit("user-1", 119)  # OK
+        with self.assertRaises(PermissionError):
+            self.tier_guard.check_monthly_voice_limit("user-1", 120)  # Exceeded
+
+        # Enterprise: unlimited
+        with patch.object(self.tier_guard, 'get_tier', return_value=TierId.ENTERPRISE):
+            self.tier_guard.check_monthly_voice_limit("user-1", 999999)  # OK
 
 
 @unittest.skipUnless(REDIS_AVAILABLE, "fakeredis not installed")

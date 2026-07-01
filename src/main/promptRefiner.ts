@@ -25,7 +25,6 @@ import {
   isImprovementEnabled,
   setCustomSystemPrompt
 } from './improvement'
-import { isOllamaRunning } from './cloudFreeTier'
 import { trackEvent } from './telemetry/posthog'
 import { Events } from './telemetry/events'
 
@@ -107,6 +106,24 @@ export function clusterMessages(messages: string[]): TopicCluster[] {
 }
 
 // ── Model call (local-first, non-streaming) ───────────────────────────────────
+
+/**
+ * Is a local Ollama server reachable? Used only by this internal, non-billable
+ * refinement job so a user's own feedback data can stay on-device — it has no
+ * bearing on chat routing or usage limits (see cloudFreeTier.ts for that).
+ */
+async function isOllamaRunning(): Promise<boolean> {
+  try {
+    const host = process.env.OLLAMA_HOST ?? 'http://127.0.0.1:11434'
+    const response = await fetch(`${host.replace(/\/$/, '')}/api/tags`, {
+      method: 'GET',
+      signal: AbortSignal.timeout(2000)
+    })
+    return response.ok
+  } catch {
+    return false
+  }
+}
 
 /**
  * Generate the improved prompt without streaming to any renderer. Prefers a

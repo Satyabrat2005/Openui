@@ -1,6 +1,5 @@
 import Anthropic from '@anthropic-ai/sdk'
 import OpenAI from 'openai'
-import { Ollama } from 'ollama'
 import { BrowserWindow, ipcMain } from 'electron'
 import { toolSchemas, executeTool, describeToolCall, DESTRUCTIVE_TOOLS, type ToolSchema, type ToolResult, type PendingApprovalResult, type Tier } from './tools'
 import { generatePlan, looksLikeTask, type Plan } from './planner'
@@ -8,13 +7,7 @@ import { getMcpToolSchemas, callMcpTool } from './mcp-client'
 import { database } from './database'
 import { clampTierToEntitlement } from './stripe/pricing'
 import { getCurrentUserId } from './stripe/subscriptionSync'
-import {
-  isOllamaRunning,
-  isCloudProxyConfigured,
-  callCloudProxy,
-  classifyTaskComplexity,
-  emitLocalUsage
-} from './cloudFreeTier'
+import { isCloudProxyConfigured, callCloudProxy, CloudProxyError, emitLocalUsage } from './cloudFreeTier'
 import { trackEvent } from './telemetry/posthog'
 import { Events } from './telemetry/events'
 import { classifyFeedbackSignal, getCustomSystemPrompt } from './improvement'
@@ -574,32 +567,6 @@ function formatToolResult(call: ToolCall, result: ToolResult): string {
   return `TOOL RESULT [${call.tool}] error: ${result.error ?? 'unknown error'}`
 }
 
-async function callOllama(
-  _win: BrowserWindow,
-  messages: Message[],
-  systemPrompt: string,
-  onDelta: (delta: string) => void
-): Promise<string> {
-  const ollama = new Ollama({ host: process.env.OLLAMA_HOST ?? 'http://127.0.0.1:11434' })
-  const stream = await ollama.chat({
-    model: process.env.OLLAMA_MODEL ?? 'llama3:8b',
-    messages: [
-      { role: 'system', content: systemPrompt },
-      ...messages.map((m) => ({ role: m.role, content: m.content }))
-    ],
-    stream: true
-  })
-  let full = ''
-  for await (const part of stream) {
-    const delta = part.message?.content ?? ''
-    if (delta) {
-      full += delta
-      onDelta(delta)
-    }
-  }
-  return full
-}
-
 // Direct-API model ids used ONLY by the local-dev fallback (no Supabase / not
 // signed in). In production every cloud turn goes through the chat-proxy Edge
 // Function, whose own model map is the source of truth for shipped users.
@@ -661,19 +628,10 @@ async function callEnterprise(
 }
 
 /**
- * Cloud-first model router (Phase A onboarding). The product promise is that the
- * app works the moment you sign in — no Ollama, no local setup — so the DEFAULT
- * for every tier is the cloud proxy (our API keys, server-side in the Edge
- * Function). Ollama is only ever an optional cost-saver / offline fallback.
- *
- * Priority:
- *   • Free      → local Ollama if running (free + unlimited), else cloud proxy.
- *   • Pro       → local Ollama for simple tasks if running, else cloud proxy.
- *   • Enterprise→ cloud proxy.
- *
- * The user NEVER sees an "Ollama is not installed" error: a down/absent Ollama
- * just silently routes to the cloud. `routeCloudOrDirect` adds a local-dev escape
- * hatch (direct API keys) for when Supabase/auth isn't wired up yet.
+ * Cloud-only model router. Every tier — including Free — is served exclusively
+ * by our backend (the chat-proxy Edge Function, our API keys, server-side
+ * metering). There is no local-model routing path: nothing a user installs on
+ * their own machine can change how a message is billed or capped.
  *
  * `systemPrompt` is supplied by the caller so the same router drives both the
  * interactive desktop assistant (handleChat) and the autonomous coding agent
@@ -689,26 +647,8 @@ export async function callModel(
   // passes a StreamGate so tool-call JSON is withheld from the UI.
   onDelta: (delta: string) => void = (delta) => emit(win, 'openui:chat:chunk', delta)
 ): Promise<string> {
-  const ollamaUp = await isOllamaRunning()
-
-  if (tier === 'free') {
-    if (ollamaUp) {
-      // Local Ollama → free + unlimited, saves our API costs.
-      emitLocalUsage(win, tier)
-      return callOllama(win, messages, systemPrompt, onDelta)
-    }
-    return routeCloudOrDirect(win, 'free', messages, systemPrompt, 'free-default', onDelta)
-  }
-
-  if (tier === 'pro') {
-    // Keep cheap/simple work local when Ollama is available; send the rest to cloud.
-    if (ollamaUp && !classifyTaskComplexity(messages)) {
-      emitLocalUsage(win, tier)
-      return callOllama(win, messages, systemPrompt, onDelta)
-    }
-    return routeCloudOrDirect(win, 'pro', messages, systemPrompt, 'pro-default', onDelta)
-  }
-
+  if (tier === 'free') return routeCloudOrDirect(win, 'free', messages, systemPrompt, 'free-default', onDelta)
+  if (tier === 'pro') return routeCloudOrDirect(win, 'pro', messages, systemPrompt, 'pro-default', onDelta)
   return routeCloudOrDirect(win, 'enterprise', messages, systemPrompt, 'enterprise-default', onDelta)
 }
 
@@ -716,11 +656,8 @@ export async function callModel(
  * Route a turn through the cloud proxy when configured (signed in + Supabase),
  * otherwise fall back to direct provider APIs using local env keys. The direct
  * path exists only for local development before auth/Supabase are wired up — a
- * shipped, signed-in user always takes the proxy path.
- *
- * The free direct fallback never surfaces an Ollama error: if no Anthropic key
- * is set we try local Ollama as a last resort, and if that also fails we return a
- * neutral, friendly message rather than a raw connection error.
+ * shipped, signed-in user always takes the proxy path, so this is never reachable
+ * in production and never routes to a local model.
  */
 async function routeCloudOrDirect(
   win: BrowserWindow,
@@ -731,7 +668,26 @@ async function routeCloudOrDirect(
   onDelta: (delta: string) => void
 ): Promise<string> {
   if (isCloudProxyConfigured()) {
-    return callCloudProxy(win, tier, messages, systemPrompt, modelKey, onDelta)
+    try {
+      return await callCloudProxy(win, tier, messages, systemPrompt, modelKey, onDelta)
+    } catch (err) {
+      // Anything other than a cloud-proxy server failure (network, programming
+      // error) propagates unchanged.
+      if (!(err instanceof CloudProxyError)) throw err
+      // The proxy is down (typically a server-side LLM key/credit problem). The
+      // failure is detected BEFORE any token is streamed, so nothing has reached
+      // the UI yet and it is safe to retry the turn against a local model. This
+      // keeps the app usable even when the cloud backend is broken — critical so
+      // a single server dependency can't take the whole product offline.
+      console.error(
+        `[agent] cloud proxy unavailable (HTTP ${err.status}${err.code ? `, ${err.code}` : ''}) — trying local fallback`
+      )
+      const recovered = await tryLocalModelFallback(win, tier, messages, systemPrompt, onDelta)
+      if (recovered !== null) return recovered
+      // No local model available either — surface the friendly proxy message.
+      onDelta(err.message)
+      return err.message
+    }
   }
 
   // ── Local-dev / unauthenticated fallback (direct API keys) ──────────────────
@@ -739,24 +695,42 @@ async function routeCloudOrDirect(
   if (tier === 'enterprise') return callEnterprise(win, messages, systemPrompt, onDelta)
   if (tier === 'pro') return callAnthropic(win, messages, systemPrompt, DIRECT_PRO_MODEL, onDelta)
 
-  // Free fallback: prefer a direct Anthropic (Haiku) call if a key exists.
   if (process.env.ANTHROPIC_API_KEY) {
     return callAnthropic(win, messages, systemPrompt, DIRECT_FREE_MODEL, onDelta)
   }
-  // No cloud key configured locally — try Ollama, but degrade gracefully so the
-  // user never sees an "Ollama not installed" error if it isn't there.
-  try {
-    return await callOllama(win, messages, systemPrompt, onDelta)
-  } catch {
-    // No cloud session and no local model: surface a neutral connectivity
-    // message. We never instruct the user to install anything — cloud is the
-    // product's default path and a guest session normally guarantees it.
-    const msg =
-      "I couldn't reach the AI service just now. Please check your internet " +
-      'connection and try again in a moment.'
-    onDelta(msg)
-    return msg
+  // No cloud session and no local dev key: surface a neutral connectivity
+  // message. We never instruct the user to install anything — cloud is the
+  // product's only path and a guest session normally guarantees it.
+  const msg =
+    "I couldn't reach the AI service just now. Please check your internet " +
+    'connection and try again in a moment.'
+  onDelta(msg)
+  return msg
+}
+
+/**
+ * Last-resort provider call when the cloud proxy is unreachable (e.g. its
+ * server-side LLM key is missing/out of credit). Uses a direct provider call
+ * ONLY when a local API key is present — i.e. a dev/self-hosted setup. The
+ * shipped app ships no key, so this resolves `null` in production and the caller
+ * surfaces the friendly cloud message. There is deliberately NO local-model
+ * (Ollama) branch: a user must never be able to route around metering by having
+ * a local model installed, even when the cloud backend is down. Never throws.
+ */
+async function tryLocalModelFallback(
+  win: BrowserWindow,
+  tier: Tier,
+  messages: Message[],
+  systemPrompt: string,
+  onDelta: (delta: string) => void
+): Promise<string | null> {
+  // A direct API key on this machine (dev / self-hosted) is the only fallback.
+  if (process.env.ANTHROPIC_API_KEY) {
+    emitLocalUsage(win, tier)
+    const model = tier === 'free' ? DIRECT_FREE_MODEL : DIRECT_PRO_MODEL
+    return callAnthropic(win, messages, systemPrompt, model, onDelta)
   }
+  return null
 }
 
 /**
@@ -1125,21 +1099,6 @@ export function registerAgentIPC(win: BrowserWindow): void {
     }
   })
 
-  // Poll for Ollama state changes every 60 s. When Ollama comes online after
-  // being absent, notify the renderer so it can switch to local mode and show
-  // a brief "Local AI detected" toast. Silently transitions back to cloud when
-  // Ollama stops — no error shown to the user.
-  let lastOllamaStatus = false
-  setInterval(async () => {
-    const current = await isOllamaRunning()
-    if (current !== lastOllamaStatus) {
-      lastOllamaStatus = current
-      if (current) {
-        emit(win, 'openui:local-ai-available')
-        console.log('[Telemetry] ollama_detected { method: "polling" }')
-      }
-    }
-  }, 60_000)
 }
 
 export function registerConversationIPC(win: BrowserWindow): void {

@@ -2,17 +2,16 @@
  * pricing.ts — the single source of truth for OpenUI's subscription tiers, the
  * models each tier may use, and the helpers that gate model routing.
  *
- * CLOUD-FIRST MODEL (Phase A onboarding): every tier — including Free — works
- * out of the box by routing to cloud APIs through the `chat-proxy` Supabase Edge
- * Function (which holds OUR API keys server-side). Ollama is an OPTIONAL local
- * enhancement, never a prerequisite: when it is running we prefer it for the Free
- * tier to save API costs, and as an offline fallback. The app must NEVER require
- * the user to install anything to get a working assistant.
+ * CLOUD-ONLY MODEL: every tier — including Free — is served exclusively through
+ * OUR cloud backend (the `chat-proxy` Supabase Edge Function, which holds our API
+ * keys server-side). There is no local-model / Ollama routing path anywhere in
+ * the app: every chat and voice turn is metered against the limits below, with no
+ * way for a user to self-host a model to escape the cap.
  *
- * Each tier declares a `dailyMessageLimit` (cloud messages/day, enforced
- * server-side by the Edge Function against the `usage_tracking` table) and a
- * nested `models` map split into `cloud` (routed via the proxy) and `local`
- * (routed via Ollama when available).
+ * Each tier declares a `dailyMessageLimit` (cloud messages/day) and a
+ * `monthlyVoiceMinutes` cap (voice/interview minutes per calendar month), both
+ * enforced server-side against the `usage_tracking` / `voice_usage` tables. The
+ * `models` map lists the cloud models the tier may request via the proxy.
  *
  * SECURITY: Stripe *price ids* (`price_…`) are NOT secret — they are safe to ship
  * in the Electron app and are used only to tell the `create-checkout` Edge
@@ -29,16 +28,16 @@ export const TIERS = {
     price: 0,
     description: 'Get started with AI assistance — no setup required',
     features: [
-      '20 cloud messages per day',
-      'Local AI (unlimited) if Ollama is installed',
+      '5 cloud messages per day',
+      '120 voice minutes per month',
       'Basic OS automation',
       'Local OCR screen reading',
       'Voice input'
     ],
-    dailyMessageLimit: 20,
+    dailyMessageLimit: 5,
+    monthlyVoiceMinutes: 120,
     models: {
-      cloud: ['claude-3-5-haiku'],
-      local: ['llama3:8b', 'phi3:mini']
+      cloud: ['claude-3-5-haiku']
     },
     stripePriceId: null // No Stripe price for free
   },
@@ -49,15 +48,16 @@ export const TIERS = {
     description: 'Advanced AI with cloud models and vision',
     features: [
       '500 cloud messages per day',
+      '600 voice minutes per month',
       'Claude 3.5 Sonnet + GPT-4o',
       'Cloud vision (screen understanding)',
       'Advanced multi-step automation',
       'Priority processing'
     ],
     dailyMessageLimit: 500,
+    monthlyVoiceMinutes: 600,
     models: {
-      cloud: ['claude-3-5-sonnet', 'gpt-4o', 'llama3:70b'],
-      local: ['llama3:8b', 'phi3:mini']
+      cloud: ['claude-3-5-sonnet', 'gpt-4o']
     },
     stripePriceId: process.env.STRIPE_PRO_PRICE_ID
   },
@@ -68,6 +68,7 @@ export const TIERS = {
     description: 'Maximum power with custom models',
     features: [
       'Unlimited cloud messages',
+      'Unlimited voice minutes',
       'GLM 5.2 + all premium models',
       'Unlimited vision calls',
       'Workflow chaining',
@@ -75,9 +76,9 @@ export const TIERS = {
       'Priority support'
     ],
     dailyMessageLimit: Infinity,
+    monthlyVoiceMinutes: Infinity,
     models: {
-      cloud: ['glm-5.2', 'claude-3-5-sonnet', 'gpt-4o', 'llama3:405b'],
-      local: ['llama3:8b', 'phi3:mini']
+      cloud: ['glm-5.2', 'claude-3-5-sonnet', 'gpt-4o']
     },
     stripePriceId: process.env.STRIPE_ENTERPRISE_PRICE_ID
   }
@@ -88,31 +89,22 @@ export type TierId = keyof typeof TIERS
 /** Ordered low→high so we can compare "is tier A at least tier B". */
 const TIER_RANK: Record<TierId, number> = { free: 0, pro: 1, enterprise: 2 }
 
-/**
- * Any locally-run model (Ollama-style `name:tag`, or a known local family) is
- * always permitted on the free tier — the user pulled it themselves and it costs
- * us nothing. Cloud models are only unlocked by an explicit tier listing.
- */
-const LOCAL_MODEL_RE = /^(llama|phi|mistral|qwen|gemma|codellama|deepseek|tinyllama)/i
-
-/**
- * Is `model` allowed for `tier`? True when the model is listed in the tier's
- * `models.cloud` or `models.local` arrays, or (free tier only) when it looks like
- * a local Ollama model the user pulled themselves.
- */
+/** Is `model` allowed for `tier`? True only when it's in the tier's `models.cloud` list. */
 export function isModelAllowedForTier(model: string, tier: TierId): boolean {
   const def = TIERS[tier]
   if (!def) return false
   const cloud = def.models.cloud as readonly string[]
-  const local = def.models.local as readonly string[]
-  if (cloud.includes(model) || local.includes(model)) return true
-  if (tier === 'free' && (LOCAL_MODEL_RE.test(model) || model.includes(':'))) return true
-  return false
+  return cloud.includes(model)
 }
 
 /** The maximum cloud messages a tier may send per day (Infinity = unlimited). */
 export function dailyMessageLimit(tier: TierId): number {
   return TIERS[tier]?.dailyMessageLimit ?? TIERS.free.dailyMessageLimit
+}
+
+/** The maximum voice/interview minutes a tier may use per calendar month (Infinity = unlimited). */
+export function monthlyVoiceMinuteLimit(tier: TierId): number {
+  return TIERS[tier]?.monthlyVoiceMinutes ?? TIERS.free.monthlyVoiceMinutes
 }
 
 /**

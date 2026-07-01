@@ -82,11 +82,11 @@ class TierGatingTests(unittest.TestCase):
     def setUp(self):
         self.router = TaskRouter()
 
-    def test_free_code_is_local_only(self):
+    def test_free_code_is_rate_limited_not_local(self):
         d = self.router.classify("write code")
         self.router.apply_tier(d, Tier.FREE)
         self.assertTrue(d.allowed)
-        self.assertTrue(d.force_local)
+        self.assertTrue(d.rate_limited)
 
     def test_free_general_is_rate_limited(self):
         d = self.router.classify("summarize this")
@@ -106,7 +106,6 @@ class TierGatingTests(unittest.TestCase):
             self.router.apply_tier(d, Tier.PRO)
             self.assertTrue(d.allowed, msg)
             self.assertTrue(d.priority, msg)
-            self.assertFalse(d.force_local, msg)
 
     def test_enterprise_unlocks_everything(self):
         d = self.router.classify("open chrome")

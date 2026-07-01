@@ -4,9 +4,13 @@ tiers.py — Subscription tier enforcement system.
 Defines tier limits, enforces permissions, manages tier caching via Redis,
 and validates user entitlements against Supabase.
 
+Every tier is served exclusively by our cloud backend — there is no local-model
+(Ollama) routing path anywhere in this module. A user cannot self-host a model
+to escape these limits.
+
 TIER DEFINITIONS (match frontend/src/main/stripe/pricing.ts):
-  Free:       20 chat/day, 20 voice/day, Ollama only, 1 browser tab, no terminal
-  Pro:        500 chat/day, 200 voice/day, Claude Sonnet + GPT-4o, 3 browser tabs, priority queue
+  Free:       5 chat/day, 120 voice-min/month, 1 browser tab, no terminal
+  Pro:        500 chat/day, 600 voice-min/month, Claude Sonnet + GPT-4o, 3 browser tabs, priority queue
   Enterprise: Unlimited, all models, 10 browser tabs, terminal access, dedicated slot
 """
 
@@ -53,8 +57,8 @@ class TierDefinition:
     name: str
     price_usd: int
     daily_chat_limit: int
-    daily_voice_limit: int
-    models: Dict[str, list]  # {"cloud": [...], "local": [...]}
+    monthly_voice_limit_minutes: float
+    models: Dict[str, list]  # {"cloud": [...]} — no local/Ollama models, ever
     max_browser_tabs: int
     has_terminal: bool
     has_ppt_excel: bool
@@ -69,11 +73,10 @@ TIERS: Dict[TierId, TierDefinition] = {
         tier_id=TierId.FREE,
         name="Free",
         price_usd=0,
-        daily_chat_limit=20,
-        daily_voice_limit=20,
+        daily_chat_limit=5,
+        monthly_voice_limit_minutes=120,
         models={
-            "cloud": ["claude-3-5-haiku"],
-            "local": ["llama3:8b", "phi3:mini"]
+            "cloud": ["claude-3-5-haiku"]
         },
         max_browser_tabs=1,
         has_terminal=False,
@@ -87,10 +90,9 @@ TIERS: Dict[TierId, TierDefinition] = {
         name="Pro",
         price_usd=19,
         daily_chat_limit=500,
-        daily_voice_limit=200,
+        monthly_voice_limit_minutes=600,
         models={
-            "cloud": ["claude-3-5-sonnet", "gpt-4o", "llama3:70b"],
-            "local": ["llama3:8b", "phi3:mini"]
+            "cloud": ["claude-3-5-sonnet", "gpt-4o"]
         },
         max_browser_tabs=3,
         has_terminal=False,
@@ -104,10 +106,9 @@ TIERS: Dict[TierId, TierDefinition] = {
         name="Enterprise",
         price_usd=49,
         daily_chat_limit=float('inf'),
-        daily_voice_limit=float('inf'),
+        monthly_voice_limit_minutes=float('inf'),
         models={
-            "cloud": ["glm-5.2", "claude-3-5-sonnet", "gpt-4o", "llama3:405b"],
-            "local": ["llama3:8b", "phi3:mini"]
+            "cloud": ["glm-5.2", "claude-3-5-sonnet", "gpt-4o"]
         },
         max_browser_tabs=10,
         has_terminal=True,
@@ -132,7 +133,6 @@ class TierGuard:
     """
 
     CACHE_TTL_SEC = 3600  # 1 hour
-    LOCAL_MODEL_REGEX = r"^(llama|phi|mistral|qwen|gemma|codellama|deepseek|tinyllama)"
 
     def __init__(
         self,
@@ -329,50 +329,33 @@ class TierGuard:
         """
         Check if user can use a specific model.
 
-        Rules:
-        - Listed models in tier's models.cloud/local are always allowed
-        - Free tier allows any local model that looks like Ollama (llama:, phi:, etc.)
-        - Cloud models outside the tier's list are denied
+        Every tier is cloud-only: a model is allowed if and only if it's listed in
+        the tier's `models.cloud`. There is no local/Ollama bypass for any tier —
+        a user cannot self-host a model to route around the daily cap.
 
         Args:
             user_id: Supabase user ID
-            model: Model name (e.g., "claude-3-5-sonnet", "llama3:8b")
+            model: Model name (e.g., "claude-3-5-sonnet")
 
         Returns:
             True if model is allowed, False otherwise
         """
         tier = self.get_tier(user_id)
         tier_def = TIERS[tier]
-
-        cloud_models = tier_def.models["cloud"]
-        local_models = tier_def.models["local"]
-
-        # Check explicit lists
-        if model in cloud_models or model in local_models:
-            return True
-
-        # Free tier: allow any local Ollama model
-        if tier == TierId.FREE:
-            import re
-            if re.match(self.LOCAL_MODEL_REGEX, model, re.IGNORECASE):
-                return True
-            if ":" in model:  # Local models use name:tag format
-                return True
-
-        return False
+        return model in tier_def.models["cloud"]
 
     def check_daily_limit(
         self,
         user_id: str,
-        usage_type: str,  # "chat" or "voice"
+        usage_type: str,  # "chat"
         current_usage: int
     ) -> None:
         """
-        Check if user has exceeded their daily limit.
+        Check if user has exceeded their daily chat-message limit.
 
         Args:
             user_id: Supabase user ID
-            usage_type: "chat" or "voice"
+            usage_type: "chat"
             current_usage: Current day's usage count
 
         Raises:
@@ -381,16 +364,36 @@ class TierGuard:
         tier = self.get_tier(user_id)
         tier_def = TIERS[tier]
 
-        if usage_type == "chat":
-            limit = tier_def.daily_chat_limit
-        elif usage_type == "voice":
-            limit = tier_def.daily_voice_limit
-        else:
+        if usage_type != "chat":
             return
+        limit = tier_def.daily_chat_limit
 
         if current_usage >= limit and limit != float('inf'):
             raise PermissionError(
                 f"Daily {usage_type} limit ({int(limit)}) exceeded for {tier_def.name} tier",
+                allowed_from=TierId.FREE
+            )
+
+    def check_monthly_voice_limit(self, user_id: str, current_usage_minutes: float) -> None:
+        """
+        Check if user has exceeded their monthly voice/interview minute limit.
+
+        Monthly (not daily) so it can't be topped up by simply waiting a day.
+
+        Args:
+            user_id: Supabase user ID
+            current_usage_minutes: Minutes used so far this calendar month
+
+        Raises:
+            PermissionError: If the monthly limit is exceeded
+        """
+        tier = self.get_tier(user_id)
+        tier_def = TIERS[tier]
+        limit = tier_def.monthly_voice_limit_minutes
+
+        if current_usage_minutes >= limit and limit != float('inf'):
+            raise PermissionError(
+                f"Monthly voice limit ({int(limit)} min) exceeded for {tier_def.name} tier",
                 allowed_from=TierId.FREE
             )
 
@@ -414,7 +417,10 @@ class TierGuard:
                 "name": tier_def.name,
                 "price_usd": tier_def.price_usd,
                 "daily_chat_limit": int(tier_def.daily_chat_limit) if tier_def.daily_chat_limit != float('inf') else None,
-                "daily_voice_limit": int(tier_def.daily_voice_limit) if tier_def.daily_voice_limit != float('inf') else None,
+                "monthly_voice_limit_minutes": (
+                    int(tier_def.monthly_voice_limit_minutes)
+                    if tier_def.monthly_voice_limit_minutes != float('inf') else None
+                ),
                 "models": tier_def.models,
                 "max_browser_tabs": tier_def.max_browser_tabs,
                 "has_terminal": tier_def.has_terminal,

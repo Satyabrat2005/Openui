@@ -14,8 +14,10 @@ Design goals (see TASK 4):
         GENERAL_TASK -> GeneralAgent  (agent name "general", the default)
 
   * Tier gating layers entitlements on top of the raw classification:
-        Free       -> CODE_TASK runs Ollama-only; GENERAL_TASK is rate-limited;
-                      TOOL_TASK is locked (upgrade required).
+        Free       -> CODE_TASK and GENERAL_TASK are both routed to our cloud
+                      backend and rate-limited against the same daily cap;
+                      TOOL_TASK is locked (upgrade required). There is no local
+                      model routing for any tier — every task is metered.
         Pro        -> all tasks, priority queue.
         Enterprise -> all tasks, dedicated execution slot, GitHub integration.
 
@@ -131,7 +133,7 @@ class RoutingDecision:
     """The full outcome of routing a single message.
 
     `classify()` populates the task/agent/reason fields; tier gating fills in the
-    entitlement fields (`allowed`, `force_local`, `priority`, …).
+    entitlement fields (`allowed`, `rate_limited`, `priority`, …).
     """
     task_type: TaskType
     agent: str                      # "code" | "tool" | "general"
@@ -141,8 +143,7 @@ class RoutingDecision:
     # --- tier gating outcome ---
     allowed: bool = True            # may this task run on this tier at all?
     denial_reason: Optional[str] = None
-    force_local: bool = False       # Free CODE_TASK: Ollama only, no cloud
-    rate_limited: bool = False      # Free GENERAL_TASK: subject to daily cap
+    rate_limited: bool = False      # Free CODE_TASK/GENERAL_TASK: subject to daily cap
     priority: bool = False          # Pro/Enterprise: priority queue
     dedicated_slot: bool = False    # Enterprise: dedicated execution slot
     github_unlocked: bool = False   # Enterprise: GitHub integration available
@@ -234,11 +235,8 @@ class TaskRouter:
         decision.tier = tier
 
         if tier is Tier.FREE:
-            if decision.task_type is TaskType.CODE:
-                # Code allowed, but local-only: route to Ollama, never the cloud.
-                decision.force_local = True
-            elif decision.task_type is TaskType.GENERAL:
-                # Allowed but subject to the daily cloud-message cap.
+            if decision.task_type in (TaskType.CODE, TaskType.GENERAL):
+                # Allowed, routed to our cloud backend, subject to the daily cap.
                 decision.rate_limited = True
             else:  # TOOL_TASK
                 decision.allowed = False

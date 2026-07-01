@@ -1,18 +1,15 @@
 /**
- * cloudFreeTier.ts — cloud-first model access for EVERY tier (Phase A onboarding).
+ * cloudFreeTier.ts — cloud-only model access for EVERY tier.
  *
- * The product promise: sign in and it works. No prerequisites, no local setup.
- * This module is how that promise is kept — it proxies chat through the
- * `chat-proxy` Supabase Edge Function, which holds OUR API keys server-side and
- * enforces a per-tier daily message limit against the `usage_tracking` table.
+ * The product promise: sign in and it works. No prerequisites, no local setup —
+ * and, just as importantly, no way to escape the metered limits. This module
+ * proxies every chat turn through the `chat-proxy` Supabase Edge Function, which
+ * holds OUR API keys server-side and enforces a per-tier daily message limit
+ * against the `usage_tracking` table. There is no local-model fallback anywhere
+ * in this file: a user cannot install anything to bypass the cap.
  *
  * The Electron app NEVER ships LLM API keys for the cloud path; it sends the
  * signed-in user's Supabase access token and the Edge Function does the rest.
- *
- * Ollama is an OPTIONAL enhancement, surfaced here only as `isOllamaRunning()`
- * (a 2-second probe) and `classifyTaskComplexity()` (so Pro can keep cheap work
- * local). If Ollama is absent, callers fall through to `callCloudProxy()` and the
- * user sees a working assistant — never an "install Ollama" error.
  *
  * No import from `agent.ts` at runtime (only the `Message` *type*, which is
  * erased) so there is no import cycle: `agent.ts` → `cloudFreeTier.ts` only.
@@ -26,6 +23,27 @@ import { getCurrentUserId } from './stripe/subscriptionSync'
 import { dailyMessageLimit } from './stripe/pricing'
 import { database } from './database'
 import { sendMessage as serverSendMessage } from './serverClient'
+
+/**
+ * Thrown when the cloud `chat-proxy` Edge Function answers with a non-OK status
+ * that is NOT a rate-limit (429 is handled as a friendly upsell, not an error).
+ *
+ * Carries the HTTP `status` and the function's `code` (e.g. `llm_error`,
+ * `invalid_token`, `internal_error`) so the caller can (a) log exactly WHY the
+ * proxy failed and (b) decide whether to fall back to a local model. The most
+ * common cause is `502 llm_error`: the server-side ANTHROPIC_API_KEY / OPENAI_API_KEY
+ * secret is missing, invalid, or its account is out of credit.
+ */
+export class CloudProxyError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly code?: string
+  ) {
+    super(message)
+    this.name = 'CloudProxyError'
+  }
+}
 
 /** Payload pushed to the renderer so it can show "15/20 messages today". */
 export interface UsageUpdate {
@@ -49,31 +67,13 @@ function emitUsage(win: BrowserWindow, usage: UsageUpdate): void {
 }
 
 /**
- * Emit a usage update for a non-metered turn (local Ollama or the local-dev
- * direct-API fallback). Keeps the renderer counter consistent — it hides the
- * "N/M today" number when `unlimited` is true.
+ * Emit a usage update for a non-metered turn. Used only by the local-dev direct
+ * API-key escape hatch in `agent.ts` (no Supabase configured — never reachable
+ * by a real, shipped, signed-in user). Keeps the renderer counter consistent —
+ * it hides the "N/M today" number when `unlimited` is true.
  */
 export function emitLocalUsage(win: BrowserWindow, tier: Tier): void {
   emitUsage(win, { tier, limit: null, remaining: null, unlimited: true })
-}
-
-/**
- * Is a local Ollama server reachable right now? Called on every routed message;
- * a fast 2-second probe of the tags endpoint. Any failure (not installed, not
- * running, slow) resolves to `false` so the caller silently uses the cloud
- * proxy instead — the user never sees an Ollama error.
- */
-export async function isOllamaRunning(): Promise<boolean> {
-  try {
-    const host = process.env.OLLAMA_HOST ?? 'http://127.0.0.1:11434'
-    const response = await fetch(`${host.replace(/\/$/, '')}/api/tags`, {
-      method: 'GET',
-      signal: AbortSignal.timeout(2000)
-    })
-    return response.ok
-  } catch {
-    return false
-  }
 }
 
 /** True when we can route through the cloud proxy (configured + signed in). */
@@ -81,35 +81,13 @@ export function isCloudProxyConfigured(): boolean {
   return isSupabaseConfigured() && getCurrentUserId() !== null
 }
 
-/** Heuristic words that mark a request as "worth a premium cloud model". */
-const COMPLEX_RE =
-  /\b(refactor|architect|debug|analy[sz]e|investigat\w*|multi[- ]?step|plan|design|review|optimi[sz]e|migrat\w*|implement|complex|step[- ]by[- ]step|write|code|function|class|script|build|fix|test|file|read|list|run|terminal|bash|python|javascript|typescript|react|html|css|sql|api|endpoint|website|app|program)\b/i
-
-/**
- * Cheap, synchronous classification of whether the latest user request looks
- * "complex" enough to deserve a cloud model on Pro (otherwise Pro keeps it local
- * on Ollama to save cost). Also used to detect coding/heavy tasks for free-tier
- * Ollama routing. Deliberately a heuristic — we never spend a model call just to
- * decide which model to call.
- */
-export function classifyTaskComplexity(messages: Message[]): boolean {
-  const lastUser = [...messages].reverse().find((m) => m.role === 'user')
-  if (!lastUser) return false
-  if (lastUser.content.length > 280) return true
-  if (COMPLEX_RE.test(lastUser.content)) return true
-  // Tool calls in history signal a complex, multi-step agentic workflow.
-  if (messages.some((m) => m.content.trim().startsWith('{"tool":') || m.content.startsWith('TOOL RESULT'))) return true
-  // Long, tool-heavy conversations are the ones that benefit from a stronger model.
-  return messages.length > 6
-}
-
-/** Friendly daily-limit message — frames local AI as an option, never an error. */
+/** Friendly daily-limit message — upsell, never an error. */
 function limitReachedMessage(tier: Tier): string {
   const upsell =
     tier === 'pro'
       ? 'Upgrade to Enterprise for unlimited messages'
       : 'Upgrade to Pro for more messages'
-  return `You've reached your daily message limit. ${upsell}, or set up local AI for unlimited offline use.`
+  return `You've reached your daily message limit. ${upsell}.`
 }
 
 /** Resolve a usable access token, refreshing once if the cached one expired. */
@@ -220,7 +198,32 @@ export async function callCloudProxy(
   }
 
   if (!response.ok || !response.body) {
-    throw new Error('The AI service is temporarily unavailable. Please try again in a moment.')
+    // Read the Edge Function's error code so the failure is DIAGNOSABLE in logs
+    // instead of a vague "temporarily unavailable" — 502 `llm_error` means the
+    // server-side ANTHROPIC_API_KEY/OPENAI_API_KEY is missing/invalid/out of
+    // credit; 401 means the user's token was rejected; 500 means the function
+    // crashed. Thrown as a typed CloudProxyError so the agent router can fall
+    // back to a local model (Ollama / direct key) and keep the user working.
+    let code: string | undefined
+    try {
+      const body = (await response.clone().json()) as { error?: unknown }
+      if (typeof body.error === 'string') code = body.error
+    } catch {
+      /* non-JSON error body — leave code undefined */
+    }
+    console.error(
+      `[cloudFreeTier] chat-proxy failed: HTTP ${response.status}` +
+        (code ? ` (${code})` : '') +
+        (response.status === 502
+          ? ' — the server-side LLM API key is likely missing/invalid or out of credit. ' +
+            'Set it with: supabase secrets set ANTHROPIC_API_KEY=... && supabase functions deploy chat-proxy'
+          : '')
+    )
+    throw new CloudProxyError(
+      'The AI service is temporarily unavailable. Please try again in a moment.',
+      response.status,
+      code
+    )
   }
 
   // Live counter from the Edge Function's headers.

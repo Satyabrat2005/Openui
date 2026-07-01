@@ -34,7 +34,7 @@ const TIER_RANK: Record<Tier, number> = { free: 0, pro: 1, enterprise: 2 }
 
 // Daily cloud-message limits per tier (Infinity = unlimited). Mirrors
 // src/main/stripe/pricing.ts — keep the two in sync.
-const DAILY_LIMIT: Record<Tier, number> = { free: 20, pro: 500, enterprise: Infinity }
+const DAILY_LIMIT: Record<Tier, number> = { free: 5, pro: 500, enterprise: Infinity }
 
 interface ModelConfig {
   provider: Provider

@@ -171,6 +171,14 @@ export interface OpenUIApi {
   // Window
   hide: () => void
   quit: () => void
+  /** 'darwin' | 'win32' | 'linux' — used to render macOS's native traffic lights vs. our custom win/max/close buttons. */
+  platform: string
+  // Custom frameless title-bar window controls.
+  minimizeWindow: () => void
+  toggleMaximizeWindow: () => void
+  closeWindow: () => void
+  isMaximized: () => Promise<boolean>
+  onMaximizeChange: (cb: (maximized: boolean) => void) => () => void
 
   // Chat
   chat: (message: string, tier: Tier) => Promise<void>
@@ -262,14 +270,6 @@ export interface OpenUIApi {
   // Plan approval (approve the whole plan once).
   onPlanRequest: (cb: (payload: PlanRequestPayload) => void) => () => void
   respondPlan: (id: string, approved: boolean) => void
-  // Local AI / Ollama.
-  checkOllama: () => Promise<{ installed: boolean; running: boolean }>
-  installOllama: () => Promise<void>
-  startOllama: () => Promise<boolean>
-  dismissOllamaPrompt: (permanent: boolean) => Promise<void>
-  pullModel: (modelName: string) => Promise<boolean>
-  onLocalAIAvailable: (cb: () => void) => () => void
-  onOllamaSuggestion: (cb: () => void) => () => void
   // Action Recorder / Macros.
   recorderStart: () => Promise<void>
   recorderStop: () => Promise<RecorderAction[]>

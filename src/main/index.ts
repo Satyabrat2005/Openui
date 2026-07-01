@@ -1,4 +1,4 @@
-import { app, BrowserWindow, Tray, Menu, ipcMain, screen, nativeImage, session, shell } from 'electron'
+import { app, BrowserWindow, Tray, Menu, ipcMain, nativeImage, session, shell } from 'electron'
 import { join } from 'path'
 import { registerAgentIPC, registerConversationIPC } from './agent'
 import { startPromptRefiner, stopPromptRefiner } from './promptRefiner'
@@ -12,7 +12,7 @@ import { closeBrowser } from './tools'
 import { connectMcpServer, disconnectAll, type McpServerConfig } from './mcp-client'
 import { initDatabase, database } from './database'
 import { registerDeepLinkProtocol, setupDeepLinkHandlers } from './auth/deeplink'
-import { openAuthWindow, isAuthWebContents, isAuthWindowOpen } from './auth/authWindow'
+import { openAuthWindow, isAuthWebContents } from './auth/authWindow'
 import { logout, getCurrentUser, getUserTier, startTokenRefreshLoop, stopTokenRefreshLoop, ensureGuestSession } from './auth/sessionManager'
 import { initTelemetry, enableTelemetryAfterConsent, shutdownTelemetry, setTelemetryOptOut, isTelemetryActive, trackEvent } from './telemetry/posthog'
 import { grantConsent, denyConsent, getConsentStatus, recordPendingEvent, ConsentStatus } from './telemetry/consent'
@@ -20,14 +20,6 @@ import { initUpdater, checkForUpdates, downloadUpdate, installUpdateAndRestart, 
 import { Events } from './telemetry/events'
 import { exportWorkflow, importWorkflow, getWorkflows, deleteWorkflow, type Workflow } from './workflows'
 import { indexDirectory } from './rag'
-import {
-  isOllamaInstalled,
-  isOllamaRunning,
-  startOllama,
-  pullModel,
-  getOllamaInstallUrl,
-  dismissOllamaPrompt
-} from './local/ollamaManager'
 import {
   startRecording,
   stopRecording,
@@ -44,12 +36,17 @@ import {
 let tray: Tray | null = null
 let win: BrowserWindow | null = null
 
-// Timestamp of the on-launch reveal. The blur→hide behaviour is suppressed for
-// a short grace window afterwards so the freshly launched overlay can't vanish
-// before the user has even seen it (e.g. a transient focus change during
-// startup, or Windows foreground-stealing prevention not focusing it cleanly).
+// True once app.quit()/before-quit has actually started — lets the window's
+// 'close' handler tell a real quit apart from the user clicking the close
+// button (native red traffic light on macOS, our custom button elsewhere),
+// which should hide to the tray instead of destroying the window.
+let isQuitting = false
+
+const isMac = process.platform === 'darwin'
+
+// Timestamp of the on-launch reveal, used only to make revealWindow() idempotent
+// so the 'ready-to-show' / 'did-finish-load' pair can't show the window twice.
 let launchRevealedAt = 0
-const AUTO_HIDE_GRACE_MS = 2500
 
 const isDev = !app.isPackaged
 
@@ -148,33 +145,42 @@ function resourcePath(...segments: string[]): string {
     : join(process.resourcesPath, 'resources', ...segments)
 }
 
-function overlayBounds(): Electron.Rectangle {
-  // The popups are positioned with CSS against the full work area (the design
-  // places the assistant centered and the task list bottom-right), so the
-  // window itself spans the whole usable screen as a transparent canvas.
-  return screen.getPrimaryDisplay().workArea
-}
+// Default window geometry for the real, resizable app window. The window opens
+// centered at this size and the user can freely resize, maximize, or full-screen
+// it from there; the last two values clamp how small it can get.
+const DEFAULT_WIDTH = 1120
+const DEFAULT_HEIGHT = 760
+const MIN_WIDTH = 720
+const MIN_HEIGHT = 480
 
 function createWindow(): void {
-  const { x, y, width, height } = overlayBounds()
-
   win = new BrowserWindow({
-    x,
-    y,
-    width,
-    height,
+    width: DEFAULT_WIDTH,
+    height: DEFAULT_HEIGHT,
+    minWidth: MIN_WIDTH,
+    minHeight: MIN_HEIGHT,
+    center: true,
     show: false,
-    frame: false,
-    transparent: true,
-    backgroundColor: '#00000000',
-    resizable: false,
-    movable: false,
-    minimizable: false,
-    maximizable: false,
-    fullscreenable: false,
-    skipTaskbar: true,
-    hasShadow: false,
-    roundedCorners: false,
+    // Windows/Linux: fully frameless — the renderer draws its own dark title
+    // bar with minimize/maximize/close buttons and a drag region. macOS: keep
+    // the native traffic-light buttons (red/yellow/green) via titleBarStyle so
+    // window management still feels native, just inset into our custom drag
+    // region instead of a native title bar; the renderer skips drawing its own
+    // controls there. Either way it's a fully normal, resizable, taskbar/Dock
+    // -present app window — not the old overlay.
+    ...(isMac
+      ? { titleBarStyle: 'hiddenInset' as const, trafficLightPosition: { x: 16, y: 18 } }
+      : { frame: false }),
+    transparent: false,
+    backgroundColor: '#000000',
+    resizable: true,
+    movable: true,
+    minimizable: true,
+    maximizable: true,
+    fullscreenable: true,
+    skipTaskbar: false,
+    hasShadow: true,
+    roundedCorners: true,
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       contextIsolation: true,
@@ -188,30 +194,28 @@ function createWindow(): void {
     }
   })
 
-  // Float above normal windows like a real overlay panel.
-  // On Windows the 'screen-saver' level is clamped to 'floating' by Electron,
-  // which still places the window above normal app windows — the desired effect.
-  // setVisibleOnAllWorkspaces is a no-op on Windows (no virtual-desktop API).
-  win.setAlwaysOnTop(true, 'screen-saver')
-  win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
-
   if (isDev && process.env['ELECTRON_RENDERER_URL']) {
     win.loadURL(process.env['ELECTRON_RENDERER_URL'])
   } else {
     win.loadFile(join(__dirname, '../renderer/index.html'))
   }
 
-  // Dismiss when focus is lost — but only when packaged, so DevTools stay
-  // usable during development. Never hide while the OAuth window is open: it is
-  // a child of this overlay, so hiding the parent would hide the sign-in window.
-  win.on('blur', () => {
-    // Don't dismiss the window in the grace window right after the launch
-    // reveal, nor while first-run onboarding is still in progress — otherwise a
-    // transient focus change hides the freshly opened window before the user
-    // has finished setting up, making the app look like it never opened.
-    if (launchRevealedAt !== 0 && Date.now() - launchRevealedAt < AUTO_HIDE_GRACE_MS) return
-    if (!isOnboardingComplete()) return
-    if (app.isPackaged && win && !win.webContents.isDevToolsOpened() && !isAuthWindowOpen()) hideWindow()
+  // Keep the renderer's custom maximize/restore button icon in sync with the
+  // actual window state (the user can also maximize via the OS, e.g. Win+Up or
+  // double-clicking the drag region / snapping to a screen edge).
+  win.on('maximize', () => win?.webContents.send('openui:window:maximized', true))
+  win.on('unmaximize', () => win?.webContents.send('openui:window:maximized', false))
+
+  // Clicking the close control — our custom button on Windows/Linux, the
+  // native red traffic light on macOS, or Alt+F4/Cmd+Q's window-level close —
+  // all funnel through this single 'close' event. Hide to the tray instead of
+  // destroying the window unless a real quit is in progress, so behaviour is
+  // identical across platforms and matches the tray's "Quit OpenUI" being the
+  // only real exit.
+  win.on('close', (event) => {
+    if (isQuitting) return
+    event.preventDefault()
+    hideWindow()
   })
 
   win.on('closed', () => {
@@ -221,15 +225,11 @@ function createWindow(): void {
 
 function showWindow(): void {
   if (!win) return
-  const { x, y, width, height } = overlayBounds()
-  win.setBounds({ x, y, width, height })
-  // Re-assert always-on-top and raise to the top before showing. A frameless,
-  // transparent, always-on-top overlay can otherwise fail to surface above the
-  // foreground window on some Windows setups — show() alone is not always
-  // enough to make a topmost layered window actually appear.
-  win.setAlwaysOnTop(true, 'screen-saver')
+  // Bring the window back from a minimized/hidden state and focus it. Unlike the
+  // old overlay we do NOT force it to fill the work area — the user's chosen size
+  // and position are preserved across hide/show and app restarts within a session.
+  if (win.isMinimized()) win.restore()
   win.show()
-  win.moveTop()
   win.focus()
 }
 
@@ -249,21 +249,6 @@ function revealWindow(): void {
 
 function hideWindow(): void {
   win?.hide()
-}
-
-/**
- * Whether first-run onboarding has been completed, read straight from the
- * SQLite settings the main process owns. Used to keep the overlay pinned open
- * during onboarding (see the blur handler). Fails closed (treats onboarding as
- * incomplete) if the DB is unavailable, which keeps the window visible in the
- * degraded state where the user most needs to see something.
- */
-function isOnboardingComplete(): boolean {
-  try {
-    return database.settings.getSetting('onboarding_complete') === true
-  } catch {
-    return false
-  }
 }
 
 function toggleWindow(): void {
@@ -321,9 +306,6 @@ app.whenReady().then(async () => {
     console.error('[openui] Telemetry initialisation failed:', err)
   }
 
-  // True menu-bar app: no Dock icon on macOS.
-  if (process.platform === 'darwin') app.dock?.hide()
-
   applySecurityHardening()
   trackEvent(Events.APP_STARTED, { platform: process.platform, version: app.getVersion() })
 
@@ -356,6 +338,19 @@ app.whenReady().then(async () => {
 
   ipcMain.on('openui:hide', () => hideWindow())
   ipcMain.on('openui:quit', () => app.quit())
+
+  // ── Window controls (custom frameless title bar) ────────────────────────────
+  // The renderer draws its own minimize / maximize / close buttons since the OS
+  // frame is disabled. Close hides to the tray (the app keeps running in the
+  // background, matching the tray "Quit OpenUI" being the only real exit).
+  ipcMain.on('openui:window:minimize', () => win?.minimize())
+  ipcMain.on('openui:window:maximize-toggle', () => {
+    if (!win) return
+    if (win.isMaximized()) win.unmaximize()
+    else win.maximize()
+  })
+  ipcMain.on('openui:window:close', () => hideWindow())
+  ipcMain.handle('openui:window:is-maximized', () => win?.isMaximized() ?? false)
 
   // Open the OS settings pane for the requested permission so the user can
   // grant it without navigating the Settings UI manually.
@@ -465,40 +460,6 @@ app.whenReady().then(async () => {
     return indexDirectory(dirPath.trim())
   })
 
-  // ── Local AI / Ollama IPC ───────────────────────────────────────────────────
-  // Returns current Ollama installation and running state.
-  ipcMain.handle('openui:check-ollama', async () => {
-    const [installed, running] = await Promise.all([isOllamaInstalled(), isOllamaRunning()])
-    return { installed, running }
-  })
-
-  // Opens the official Ollama download page in the OS default browser.
-  // We deliberately never auto-install — the user must opt in.
-  ipcMain.handle('openui:install-ollama', () => {
-    void shell.openExternal(getOllamaInstallUrl())
-  })
-
-  // Attempts to start a locally-installed Ollama daemon (ollama serve).
-  ipcMain.handle('openui:start-ollama', () => startOllama())
-
-  // Records a dismiss action in settings; permanently=true suppresses future prompts.
-  ipcMain.handle('openui:dismiss-ollama-prompt', (_event, payload: unknown) => {
-    const permanent =
-      typeof payload === 'object' && payload !== null && 'permanent' in payload
-        ? Boolean((payload as Record<string, unknown>).permanent)
-        : false
-    return dismissOllamaPrompt(permanent)
-  })
-
-  // Pulls a named model via `ollama pull <modelName>`.
-  ipcMain.handle('openui:pull-model', (_event, payload: unknown) => {
-    const modelName =
-      typeof payload === 'object' && payload !== null && 'modelName' in payload
-        ? String((payload as Record<string, unknown>).modelName)
-        : 'llama3:8b'
-    return pullModel(modelName)
-  })
-
   // ── Action Recorder / Macros IPC ───────────────────────────────────────────
   ipcMain.handle('openui:recorder:start', () => startRecording())
 
@@ -576,6 +537,7 @@ ipcMain.handle('openui:mcp:connect', async (_event, config: unknown) => {
 })
 
 app.on('before-quit', () => {
+  isQuitting = true
   disconnectAll()
   trackEvent(Events.APP_CLOSED)
   shutdownTelemetry()

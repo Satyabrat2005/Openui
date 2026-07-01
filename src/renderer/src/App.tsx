@@ -23,6 +23,86 @@ function LoadingScreen(): JSX.Element {
   )
 }
 
+const isMac = window.openui.platform === 'darwin'
+
+/**
+ * Custom window title bar for the frameless window. The empty flex area is a
+ * drag region (-webkit-app-region: drag via .ou-titlebar-drag) so the window can
+ * be moved; double-clicking it toggles maximize like a native title bar. The
+ * minimize / maximize / close buttons are opted OUT of the drag region so they
+ * stay clickable. Close hides to the tray (see main process).
+ *
+ * On macOS the window uses `titleBarStyle: 'hiddenInset'`, so the OS already
+ * draws native traffic-light buttons over the top-left of this bar — we skip
+ * rendering our own controls there and just reserve space via CSS
+ * (.ou-titlebar-mac) so the brand label doesn't sit underneath them.
+ */
+function TitleBar(): JSX.Element {
+  const [maximized, setMaximized] = useState(false)
+
+  useEffect(() => {
+    window.openui.isMaximized().then(setMaximized).catch(() => {})
+    return window.openui.onMaximizeChange(setMaximized)
+  }, [])
+
+  return (
+    <div className={isMac ? 'ou-titlebar ou-titlebar-mac' : 'ou-titlebar'}>
+      <div className="ou-titlebar-brand">
+        <div className="ou-titlebar-orb" />
+        <span className="ou-titlebar-name">OpenUI</span>
+      </div>
+      <div
+        className="ou-titlebar-drag"
+        onDoubleClick={() => window.openui.toggleMaximizeWindow()}
+      />
+      {!isMac && (
+        <div className="ou-winctl">
+          <button
+            type="button"
+            className="ou-winbtn"
+            aria-label="Minimize"
+            title="Minimize"
+            onClick={() => window.openui.minimizeWindow()}
+          >
+            <svg width="11" height="11" viewBox="0 0 11 11" aria-hidden="true">
+              <rect x="1.5" y="5" width="8" height="1.2" fill="currentColor" />
+            </svg>
+          </button>
+          <button
+            type="button"
+            className="ou-winbtn"
+            aria-label={maximized ? 'Restore' : 'Maximize'}
+            title={maximized ? 'Restore' : 'Maximize'}
+            onClick={() => window.openui.toggleMaximizeWindow()}
+          >
+            {maximized ? (
+              <svg width="11" height="11" viewBox="0 0 11 11" aria-hidden="true">
+                <rect x="2" y="3.2" width="6" height="6" fill="none" stroke="currentColor" strokeWidth="1.1" />
+                <path d="M4 3.2V1.5h5.5V7H7.8" fill="none" stroke="currentColor" strokeWidth="1.1" />
+              </svg>
+            ) : (
+              <svg width="11" height="11" viewBox="0 0 11 11" aria-hidden="true">
+                <rect x="1.8" y="1.8" width="7.4" height="7.4" fill="none" stroke="currentColor" strokeWidth="1.1" />
+              </svg>
+            )}
+          </button>
+          <button
+            type="button"
+            className="ou-winbtn ou-winbtn-close"
+            aria-label="Close"
+            title="Close"
+            onClick={() => window.openui.closeWindow()}
+          >
+            <svg width="11" height="11" viewBox="0 0 11 11" aria-hidden="true">
+              <path d="M2 2l7 7M9 2l-7 7" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+            </svg>
+          </button>
+        </div>
+      )}
+    </div>
+  )
+}
+
 function AppShell(): JSX.Element {
   const overlayRef = useRef<HTMLDivElement>(null)
   const recordingRef = useRef<boolean>(false)
@@ -75,19 +155,11 @@ function AppShell(): JSX.Element {
     }
   }, [])
 
-  const handleBackdrop = (e: React.MouseEvent<HTMLDivElement>): void => {
-    if (e.target === e.currentTarget) window.openui?.hide()
-  }
-
+  // Escape only dismisses the permission modal now — a real window must not
+  // vanish out from under the user the way the old overlay did.
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
-      if (e.key === 'Escape') {
-        if (permissionNeeded) {
-          setPermissionNeeded(null)
-        } else {
-          window.openui?.hide()
-        }
-      }
+      if (e.key === 'Escape' && permissionNeeded) setPermissionNeeded(null)
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
@@ -109,7 +181,9 @@ function AppShell(): JSX.Element {
   }, [])
 
   return (
-    <div ref={overlayRef} className="openui-overlay" onMouseDown={handleBackdrop}>
+    <div ref={overlayRef} className="openui-overlay">
+      <TitleBar />
+      <div className="ou-content">
       {isLoading ? (
         <LoadingScreen />
       ) : !isComplete ? (
@@ -187,6 +261,7 @@ function AppShell(): JSX.Element {
           }}
         />
       )}
+      </div>
     </div>
   )
 }

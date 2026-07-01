@@ -81,6 +81,22 @@ const api = {
   hide: (): void => ipcRenderer.send('openui:hide'),
   quit: (): void => ipcRenderer.send('openui:quit'),
 
+  // 'darwin' | 'win32' | 'linux' — lets the renderer skip drawing its own
+  // minimize/maximize/close buttons on macOS, where the native traffic lights
+  // (titleBarStyle: 'hiddenInset') are used instead.
+  platform: process.platform,
+
+  // ── Window controls (custom frameless title bar) ────────────────────────────
+  minimizeWindow: (): void => ipcRenderer.send('openui:window:minimize'),
+  toggleMaximizeWindow: (): void => ipcRenderer.send('openui:window:maximize-toggle'),
+  closeWindow: (): void => ipcRenderer.send('openui:window:close'),
+  isMaximized: (): Promise<boolean> => ipcRenderer.invoke('openui:window:is-maximized'),
+  onMaximizeChange: (cb: (maximized: boolean) => void): (() => void) => {
+    const fn = wrap<boolean>(cb)
+    ipcRenderer.on('openui:window:maximized', fn)
+    return (): void => { ipcRenderer.removeListener('openui:window:maximized', fn) }
+  },
+
   chat: (message: string, tier: Tier): Promise<void> =>
     ipcRenderer.invoke('openui:chat', { message, tier }),
 
@@ -398,36 +414,6 @@ const api = {
 
   respondPlan: (id: string, approved: boolean): void => {
     ipcRenderer.send('openui:plan:response', { id, approved })
-  },
-
-  // ── Local AI / Ollama ─────────────────────────────────────────────────────
-  checkOllama: (): Promise<{ installed: boolean; running: boolean }> =>
-    ipcRenderer.invoke('openui:check-ollama'),
-
-  installOllama: (): Promise<void> =>
-    ipcRenderer.invoke('openui:install-ollama'),
-
-  startOllama: (): Promise<boolean> =>
-    ipcRenderer.invoke('openui:start-ollama'),
-
-  dismissOllamaPrompt: (permanent: boolean): Promise<void> =>
-    ipcRenderer.invoke('openui:dismiss-ollama-prompt', { permanent }),
-
-  pullModel: (modelName: string): Promise<boolean> =>
-    ipcRenderer.invoke('openui:pull-model', { modelName }),
-
-  // Fired by the 60-second polling loop when Ollama transitions offline → online.
-  onLocalAIAvailable: (cb: () => void): (() => void) => {
-    const fn = (() => cb()) as IpcListener
-    ipcRenderer.on('openui:local-ai-available', fn)
-    return (): void => { ipcRenderer.removeListener('openui:local-ai-available', fn) }
-  },
-
-  // Fired by main when a free user attempts a coding task without Ollama running.
-  onOllamaSuggestion: (cb: () => void): (() => void) => {
-    const fn = (() => cb()) as IpcListener
-    ipcRenderer.on('openui:ollama-suggestion', fn)
-    return (): void => { ipcRenderer.removeListener('openui:ollama-suggestion', fn) }
   },
 
   // ── Action Recorder / Macros ───────────────────────────────────────────────

@@ -1,6 +1,6 @@
 # OpenUI
 
-**OpenUI** is a Windows and macOS menu-bar AI assistant built with Electron, React, TypeScript, and Vite. It lives quietly in the system tray and surfaces as a transparent floating overlay when you need it. Under the hood it connects to Anthropic Claude (cloud-first via a Supabase proxy), OpenAI Whisper, Ollama (optional local fallback), and a suite of OS-automation, code, design, and developer tools.
+**OpenUI** is a Windows and macOS menu-bar AI assistant built with Electron, React, TypeScript, and Vite. It lives quietly in the system tray and surfaces as a transparent floating overlay when you need it. Under the hood it connects to Anthropic Claude and OpenAI Whisper exclusively through our own cloud backend (every tier, no local model setup, no way to bypass the metered plan), plus a suite of OS-automation, code, design, and developer tools.
 
 ---
 
@@ -22,7 +22,7 @@
 | **Phase 9** | AI Interviewer — voice-driven technical screening, TTS responses, structured 10-turn sessions | ✅ Complete |
 | **Phase 10** | GitHub PR Review — `list_open_prs`, `get_pr_diff`, `post_pr_comment` via `@octokit/rest` | ✅ Complete |
 | **Phase 11** | Figma Design Tools — `get_figma_file`, `export_figma_frames` with Vision analysis, `create_figma_comment` | ✅ Complete |
-| **Onboarding** | Cloud-first routing, 4-step OnboardingWizard, daily usage counter, Ollama as optional fallback | ✅ Complete |
+| **Onboarding** | Cloud-only routing, 4-step OnboardingWizard, daily/monthly usage counter | ✅ Complete |
 | **Auto-updater** | `electron-updater` + GitHub Releases — Windows in-app install, macOS browser redirect | ✅ Complete |
 
 ---
@@ -58,7 +58,6 @@
 | **npm** | 10+ | Bundled with Node.js |
 | **macOS** | 12+ | Primary target; Windows dev supported |
 | **Supabase project** | — | Required for cloud chat proxy + guest/anon sessions (enable Anonymous sign-ins) |
-| **Ollama** _(optional)_ | v0.5+ | Hidden power-user local path; never required, never prompted |
 
 ---
 
@@ -106,7 +105,8 @@ STRIPE_ENTERPRISE_PRICE_ID=price_...
 POSTHOG_API_KEY=phc_...
 POSTHOG_HOST=https://us.i.posthog.com   # default
 
-# ── Optional — Ollama (local AI fallback) ────────────────────────────────────
+# ── Optional — Ollama, used ONLY by the local knowledge-base (RAG) embeddings
+# ── and the weekly self-improvement job; never used for chat or billing ──────
 OLLAMA_HOST=http://127.0.0.1:11434
 OLLAMA_MODEL=llama3:8b
 
@@ -144,7 +144,6 @@ src/
 │   ├── interviewer.ts            # AI Interviewer session management (Phase 9)
 │   ├── permissions.ts            # macOS systemPreferences permission helpers
 │   ├── updater/updater.ts        # electron-updater wrapper
-│   ├── local/ollamaManager.ts    # Ollama install/start/pull helpers
 │   ├── cloudFreeTier.ts          # chat-proxy SSE streaming client
 │   ├── telemetry/                # PostHog integration (events, consent, posthog client)
 │   ├── stripe/                   # Stripe pricing, checkout, subscription sync
@@ -166,8 +165,7 @@ src/
     │   ├── UpdateBanner.tsx      # "v1.x available" slim banner
     │   ├── UpdateProgress.tsx    # Download progress bar
     │   ├── UpdateReady.tsx       # "Restart to install" prompt
-    │   ├── LocalAIStatus.tsx     # Ollama availability status
-    │   ├── OllamaSuggestion.tsx  # Prompt to set up Ollama for offline use
+    │   ├── LocalAIStatus.tsx     # Shows the active cloud plan + usage footer
     │   ├── SignInBanner.tsx      # Upsell to sign in
     │   ├── PermissionModal.tsx   # macOS Accessibility / Microphone settings deep-link
     │   └── UsageCounter.tsx      # "15/20 messages today"
@@ -189,18 +187,18 @@ API keys, `process.env`, `desktopCapturer`, and all tool execution stay in the m
 
 ## Agent & Model Routing
 
-`agent.ts` implements a cloud-first agentic loop with automatic fallback.
+`agent.ts` implements a cloud-only agentic loop.
 
 ### Model routing (per tier)
 
 ```
 callModel(tier)
-  ├─ free:        Ollama (if running) → else cloud proxy → claude-3-5-haiku
-  ├─ pro:         Ollama for simple tasks → else cloud proxy → claude-sonnet-4-6
-  └─ enterprise:  cloud proxy → claude-sonnet-4-6 (or GLM in local dev)
+  ├─ free:        cloud proxy → claude-3-5-haiku      (5 msgs/day, 120 voice min/month)
+  ├─ pro:         cloud proxy → claude-sonnet-4-6      (500 msgs/day, 600 voice min/month)
+  └─ enterprise:  cloud proxy → claude-sonnet-4-6      (unlimited; GLM in local dev only)
 ```
 
-The **cloud proxy** (`supabase/functions/chat-proxy`) holds our LLM API keys server-side. Every authenticated user can chat immediately — no local setup required. Ollama is an optional cost-saver / offline fallback; a missing or stopped Ollama is never an error.
+The **cloud proxy** (`supabase/functions/chat-proxy`) holds our LLM API keys server-side. Every authenticated user can chat immediately — no local setup required, and no local-model routing path exists to bypass the per-tier limit.
 
 ### Agentic tool loop
 
@@ -486,15 +484,15 @@ Step completion and timing are tracked via telemetry (`onboarding_started`, `onb
 
 ### Cloud-first routing
 
-The product promise is **launch it and it works — no account screen, no Ollama, no local setup**. On first launch the app mints a silent **anonymous Supabase session** (`ensureGuestSession` in `sessionManager.ts`); that token is all the `chat-proxy` Edge Function needs to serve the free tier, so cloud Claude is available immediately. Signing in with Google later is an optional upgrade that syncs the plan/preferences and unlocks Pro — never a gate.
+The product promise is **launch it and it works — no account screen, no local setup**. On first launch the app mints a silent **anonymous Supabase session** (`ensureGuestSession` in `sessionManager.ts`); that token is all the `chat-proxy` Edge Function needs to serve the free tier, so cloud Claude is available immediately. Signing in with Google later is an optional upgrade that syncs the plan/preferences and unlocks Pro — never a gate.
 
-> **Ops note:** anonymous sessions require **Authentication → Sign In / Providers → Anonymous sign-ins = enabled** in the Supabase dashboard. If it's disabled, `ensureGuestSession` no-ops and unsigned users fall back to whatever local model is present.
+> **Ops note:** anonymous sessions require **Authentication → Sign In / Providers → Anonymous sign-ins = enabled** in the Supabase dashboard. If it's disabled, `ensureGuestSession` no-ops and the app falls back to a neutral connectivity message — never to a local model.
 
-Local AI (Ollama) is a hidden power-user path only — auto-detected and routed to if it happens to be running, but never advertised as something to install:
+Every tier is served exclusively by our cloud backend — there is no local-model routing path anywhere in the app, so nothing a user installs on their own machine changes their limit:
 
-- `LocalAIStatus` shows the active plan ("Cloud AI · 20 messages/day free"), or "Local AI · Unlimited" when an Ollama server is detected.
-- `OllamaSuggestion` is disabled (no install prompts).
-- The **daily usage counter** (`UsageCounter`) shows "15/20 messages today" drawn from `x-ratelimit-remaining` headers returned by `chat-proxy`.
+- `LocalAIStatus` shows the active plan ("Cloud AI · 5 messages/day free").
+- The **daily usage counter** (`UsageCounter`) shows "3/5 messages today" drawn from `x-ratelimit-remaining` headers returned by `chat-proxy`.
+- Voice/interview usage is metered separately: 120 minutes/month on Free, enforced in `voice.ts` against the `voice_usage` table.
 
 A 429 from the proxy triggers a friendly upsell message and `TierUpgradeModal` — never a raw error.
 
@@ -587,7 +585,7 @@ supabase db push   # creates the usage_tracking table
 |---|---|---|
 | `@anthropic-ai/sdk` | ^0.40.0 | Claude models, streaming, Vision |
 | `openai` | ^4.0.0 | Whisper transcription, TTS, GLM fallback |
-| `ollama` | ^0.5.0 | Local LLM client (optional) |
+| `ollama` | ^0.5.0 | Local LLM client — used only for RAG embeddings + the self-improvement job, never chat |
 | `@supabase/supabase-js` | ^2.108.2 | Auth, Edge Function calls, JWT refresh |
 | `better-sqlite3` | ^12.11.1 | Local persistence (users, conversations, messages, settings) |
 | `electron-updater` | ^6.8.9 | GitHub Releases auto-update |
