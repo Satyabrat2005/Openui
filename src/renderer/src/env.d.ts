@@ -155,6 +155,14 @@ export interface OpenUIApi {
   // Window
   hide: () => void
   quit: () => void
+  /** 'darwin' | 'win32' | 'linux' — used to render macOS's native traffic lights vs. our custom win/max/close buttons. */
+  platform: string
+  // Custom frameless title-bar window controls.
+  minimizeWindow: () => void
+  toggleMaximizeWindow: () => void
+  closeWindow: () => void
+  isMaximized: () => Promise<boolean>
+  onMaximizeChange: (cb: (maximized: boolean) => void) => () => void
 
   // Chat
   chat: (message: string, tier: Tier) => Promise<void>

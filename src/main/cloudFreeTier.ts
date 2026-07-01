@@ -24,6 +24,27 @@ import { dailyMessageLimit } from './stripe/pricing'
 import { database } from './database'
 import { sendMessage as serverSendMessage } from './serverClient'
 
+/**
+ * Thrown when the cloud `chat-proxy` Edge Function answers with a non-OK status
+ * that is NOT a rate-limit (429 is handled as a friendly upsell, not an error).
+ *
+ * Carries the HTTP `status` and the function's `code` (e.g. `llm_error`,
+ * `invalid_token`, `internal_error`) so the caller can (a) log exactly WHY the
+ * proxy failed and (b) decide whether to fall back to a local model. The most
+ * common cause is `502 llm_error`: the server-side ANTHROPIC_API_KEY / OPENAI_API_KEY
+ * secret is missing, invalid, or its account is out of credit.
+ */
+export class CloudProxyError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly code?: string
+  ) {
+    super(message)
+    this.name = 'CloudProxyError'
+  }
+}
+
 /** Payload pushed to the renderer so it can show "15/20 messages today". */
 export interface UsageUpdate {
   tier: Tier
@@ -177,7 +198,32 @@ export async function callCloudProxy(
   }
 
   if (!response.ok || !response.body) {
-    throw new Error('The AI service is temporarily unavailable. Please try again in a moment.')
+    // Read the Edge Function's error code so the failure is DIAGNOSABLE in logs
+    // instead of a vague "temporarily unavailable" — 502 `llm_error` means the
+    // server-side ANTHROPIC_API_KEY/OPENAI_API_KEY is missing/invalid/out of
+    // credit; 401 means the user's token was rejected; 500 means the function
+    // crashed. Thrown as a typed CloudProxyError so the agent router can fall
+    // back to a local model (Ollama / direct key) and keep the user working.
+    let code: string | undefined
+    try {
+      const body = (await response.clone().json()) as { error?: unknown }
+      if (typeof body.error === 'string') code = body.error
+    } catch {
+      /* non-JSON error body — leave code undefined */
+    }
+    console.error(
+      `[cloudFreeTier] chat-proxy failed: HTTP ${response.status}` +
+        (code ? ` (${code})` : '') +
+        (response.status === 502
+          ? ' — the server-side LLM API key is likely missing/invalid or out of credit. ' +
+            'Set it with: supabase secrets set ANTHROPIC_API_KEY=... && supabase functions deploy chat-proxy'
+          : '')
+    )
+    throw new CloudProxyError(
+      'The AI service is temporarily unavailable. Please try again in a moment.',
+      response.status,
+      code
+    )
   }
 
   // Live counter from the Edge Function's headers.

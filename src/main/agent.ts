@@ -6,7 +6,7 @@ import { getMcpToolSchemas, callMcpTool } from './mcp-client'
 import { database } from './database'
 import { clampTierToEntitlement } from './stripe/pricing'
 import { getCurrentUserId } from './stripe/subscriptionSync'
-import { isCloudProxyConfigured, callCloudProxy, emitLocalUsage } from './cloudFreeTier'
+import { isCloudProxyConfigured, callCloudProxy, CloudProxyError, emitLocalUsage } from './cloudFreeTier'
 import { trackEvent } from './telemetry/posthog'
 import { Events } from './telemetry/events'
 import { classifyFeedbackSignal, getCustomSystemPrompt } from './improvement'
@@ -561,7 +561,26 @@ async function routeCloudOrDirect(
   onDelta: (delta: string) => void
 ): Promise<string> {
   if (isCloudProxyConfigured()) {
-    return callCloudProxy(win, tier, messages, systemPrompt, modelKey, onDelta)
+    try {
+      return await callCloudProxy(win, tier, messages, systemPrompt, modelKey, onDelta)
+    } catch (err) {
+      // Anything other than a cloud-proxy server failure (network, programming
+      // error) propagates unchanged.
+      if (!(err instanceof CloudProxyError)) throw err
+      // The proxy is down (typically a server-side LLM key/credit problem). The
+      // failure is detected BEFORE any token is streamed, so nothing has reached
+      // the UI yet and it is safe to retry the turn against a local model. This
+      // keeps the app usable even when the cloud backend is broken — critical so
+      // a single server dependency can't take the whole product offline.
+      console.error(
+        `[agent] cloud proxy unavailable (HTTP ${err.status}${err.code ? `, ${err.code}` : ''}) — trying local fallback`
+      )
+      const recovered = await tryLocalModelFallback(win, tier, messages, systemPrompt, onDelta)
+      if (recovered !== null) return recovered
+      // No local model available either — surface the friendly proxy message.
+      onDelta(err.message)
+      return err.message
+    }
   }
 
   // ── Local-dev / unauthenticated fallback (direct API keys) ──────────────────
@@ -580,6 +599,31 @@ async function routeCloudOrDirect(
     'connection and try again in a moment.'
   onDelta(msg)
   return msg
+}
+
+/**
+ * Last-resort provider call when the cloud proxy is unreachable (e.g. its
+ * server-side LLM key is missing/out of credit). Uses a direct provider call
+ * ONLY when a local API key is present — i.e. a dev/self-hosted setup. The
+ * shipped app ships no key, so this resolves `null` in production and the caller
+ * surfaces the friendly cloud message. There is deliberately NO local-model
+ * (Ollama) branch: a user must never be able to route around metering by having
+ * a local model installed, even when the cloud backend is down. Never throws.
+ */
+async function tryLocalModelFallback(
+  win: BrowserWindow,
+  tier: Tier,
+  messages: Message[],
+  systemPrompt: string,
+  onDelta: (delta: string) => void
+): Promise<string | null> {
+  // A direct API key on this machine (dev / self-hosted) is the only fallback.
+  if (process.env.ANTHROPIC_API_KEY) {
+    emitLocalUsage(win, tier)
+    const model = tier === 'free' ? DIRECT_FREE_MODEL : DIRECT_PRO_MODEL
+    return callAnthropic(win, messages, systemPrompt, model, onDelta)
+  }
+  return null
 }
 
 /**
