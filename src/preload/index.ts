@@ -81,6 +81,17 @@ const api = {
   hide: (): void => ipcRenderer.send('openui:hide'),
   quit: (): void => ipcRenderer.send('openui:quit'),
 
+  // ── Window controls (custom frameless title bar) ────────────────────────────
+  minimizeWindow: (): void => ipcRenderer.send('openui:window:minimize'),
+  toggleMaximizeWindow: (): void => ipcRenderer.send('openui:window:maximize-toggle'),
+  closeWindow: (): void => ipcRenderer.send('openui:window:close'),
+  isMaximized: (): Promise<boolean> => ipcRenderer.invoke('openui:window:is-maximized'),
+  onMaximizeChange: (cb: (maximized: boolean) => void): (() => void) => {
+    const fn = wrap<boolean>(cb)
+    ipcRenderer.on('openui:window:maximized', fn)
+    return (): void => { ipcRenderer.removeListener('openui:window:maximized', fn) }
+  },
+
   chat: (message: string, tier: Tier): Promise<void> =>
     ipcRenderer.invoke('openui:chat', { message, tier }),
 

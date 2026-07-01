@@ -155,6 +155,12 @@ export interface OpenUIApi {
   // Window
   hide: () => void
   quit: () => void
+  // Custom frameless title-bar window controls.
+  minimizeWindow: () => void
+  toggleMaximizeWindow: () => void
+  closeWindow: () => void
+  isMaximized: () => Promise<boolean>
+  onMaximizeChange: (cb: (maximized: boolean) => void) => () => void
 
   // Chat
   chat: (message: string, tier: Tier) => Promise<void>

@@ -46,8 +46,8 @@ body {
   width: 100vw;
   height: 100vh;
   overflow: hidden;
-  /* Transparent so the frameless Electron window lets the desktop show through. */
-  background: transparent;
+  /* Solid app background — this is a real, opaque window now (not an overlay). */
+  background: var(--ou-bg);
   /* -apple-system / BlinkMacSystemFont → macOS/iOS system font.
      Segoe UI → Windows system font (falls back from the Apple entries).
      Arial / sans-serif → final cross-platform fallback. */
@@ -63,13 +63,129 @@ body {
   height: 100%;
 }
 
-/* Full-screen transparent canvas the popups float on. Clicking empty space
-   here dismisses the window (handled in App.tsx). */
+/* App shell — fills the window as a column: custom title bar on top, then the
+   content region (onboarding / loader / chat workspace). */
 .openui-overlay {
   position: fixed;
   inset: 0;
   width: 100%;
   height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: var(--ou-bg);
+}
+
+/* The area below the title bar; child popups position against this. */
+.ou-content {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* ─────────────────────────────────────────
+   CUSTOM TITLE BAR + WINDOW CONTROLS
+   Frameless window, so we draw our own. The bar is a drag region; the
+   minimize / maximize / close buttons opt out so they stay clickable.
+───────────────────────────────────────── */
+.ou-titlebar {
+  display: flex;
+  align-items: center;
+  height: 40px;
+  flex-shrink: 0;
+  background: var(--ou-bg);
+  border-bottom: 1px solid var(--ou-border);
+  user-select: none;
+  -webkit-app-region: drag;
+}
+
+.ou-titlebar-brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px;
+}
+
+.ou-titlebar-orb {
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  background: linear-gradient(140deg, #5ac8fa 0%, #007aff 100%);
+  flex-shrink: 0;
+}
+
+.ou-titlebar-name {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--ou-text);
+  letter-spacing: -0.01em;
+}
+
+.ou-titlebar-drag {
+  flex: 1;
+  align-self: stretch;
+}
+
+.ou-winctl {
+  display: flex;
+  align-items: stretch;
+  height: 100%;
+  -webkit-app-region: no-drag;
+}
+
+.ou-winbtn {
+  width: 46px;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  color: var(--ou-text-dim);
+  cursor: pointer;
+  -webkit-app-region: no-drag;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.ou-winbtn:hover {
+  background: var(--ou-surface-2);
+  color: var(--ou-text);
+}
+
+.ou-winbtn-close:hover {
+  background: #e81123;
+  color: #fff;
+}
+
+/* ─────────────────────────────────────────
+   CHAT WORKSPACE — persistent sidebar + chat column
+───────────────────────────────────────── */
+.ou-workspace {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+.ou-sidebar-scrim {
+  position: absolute;
+  inset: 0;
+  z-index: 90;
+  background: rgba(0, 0, 0, 0.45);
+}
+
+.ou-chatcol {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 16px 20px 14px;
+}
+
+.ou-chatbody {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 /* ─────────────────────────────────────────
@@ -94,30 +210,24 @@ body {
 ───────────────────────────────────────── */
 #openui-popup {
   position: absolute;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
-  width: 376px;
+  inset: 0;
+  width: 100%;
+  height: 100%;
   background: var(--ou-bg);
-  border: 1px solid var(--ou-border);
-  backdrop-filter: blur(40px) saturate(160%);
-  -webkit-backdrop-filter: blur(40px) saturate(160%);
-  border-radius: 18px;
-  box-shadow:
-    0 0 0 0.5px rgba(0, 0, 0, 0.6),
-    0 8px 28px rgba(0, 0, 0, 0.55),
-    0 36px 88px rgba(0, 0, 0, 0.7);
-  padding: 22px 22px 18px;
-  z-index: 200;
-  opacity: 0;
   color: var(--ou-text);
+  /* GSAP fades/scales this in on first mount (useAssistantAnimations). */
+  opacity: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
 }
 
 .popup-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 18px;
+  margin-bottom: 16px;
+  flex-shrink: 0;
 }
 
 .popup-logo-row {
@@ -157,11 +267,13 @@ body {
   background: #34c759;
 }
 
-/* Mic section */
+/* Mic section — the empty-state hero; centers in the available chat body. */
 .mic-stage {
+  flex: 1;
   display: flex;
   flex-direction: column;
   align-items: center;
+  justify-content: center;
   padding: 18px 0 22px;
   position: relative;
 }
@@ -256,15 +368,20 @@ body {
   letter-spacing: -0.01em;
 }
 
-/* Live conversation thread — the real chat view */
+/* Live conversation thread — the real chat view. Fills the chat body and
+   scrolls; content is capped and centered so lines stay readable on wide
+   (maximized / full-screen) windows. */
 .ou-thread {
+  flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   gap: 10px;
-  max-height: 320px;
   overflow-y: auto;
   padding: 4px 2px 12px;
-  margin-bottom: 12px;
+  width: 100%;
+  max-width: 760px;
+  margin: 0 auto 4px;
 }
 
 .ou-thread::-webkit-scrollbar {
@@ -326,15 +443,19 @@ body {
   50% { opacity: 0; }
 }
 
-/* Input strip */
+/* Input strip — pinned to the bottom of the chat column, centered + capped. */
 .input-strip {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 9px 12px;
+  padding: 11px 14px;
   background: var(--ou-surface);
   border: 1px solid var(--ou-border);
-  border-radius: 10px;
+  border-radius: 12px;
+  flex-shrink: 0;
+  width: 100%;
+  max-width: 760px;
+  margin: 12px auto 0;
 }
 
 .input-strip:focus-within {
@@ -367,9 +488,12 @@ body {
 /* Suggestion chips */
 .chips-row {
   display: flex;
+  justify-content: center;
   gap: 6px;
   flex-wrap: wrap;
-  margin-top: 11px;
+  width: 100%;
+  max-width: 760px;
+  margin: 11px auto 0;
 }
 
 .chip {

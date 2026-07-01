@@ -71,6 +71,16 @@ export default function AssistantPopup({
   const [showLocalAIToast, setShowLocalAIToast] = useState(false)
   const [showHistory, setShowHistory] = useState(false)
   const [activeConvId, setActiveConvId] = useState<string | null>(null)
+  // On a wide/maximized window the session sidebar is pinned permanently open
+  // (the ChatGPT/Claude layout); on a narrow window it collapses into a slide-in
+  // panel toggled from the header. Tracks the live window width so resizing,
+  // maximizing, or entering full screen flips the layout automatically.
+  const [wide, setWide] = useState(() => window.innerWidth >= 900)
+  useEffect(() => {
+    const onResize = (): void => setWide(window.innerWidth >= 900)
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [])
   // The live conversation thread for the current session — every user and
   // assistant turn, accumulated so the UI is a real chat, not a single caption.
   const [messages, setMessages] = useState<ChatMsg[]>([])
@@ -391,19 +401,27 @@ export default function AssistantPopup({
   // The hero (big mic orb) shows only on a blank, idle session; once a chat is
   // under way we switch to the scrolling conversation thread.
   const showHero = messages.length === 0
+  // Pin the sidebar when the window is wide enough; otherwise it slides in.
+  const sidebarPinned = wide
 
   return (
-    <div id="openui-popup" style={{ overflow: 'hidden' }}>
-      {/* History sidebar — slides in from the left over the popup content */}
+    <div id="openui-popup">
+      <div className="ou-workspace">
+      {/* Session sidebar — pinned open on wide windows, slide-in on narrow ones */}
       <div
+        className="ou-sidebar"
         style={{
-          position: 'absolute',
-          top: 0,
-          left: 0,
-          bottom: 0,
-          width: 280,
-          zIndex: 100,
-          transform: showHistory ? 'translateX(0)' : 'translateX(-100%)',
+          ...(sidebarPinned
+            ? { position: 'relative', width: 260, flexShrink: 0, transform: 'none' }
+            : {
+                position: 'absolute',
+                top: 0,
+                left: 0,
+                bottom: 0,
+                width: 280,
+                zIndex: 100,
+                transform: showHistory ? 'translateX(0)' : 'translateX(-100%)',
+              }),
           transition: 'transform 0.24s cubic-bezier(0.4,0,0.2,1)',
           background: 'rgba(10,10,12,0.98)',
           backdropFilter: 'blur(20px)',
@@ -465,6 +483,13 @@ export default function AssistantPopup({
         <ConversationList onSelect={handleConvSelect} selectedId={activeConvId ?? undefined} />
       </div>
 
+      {/* Dim scrim behind the slide-in sidebar (narrow layout only) */}
+      {!sidebarPinned && showHistory && (
+        <div className="ou-sidebar-scrim" onClick={() => setShowHistory(false)} />
+      )}
+
+      {/* Chat column */}
+      <div className="ou-chatcol">
       {/* Header */}
       <div className="popup-header">
         <div className="popup-logo-row">
@@ -516,6 +541,8 @@ export default function AssistantPopup({
               />
             </svg>
           </button>
+          {/* History toggle — only needed when the sidebar isn't pinned open */}
+          {!sidebarPinned && (
           <button
             type="button"
             aria-label="History"
@@ -542,6 +569,7 @@ export default function AssistantPopup({
               <path d="M12 7v5l3 3" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
             </svg>
           </button>
+          )}
           <button
             type="button"
             aria-label="Settings"
@@ -615,6 +643,8 @@ export default function AssistantPopup({
         />
       )}
 
+      {/* Scrollable middle region: either the live thread or the mic hero */}
+      <div className="ou-chatbody">
       {/* Live conversation thread — the real, working chat view */}
       {!showHero && (
         <div className="ou-thread">
@@ -706,6 +736,8 @@ export default function AssistantPopup({
           </div>
         </div>
       </div>
+      </div>
+      {/* /ou-chatbody */}
 
       {/* Ollama suggestion card — shown 2 min after mount if Ollama is absent */}
       <OllamaSuggestion />
@@ -784,6 +816,10 @@ export default function AssistantPopup({
           </div>
         </div>
       )}
+      </div>
+      {/* /ou-chatcol */}
+      </div>
+      {/* /ou-workspace */}
 
       {showSettings && (
         <SettingsModal
