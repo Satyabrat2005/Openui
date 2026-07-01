@@ -44,6 +44,14 @@ import {
 let tray: Tray | null = null
 let win: BrowserWindow | null = null
 
+// True once app.quit()/before-quit has actually started — lets the window's
+// 'close' handler tell a real quit apart from the user clicking the close
+// button (native red traffic light on macOS, our custom button elsewhere),
+// which should hide to the tray instead of destroying the window.
+let isQuitting = false
+
+const isMac = process.platform === 'darwin'
+
 // Timestamp of the on-launch reveal, used only to make revealWindow() idempotent
 // so the 'ready-to-show' / 'did-finish-load' pair can't show the window twice.
 let launchRevealedAt = 0
@@ -161,10 +169,16 @@ function createWindow(): void {
     minHeight: MIN_HEIGHT,
     center: true,
     show: false,
-    // Frameless so we can draw our own dark title bar + window controls (the
-    // renderer owns the close/minimize/maximize buttons and the drag region),
-    // but otherwise a fully normal, resizable, taskbar-present app window.
-    frame: false,
+    // Windows/Linux: fully frameless — the renderer draws its own dark title
+    // bar with minimize/maximize/close buttons and a drag region. macOS: keep
+    // the native traffic-light buttons (red/yellow/green) via titleBarStyle so
+    // window management still feels native, just inset into our custom drag
+    // region instead of a native title bar; the renderer skips drawing its own
+    // controls there. Either way it's a fully normal, resizable, taskbar/Dock
+    // -present app window — not the old overlay.
+    ...(isMac
+      ? { titleBarStyle: 'hiddenInset' as const, trafficLightPosition: { x: 16, y: 18 } }
+      : { frame: false }),
     transparent: false,
     backgroundColor: '#000000',
     resizable: true,
@@ -199,6 +213,18 @@ function createWindow(): void {
   // double-clicking the drag region / snapping to a screen edge).
   win.on('maximize', () => win?.webContents.send('openui:window:maximized', true))
   win.on('unmaximize', () => win?.webContents.send('openui:window:maximized', false))
+
+  // Clicking the close control — our custom button on Windows/Linux, the
+  // native red traffic light on macOS, or Alt+F4/Cmd+Q's window-level close —
+  // all funnel through this single 'close' event. Hide to the tray instead of
+  // destroying the window unless a real quit is in progress, so behaviour is
+  // identical across platforms and matches the tray's "Quit OpenUI" being the
+  // only real exit.
+  win.on('close', (event) => {
+    if (isQuitting) return
+    event.preventDefault()
+    hideWindow()
+  })
 
   win.on('closed', () => {
     win = null
@@ -287,9 +313,6 @@ app.whenReady().then(async () => {
   } catch (err) {
     console.error('[openui] Telemetry initialisation failed:', err)
   }
-
-  // True menu-bar app: no Dock icon on macOS.
-  if (process.platform === 'darwin') app.dock?.hide()
 
   applySecurityHardening()
   trackEvent(Events.APP_STARTED, { platform: process.platform, version: app.getVersion() })
@@ -556,6 +579,7 @@ ipcMain.handle('openui:mcp:connect', async (_event, config: unknown) => {
 })
 
 app.on('before-quit', () => {
+  isQuitting = true
   disconnectAll()
   trackEvent(Events.APP_CLOSED)
   shutdownTelemetry()

@@ -106,6 +106,13 @@ body {
   padding: 0 12px;
 }
 
+/* macOS: titleBarStyle 'hiddenInset' draws native traffic lights over the
+   top-left corner (trafficLightPosition x:16,y:18) — push the brand label
+   right so it doesn't sit underneath them. */
+.ou-titlebar-mac .ou-titlebar-brand {
+  padding-left: 78px;
+}
+
 .ou-titlebar-orb {
   width: 15px;
   height: 15px;
