@@ -11,6 +11,13 @@ import { isCloudProxyConfigured, callCloudProxy, CloudProxyError, emitLocalUsage
 import { trackEvent } from './telemetry/posthog'
 import { Events } from './telemetry/events'
 import { classifyFeedbackSignal, getCustomSystemPrompt } from './improvement'
+import {
+  TrajectoryRecorder,
+  applyQualitySignal,
+  applyExplicitQuality,
+  buildFewShotBlock,
+  exportDatasetToFile
+} from './trainingStore'
 
 export interface Message {
   role: 'user' | 'assistant'
@@ -132,7 +139,10 @@ function renderSchema(schema: ToolSchema): string {
  * learned prompt still carries an accurate "Available tools" section.
  */
 function buildSystemPrompt(): string {
-  return getCustomSystemPrompt() ?? buildDefaultSystemPrompt()
+  const base = getCustomSystemPrompt() ?? buildDefaultSystemPrompt()
+  // Append high-quality past trajectories as few-shot exemplars so the model
+  // imitates its own proven successes. Empty until enough good examples exist.
+  return base + buildFewShotBlock()
 }
 
 export function buildDefaultSystemPrompt(): string {
@@ -752,7 +762,11 @@ export async function handleChat(win: BrowserWindow, userMessage: string, tier: 
   // "thanks" upgrades it to 5. Best-effort and never allowed to break the chat.
   try {
     const signal = classifyFeedbackSignal(userMessage)
-    if (signal) database.feedback.applySignalToLast(convId, signal)
+    if (signal) {
+      database.feedback.applySignalToLast(convId, signal)
+      // Mirror the same signal onto the previous turn's training trajectory.
+      applyQualitySignal(convId, signal)
+    }
   } catch (err) {
     console.error('[improvement] failed to score previous turn:', err)
   }
@@ -810,8 +824,20 @@ export async function handleChat(win: BrowserWindow, userMessage: string, tier: 
     has_voice: fromVoice
   })
 
+  // Central training store: capture this turn's full trajectory (instruction +
+  // every reasoning/tool step + outcome) for the self-reinforcing dataset.
+  // Best-effort — recording must never break the chat turn.
+  const recorder = new TrajectoryRecorder({
+    conversationId: convId,
+    userId: getCurrentUserId(),
+    instruction: userMessage,
+    model,
+    tier: effectiveTier
+  })
+
   try {
     let finalText = ''
+    let reachedLimit = false
 
     // ── Planning stage ────────────────────────────────────────────────────────
     // For task-shaped requests, decompose into a checklist FIRST, show every
@@ -949,6 +975,7 @@ export async function handleChat(win: BrowserWindow, userMessage: string, tier: 
 
       // State-changing tools first return PendingApprovalResult — pause and
       // ask the user via HitlModal before actually running the tool.
+      const toolStart = Date.now()
       const rawResult: ToolResult | PendingApprovalResult = await executeTool(
         toolCall.tool,
         toolCall.args,
@@ -1006,11 +1033,22 @@ export async function handleChat(win: BrowserWindow, userMessage: string, tier: 
         } satisfies TaskUpdate)
       }
 
+      // Capture this reasoning + tool-execution step for the training store.
+      recorder.recordStep({
+        reasoning: responseText,
+        toolName: toolCall.tool,
+        toolArgs: toolCall.args,
+        toolResult: result.ok ? result.output ?? '' : result.error ?? '',
+        status: result.ok ? 'success' : 'error',
+        durationMs: Date.now() - toolStart
+      })
+
       // Feed the result back so the model can take the next step.
       history.push({ role: 'user', content: formatToolResult(toolCall, result) })
 
       if (turn === maxTurns - 1) {
         finalText = 'Reached the tool-call limit for this request.'
+        reachedLimit = true
         database.messages.addMessage(convId, 'assistant', finalText)
       }
     }
@@ -1022,6 +1060,9 @@ export async function handleChat(win: BrowserWindow, userMessage: string, tier: 
     } catch (err) {
       console.error('[improvement] failed to record turn feedback:', err)
     }
+
+    // Persist the full trajectory to the central training store (best-effort).
+    recorder.commit(finalText, reachedLimit)
 
     emit(win, 'openui:chat:done', { text: finalText, toolCall: null })
   } catch (err) {
@@ -1092,13 +1133,35 @@ export function registerAgentIPC(win: BrowserWindow): void {
     const value = rating === 1 || rating === 5 ? rating : null
     if (value === null) return false
     try {
-      return database.feedback.setExplicitRatingOnLast(value) !== null
+      const ok = database.feedback.setExplicitRatingOnLast(value) !== null
+      // Mirror the rating onto the last training trajectory so the dataset and
+      // the few-shot exemplar pool reflect the user's explicit judgement.
+      applyExplicitQuality(value)
+      return ok
     } catch (err) {
       console.error('[improvement] failed to set explicit rating:', err)
       return false
     }
   })
 
+  // ── Central training store IPC ──────────────────────────────────────────────
+  // Export the recorded trajectories as a fine-tuning-ready JSONL dataset. With
+  // no path a save dialog is shown; minQuality filters out poorly-rated turns.
+  ipcMain.handle('openui:training:export', async (_event, payload: unknown) => {
+    const p = (typeof payload === 'object' && payload !== null ? payload : {}) as Record<string, unknown>
+    const minQuality = typeof p.minQuality === 'number' ? p.minQuality : 3
+    return exportDatasetToFile(undefined, minQuality)
+  })
+
+  // Aggregate dataset stats (total examples, outcomes, high-quality count).
+  ipcMain.handle('openui:training:stats', () => {
+    try {
+      return database.training.getStats()
+    } catch (err) {
+      console.error('[training] failed to read stats:', err)
+      return { total: 0, byOutcome: { success: 0, partial: 0, error: 0, unknown: 0 }, highQuality: 0, avgSteps: 0 }
+    }
+  })
 }
 
 export function registerConversationIPC(win: BrowserWindow): void {

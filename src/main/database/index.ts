@@ -7,6 +7,7 @@ import * as messages from './repositories/messageRepo'
 import * as settings from './repositories/settingsRepo'
 import * as subscriptions from './repositories/subscriptionRepo'
 import * as feedback from './repositories/feedbackRepo'
+import * as training from './repositories/trainingRepo'
 
 export function initDatabase(): void {
   initDb()
@@ -20,7 +21,8 @@ export const database = {
   messages,
   settings,
   subscriptions,
-  feedback
+  feedback,
+  training
 }
 
 export type { UserRow, UserData } from './repositories/userRepo'
@@ -28,3 +30,9 @@ export type { ConversationRow } from './repositories/conversationRepo'
 export type { MessageRow } from './repositories/messageRepo'
 export type { SubscriptionRow } from './repositories/subscriptionRepo'
 export type { FeedbackRow } from './repositories/feedbackRepo'
+export type {
+  TrainingExampleRow,
+  TrainingStepRow,
+  TrainingOutcome,
+  TrainingStats
+} from './repositories/trainingRepo'

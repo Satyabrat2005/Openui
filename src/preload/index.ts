@@ -62,6 +62,14 @@ type WaitlistResult =
   | { ok: true; alreadySubscribed?: boolean }
   | { ok: false; error: string }
 
+type TrainingExportResult = { ok: boolean; path?: string; count?: number; error?: string }
+type TrainingStats = {
+  total: number
+  byOutcome: { success: number; partial: number; error: number; unknown: number }
+  highQuality: number
+  avgSteps: number
+}
+
 type WorkflowStep = { tool: string; args: Record<string, unknown> }
 type Workflow = { name: string; description: string; trigger: string; steps: WorkflowStep[] }
 type WorkflowResult = { ok: boolean; error?: string }
@@ -443,6 +451,15 @@ const api = {
 
   recorderIsRecording: (): Promise<boolean> =>
     ipcRenderer.invoke('openui:recorder:is-recording'),
+
+  // ── Central training store ─────────────────────────────────────────────────
+  // Export recorded task trajectories as a fine-tuning-ready JSONL dataset.
+  exportTrainingData: (minQuality?: number): Promise<TrainingExportResult> =>
+    ipcRenderer.invoke('openui:training:export', { minQuality }),
+
+  // Aggregate dataset stats for a settings/insights panel.
+  getTrainingStats: (): Promise<TrainingStats> =>
+    ipcRenderer.invoke('openui:training:stats'),
 }
 
 export type OpenUIApi = typeof api

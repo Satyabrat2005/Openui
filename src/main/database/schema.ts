@@ -85,6 +85,47 @@ export function applySchema(): void {
       timestamp INTEGER DEFAULT (strftime('%s','now'))
     );
 
+    -- Central training store: one row per completed assistant turn, capturing the
+    -- FULL trajectory (not just the final answer). training_steps holds the
+    -- step-by-step reasoning + tool execution ("do task 1 by 1, reasoning to
+    -- itself"). Rows are scored by the same implicit/explicit signal as
+    -- conversation_feedback and exported as a fine-tuning-ready JSONL dataset;
+    -- the best trajectories are also re-injected as few-shot exemplars so the
+    -- free-tier model imitates its own past successes. See trainingStore.ts.
+    CREATE TABLE IF NOT EXISTS training_examples (
+      id TEXT PRIMARY KEY,
+      conversation_id TEXT,
+      user_id TEXT,
+      instruction TEXT NOT NULL,
+      final_response TEXT,
+      step_count INTEGER DEFAULT 0,
+      tool_sequence TEXT,
+      outcome TEXT CHECK(outcome IN ('success','partial','error','unknown')) DEFAULT 'unknown',
+      quality_score INTEGER DEFAULT 3,
+      model TEXT,
+      tier TEXT,
+      duration_ms INTEGER,
+      created_at INTEGER DEFAULT (strftime('%s','now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS training_steps (
+      id TEXT PRIMARY KEY,
+      example_id TEXT REFERENCES training_examples(id) ON DELETE CASCADE,
+      step_index INTEGER NOT NULL,
+      reasoning TEXT,
+      tool_name TEXT,
+      tool_args TEXT,
+      tool_result TEXT,
+      status TEXT CHECK(status IN ('success','error')),
+      duration_ms INTEGER,
+      created_at INTEGER DEFAULT (strftime('%s','now'))
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_training_examples_quality ON training_examples(quality_score, outcome);
+    CREATE INDEX IF NOT EXISTS idx_training_examples_created ON training_examples(created_at);
+    CREATE INDEX IF NOT EXISTS idx_training_examples_conversation ON training_examples(conversation_id);
+    CREATE INDEX IF NOT EXISTS idx_training_steps_example ON training_steps(example_id, step_index);
+
     CREATE INDEX IF NOT EXISTS idx_conversations_user_id ON conversations(user_id);
     CREATE INDEX IF NOT EXISTS idx_messages_conversation_id ON messages(conversation_id);
     CREATE INDEX IF NOT EXISTS idx_messages_created_at ON messages(created_at);
