@@ -22,7 +22,10 @@
  */
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import { desktopCapturer } from 'electron'
+import { readFile, writeFile, mkdir, rename, copyFile, unlink, readdir, stat } from 'node:fs/promises'
+import { resolve as resolvePath, join as joinPath, dirname, sep } from 'node:path'
+import { homedir } from 'node:os'
+import { desktopCapturer, clipboard, shell } from 'electron'
 import Anthropic from '@anthropic-ai/sdk'
 import { checkAccessibility, type PermissionTarget } from './permissions'
 import { githubToolSchemas, githubRegistry } from './github'
@@ -96,6 +99,14 @@ export const STATE_CHANGING_TOOLS = new Set<string>([
   'browser_click',
   'browser_fill_input',
   'control_calendar',
+  // Filesystem + clipboard mutations. Reads (list_directory, read_file,
+  // read_clipboard) are intentionally absent — they observe, never change state.
+  'write_file',
+  'create_folder',
+  'move_file',
+  'copy_file',
+  'delete_file',
+  'write_clipboard',
 ])
 
 /**
@@ -104,9 +115,13 @@ export const STATE_CHANGING_TOOLS = new Set<string>([
  * money). These ALWAYS require a per-action confirmation, even under the
  * "approve the plan once" autonomy mode — approving a plan authorises the
  * routine steps, never a hallucinated destructive one. Populated as those tools
- * land in later milestones (WhatsApp send, file delete, recycle-bin, payments).
+ * land in later milestones (WhatsApp send, payments).
+ *
+ * delete_file moves the target to the OS Recycle Bin / Trash (recoverable)
+ * rather than hard-unlinking, but it is still listed here so it ALWAYS asks —
+ * even under approve-plan / full-auto autonomy a deletion is never silently run.
  */
-export const DESTRUCTIVE_TOOLS = new Set<string>([])
+export const DESTRUCTIVE_TOOLS = new Set<string>(['delete_file'])
 
 /**
  * Returned by executeTool when a state-changing tool needs user approval.
@@ -945,6 +960,249 @@ async function search_local_files(args: Record<string, unknown>): Promise<ToolRe
   }
 }
 
+// ── filesystem + clipboard tools (Node fs + Electron shell/clipboard) ─────────
+
+/**
+ * Byte cap for a single read_file / write_file / clipboard call. Bounds memory
+ * and keeps a runaway model from streaming a huge file into the context window.
+ */
+const MAX_FILE_BYTES = 512 * 1024 // 512 KiB
+/** Cap on entries returned by list_directory. */
+const MAX_DIR_ENTRIES = 200
+
+const errText = (err: unknown): string => (err instanceof Error ? err.message : String(err))
+
+/**
+ * Resolve an LLM-supplied path to an absolute path and enforce the filesystem
+ * trust boundary. This is the equivalent of validateArgs for paths — model
+ * output may be steered by prompt injection, so every path crosses this gate.
+ *
+ * • A leading "~" expands to the user's home directory.
+ * • Credential / secret directories (SENSITIVE_PATH_RE: .ssh, .aws, AppData,
+ *   Keychains …) are always rejected, for reads and writes alike.
+ * • Mutating tools (write/mkdir/move/copy/delete) are additionally confined to
+ *   the home directory tree, so an injected model cannot create, overwrite, or
+ *   delete files anywhere in the system — only inside the user's own space.
+ *
+ * Returns the absolute path, or throws Error with a user-safe message.
+ */
+function resolveSafePath(raw: unknown, opts: { mutating: boolean }): string {
+  if (typeof raw !== 'string' || !raw.trim()) {
+    throw new Error('a non-empty string "path" is required.')
+  }
+  const input = raw.trim()
+  if (input.length > 1024) throw new Error('"path" is too long.')
+  const expanded =
+    input === '~' || input.startsWith('~/') || input.startsWith('~\\')
+      ? joinPath(homedir(), input.slice(1))
+      : input
+  const abs = resolvePath(expanded)
+  if (SENSITIVE_PATH_RE.test(abs)) {
+    throw new Error('that path is off-limits — it holds credentials or secrets.')
+  }
+  if (opts.mutating) {
+    const home = resolvePath(homedir())
+    if (abs !== home && !abs.startsWith(home + sep)) {
+      throw new Error(
+        `for safety, files can only be created, moved, copied, or deleted inside your home folder (${home}).`
+      )
+    }
+  }
+  return abs
+}
+
+/** List the entries of a directory (files and sub-folders). Read-only. */
+async function list_directory(args: Record<string, unknown>): Promise<ToolResult> {
+  let dir: string
+  try {
+    dir = resolveSafePath(args.path ?? args.directory, { mutating: false })
+  } catch (e) {
+    return { ok: false, error: `list_directory: ${errText(e)}` }
+  }
+  try {
+    const entries = await readdir(dir, { withFileTypes: true })
+    const visible = entries.filter((e) => !SENSITIVE_PATH_RE.test(joinPath(dir, e.name)))
+    const rows = visible
+      .slice(0, MAX_DIR_ENTRIES)
+      .map((e) => `${e.isDirectory() ? '[dir] ' : '[file]'} ${e.name}`)
+    if (rows.length === 0) return { ok: true, output: `${dir} is empty.` }
+    const more = visible.length > MAX_DIR_ENTRIES ? ` (showing first ${MAX_DIR_ENTRIES})` : ''
+    return { ok: true, output: `Contents of ${dir}${more}:\n${rows.join('\n')}` }
+  } catch (err) {
+    return { ok: false, error: `list_directory failed: ${errText(err)}` }
+  }
+}
+
+/** Read a UTF-8 text file and return its contents. Read-only. */
+async function read_file(args: Record<string, unknown>): Promise<ToolResult> {
+  let file: string
+  try {
+    file = resolveSafePath(args.path, { mutating: false })
+  } catch (e) {
+    return { ok: false, error: `read_file: ${errText(e)}` }
+  }
+  try {
+    const info = await stat(file)
+    if (info.isDirectory()) {
+      return { ok: false, error: `read_file: "${file}" is a directory — use list_directory instead.` }
+    }
+    if (info.size > MAX_FILE_BYTES) {
+      return {
+        ok: false,
+        error: `read_file: file is too large (${info.size} bytes; limit ${MAX_FILE_BYTES}).`
+      }
+    }
+    const text = await readFile(file, 'utf8')
+    return { ok: true, output: text || '(file is empty)' }
+  } catch (err) {
+    return { ok: false, error: `read_file failed: ${errText(err)}` }
+  }
+}
+
+/** Create or overwrite a UTF-8 text file, creating parent folders as needed. */
+async function write_file(args: Record<string, unknown>): Promise<ToolResult> {
+  const content = typeof args.content === 'string' ? args.content : ''
+  const bytes = Buffer.byteLength(content, 'utf8')
+  if (bytes > MAX_FILE_BYTES) {
+    return { ok: false, error: `write_file: content exceeds ${MAX_FILE_BYTES} bytes.` }
+  }
+  let file: string
+  try {
+    file = resolveSafePath(args.path, { mutating: true })
+  } catch (e) {
+    return { ok: false, error: `write_file: ${errText(e)}` }
+  }
+  try {
+    await mkdir(dirname(file), { recursive: true })
+    await writeFile(file, content, 'utf8')
+    return { ok: true, output: `Wrote ${bytes} byte(s) to ${file}.` }
+  } catch (err) {
+    return { ok: false, error: `write_file failed: ${errText(err)}` }
+  }
+}
+
+/** Create a folder (and any missing parents). */
+async function create_folder(args: Record<string, unknown>): Promise<ToolResult> {
+  let dir: string
+  try {
+    dir = resolveSafePath(args.path ?? args.directory, { mutating: true })
+  } catch (e) {
+    return { ok: false, error: `create_folder: ${errText(e)}` }
+  }
+  try {
+    await mkdir(dir, { recursive: true })
+    return { ok: true, output: `Created folder ${dir}.` }
+  } catch (err) {
+    return { ok: false, error: `create_folder failed: ${errText(err)}` }
+  }
+}
+
+/** Move or rename a file. Both endpoints must sit inside the home tree. */
+async function move_file(args: Record<string, unknown>): Promise<ToolResult> {
+  let src: string
+  let dst: string
+  try {
+    src = resolveSafePath(args.source ?? args.from, { mutating: true })
+    dst = resolveSafePath(args.destination ?? args.to, { mutating: true })
+  } catch (e) {
+    return { ok: false, error: `move_file: ${errText(e)}` }
+  }
+  try {
+    await mkdir(dirname(dst), { recursive: true })
+    await rename(src, dst)
+    return { ok: true, output: `Moved ${src} → ${dst}.` }
+  } catch (err) {
+    // rename() fails with EXDEV across volumes (e.g. C: → D:). Fall back to a
+    // copy-then-remove for files; refuse cross-volume directory moves rather
+    // than attempt a partial recursive copy.
+    if (err instanceof Error && 'code' in err && (err as NodeJS.ErrnoException).code === 'EXDEV') {
+      try {
+        const info = await stat(src)
+        if (info.isDirectory()) {
+          return {
+            ok: false,
+            error: `move_file: cannot move a folder across drives (${src} → ${dst}).`
+          }
+        }
+        await copyFile(src, dst)
+        await unlink(src)
+        return { ok: true, output: `Moved ${src} → ${dst} (across drives).` }
+      } catch (err2) {
+        return { ok: false, error: `move_file failed: ${errText(err2)}` }
+      }
+    }
+    return { ok: false, error: `move_file failed: ${errText(err)}` }
+  }
+}
+
+/** Copy a file. The source may be read from anywhere non-sensitive; the
+ * destination must be inside the home tree. */
+async function copy_file(args: Record<string, unknown>): Promise<ToolResult> {
+  let src: string
+  let dst: string
+  try {
+    src = resolveSafePath(args.source ?? args.from, { mutating: false })
+    dst = resolveSafePath(args.destination ?? args.to, { mutating: true })
+  } catch (e) {
+    return { ok: false, error: `copy_file: ${errText(e)}` }
+  }
+  try {
+    const info = await stat(src)
+    if (info.isDirectory()) {
+      return { ok: false, error: 'copy_file: copying folders is not supported — copy files individually.' }
+    }
+    await mkdir(dirname(dst), { recursive: true })
+    await copyFile(src, dst)
+    return { ok: true, output: `Copied ${src} → ${dst}.` }
+  } catch (err) {
+    return { ok: false, error: `copy_file failed: ${errText(err)}` }
+  }
+}
+
+/**
+ * Delete a file or folder by moving it to the OS Recycle Bin / Trash.
+ * Recoverable by design (shell.trashItem, not fs.unlink) — but still gated as a
+ * DESTRUCTIVE tool so it always asks for confirmation.
+ */
+async function delete_file(args: Record<string, unknown>): Promise<ToolResult> {
+  let target: string
+  try {
+    target = resolveSafePath(args.path, { mutating: true })
+  } catch (e) {
+    return { ok: false, error: `delete_file: ${errText(e)}` }
+  }
+  try {
+    await stat(target) // surface a clear "not found" instead of a trashItem error
+    await shell.trashItem(target)
+    return { ok: true, output: `Moved ${target} to the Recycle Bin (recoverable).` }
+  } catch (err) {
+    return { ok: false, error: `delete_file failed: ${errText(err)}` }
+  }
+}
+
+/** Read the current text contents of the system clipboard. Read-only. */
+async function read_clipboard(_args: Record<string, unknown>): Promise<ToolResult> {
+  try {
+    const text = clipboard.readText()
+    return { ok: true, output: text ? text.slice(0, MAX_FILE_BYTES) : '(clipboard is empty)' }
+  } catch (err) {
+    return { ok: false, error: `read_clipboard failed: ${errText(err)}` }
+  }
+}
+
+/** Replace the system clipboard contents with the given text. */
+async function write_clipboard(args: Record<string, unknown>): Promise<ToolResult> {
+  const text = typeof args.text === 'string' ? args.text : ''
+  if (!text) return { ok: false, error: 'write_clipboard requires non-empty "text".' }
+  if (text.length > MAX_FILE_BYTES) return { ok: false, error: 'write_clipboard: text is too long.' }
+  try {
+    clipboard.writeText(text)
+    return { ok: true, output: `Copied ${text.length} character(s) to the clipboard.` }
+  } catch (err) {
+    return { ok: false, error: `write_clipboard failed: ${errText(err)}` }
+  }
+}
+
 // ── schemas + dispatch (the LLM-facing surface) ──────────────────────────────
 
 /** JSON schemas the agent injects into the system prompt so the LLM can call. */
@@ -1122,6 +1380,112 @@ export const toolSchemas: ToolSchema[] = [
       },
       required: ['workflow_name']
     }
+  },
+  {
+    name: 'list_directory',
+    description:
+      'List the files and sub-folders in a directory. Use before read_file / move_file / delete_file ' +
+      'to discover exact names. Paths may start with "~" for the home folder.',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Absolute path or "~"-relative path of the folder to list.' }
+      },
+      required: ['path']
+    }
+  },
+  {
+    name: 'read_file',
+    description:
+      'Read the contents of a UTF-8 text file (up to 512 KiB) and return it. ' +
+      'Use for source code, config, notes, CSV/JSON and other text documents.',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Absolute path or "~"-relative path of the file to read.' }
+      },
+      required: ['path']
+    }
+  },
+  {
+    name: 'write_file',
+    description:
+      'Create a new text file or overwrite an existing one with the given content. ' +
+      'Missing parent folders are created automatically. Confined to the home folder for safety.',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Destination path (must resolve inside the home folder).' },
+        content: { type: 'string', description: 'The full UTF-8 text content to write.' }
+      },
+      required: ['path', 'content']
+    }
+  },
+  {
+    name: 'create_folder',
+    description: 'Create a folder, including any missing parent folders. Confined to the home folder.',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Path of the folder to create (inside the home folder).' }
+      },
+      required: ['path']
+    }
+  },
+  {
+    name: 'move_file',
+    description:
+      'Move or rename a file. Both the source and destination must be inside the home folder. ' +
+      'Use to reorganise files or rename them.',
+    parameters: {
+      type: 'object',
+      properties: {
+        source: { type: 'string', description: 'Current path of the file.' },
+        destination: { type: 'string', description: 'New path (or new name) for the file.' }
+      },
+      required: ['source', 'destination']
+    }
+  },
+  {
+    name: 'copy_file',
+    description:
+      'Copy a file to a new location. The destination must be inside the home folder. ' +
+      'Copying whole folders is not supported — copy files individually.',
+    parameters: {
+      type: 'object',
+      properties: {
+        source: { type: 'string', description: 'Path of the file to copy.' },
+        destination: { type: 'string', description: 'Path to copy the file to (inside the home folder).' }
+      },
+      required: ['source', 'destination']
+    }
+  },
+  {
+    name: 'delete_file',
+    description:
+      'Delete a file or folder by moving it to the Recycle Bin / Trash (recoverable). ' +
+      'Confined to the home folder. Always requires explicit user confirmation.',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Path of the file or folder to move to the Recycle Bin.' }
+      },
+      required: ['path']
+    }
+  },
+  {
+    name: 'read_clipboard',
+    description: 'Read the current text contents of the system clipboard.',
+    parameters: { type: 'object', properties: {}, required: [] }
+  },
+  {
+    name: 'write_clipboard',
+    description: 'Replace the system clipboard contents with the given text so the user can paste it.',
+    parameters: {
+      type: 'object',
+      properties: { text: { type: 'string', description: 'The text to place on the clipboard.' } },
+      required: ['text']
+    }
   }
 ]
 
@@ -1161,6 +1525,15 @@ const registry: Record<string, Executor> = {
   browser_fill_input,
   search_local_files,
   run_workflow,
+  list_directory,
+  read_file,
+  write_file,
+  create_folder,
+  move_file,
+  copy_file,
+  delete_file,
+  read_clipboard,
+  write_clipboard,
   ...githubRegistry,
   ...figmaRegistry
 }
@@ -1316,6 +1689,24 @@ export function describeToolCall(name: string, args: Record<string, unknown>): s
       return `Search local knowledge base for "${String(args.query ?? '')}"`
     case 'run_workflow':
       return `Run workflow "${String(args.workflow_name ?? '')}"`
+    case 'list_directory':
+      return `List folder ${String(args.path ?? args.directory ?? '')}`
+    case 'read_file':
+      return `Read file ${String(args.path ?? '')}`
+    case 'write_file':
+      return `Write file ${String(args.path ?? '')}`
+    case 'create_folder':
+      return `Create folder ${String(args.path ?? args.directory ?? '')}`
+    case 'move_file':
+      return `Move ${String(args.source ?? args.from ?? '')} → ${String(args.destination ?? args.to ?? '')}`
+    case 'copy_file':
+      return `Copy ${String(args.source ?? args.from ?? '')} → ${String(args.destination ?? args.to ?? '')}`
+    case 'delete_file':
+      return `Delete ${String(args.path ?? '')} (to Recycle Bin)`
+    case 'read_clipboard':
+      return 'Read clipboard'
+    case 'write_clipboard':
+      return 'Write to clipboard'
     default:
       return name
   }
