@@ -23,6 +23,7 @@
  */
 import { BrowserWindow, shell, type WebContents } from 'electron'
 import { handleDeepLink } from './deeplink'
+import { isSupabaseConfigured } from './supabaseClient'
 
 let authWindow: BrowserWindow | null = null
 
@@ -43,11 +44,20 @@ export function isAuthWindowOpen(): boolean {
  * Returns the waiting-window BrowserWindow, or null if SUPABASE_URL is missing.
  */
 export function openAuthWindow(parent?: BrowserWindow | null): BrowserWindow | null {
-  const supabaseUrl = process.env.SUPABASE_URL
-  if (!supabaseUrl) {
-    console.error('[openui] Cannot start auth — SUPABASE_URL is not set.')
+  // Both SUPABASE_URL and SUPABASE_ANON_KEY are required: the URL builds the
+  // authorize link below, and the anon key is needed later by completeAuth() to
+  // adopt the session. Checking both up front means a missing key fails fast
+  // (renderer shows "Sign-in is temporarily unavailable") instead of opening the
+  // browser and only erroring after the user has signed in with Google.
+  if (!isSupabaseConfigured()) {
+    console.error(
+      '[openui] Cannot start auth — SUPABASE_URL / SUPABASE_ANON_KEY are not set. ' +
+        'Copy .env.example to .env and fill both in (see README → Environment Variables), ' +
+        'then add openui://auth-callback to Supabase Auth → URL Configuration and enable the Google provider.'
+    )
     return null
   }
+  const supabaseUrl = process.env.SUPABASE_URL as string
 
   if (authWindow && !authWindow.isDestroyed()) {
     authWindow.focus()

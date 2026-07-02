@@ -14,6 +14,14 @@ const AuthContext = createContext<AuthContextValue>({
   isAnonymous: true
 })
 
+// ── Payments temporarily disabled for the demo ────────────────────────────────
+// Pro-tier billing is paused while we run demo testing (revisiting in a few
+// months). The Stripe checkout flow (src/main/stripe/checkout.ts) and the
+// TierUpgradeModal component are kept intact but not surfaced: we ignore the
+// "tier-upgrade-needed" nudge so the payment/upgrade UI never appears. Flip this
+// back to `true` to restore the upgrade modal when we resume pro-tier work.
+const PAYMENTS_ENABLED: boolean = false
+
 export function AuthProvider({ children }: { children: ReactNode }): JSX.Element {
   const [user, setUser] = useState<User | null>(null)
   const [upgradePayload, setUpgradePayload] = useState<TierUpgradePayload | null>(null)
@@ -33,7 +41,10 @@ export function AuthProvider({ children }: { children: ReactNode }): JSX.Element
       window.openui.onTierChanged((tier) => {
         setUser((prev) => (prev ? { ...prev, tier } : prev))
       }),
-      window.openui.onTierUpgradeNeeded((payload) => setUpgradePayload(payload))
+      // Only surface the upgrade modal while payments are enabled (see above).
+      ...(PAYMENTS_ENABLED
+        ? [window.openui.onTierUpgradeNeeded((payload) => setUpgradePayload(payload))]
+        : [])
     ]
 
     return () => unsubs.forEach((fn) => fn())
@@ -48,7 +59,7 @@ export function AuthProvider({ children }: { children: ReactNode }): JSX.Element
   return (
     <AuthContext.Provider value={{ user, tier, isAnonymous }}>
       {children}
-      {upgradePayload && (
+      {PAYMENTS_ENABLED && upgradePayload && (
         <TierUpgradeModal
           payload={upgradePayload}
           onDismiss={() => setUpgradePayload(null)}

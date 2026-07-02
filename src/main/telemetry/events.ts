@@ -4,7 +4,8 @@
 export const Events = {
   // App lifecycle
   APP_STARTED: 'app_started',
-  APP_CLOSED: 'app_closed',
+  APP_CLOSED: 'app_closed',               // properties: { session_duration_seconds }
+  APP_HEARTBEAT: 'app_heartbeat',         // properties: { interval_seconds } — emitted once per active interval while a window is focused; count × interval ≈ time-in-app
   APP_UPDATED: 'app_updated',             // properties: { previous_version, new_version }
 
   // Auto-update (electron-updater)

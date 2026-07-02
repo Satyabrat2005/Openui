@@ -18,6 +18,7 @@ import { initTelemetry, enableTelemetryAfterConsent, shutdownTelemetry, setTelem
 import { grantConsent, denyConsent, getConsentStatus, recordPendingEvent, ConsentStatus } from './telemetry/consent'
 import { initUpdater, checkForUpdates, downloadUpdate, installUpdateAndRestart, openReleasesPage } from './updater/updater'
 import { Events } from './telemetry/events'
+import { startUsageTracking, stopUsageTracking, sessionDurationSeconds } from './telemetry/usage'
 import { exportWorkflow, importWorkflow, getWorkflows, deleteWorkflow, type Workflow } from './workflows'
 import { indexDirectory } from './rag'
 import {
@@ -308,6 +309,8 @@ app.whenReady().then(async () => {
 
   applySecurityHardening()
   trackEvent(Events.APP_STARTED, { platform: process.platform, version: app.getVersion() })
+  // Daily-active + time-in-app tracking (active-window heartbeat). See usage.ts.
+  startUsageTracking()
 
   createWindow()
   createTray()
@@ -539,7 +542,8 @@ ipcMain.handle('openui:mcp:connect', async (_event, config: unknown) => {
 app.on('before-quit', () => {
   isQuitting = true
   disconnectAll()
-  trackEvent(Events.APP_CLOSED)
+  stopUsageTracking()
+  trackEvent(Events.APP_CLOSED, { session_duration_seconds: sessionDurationSeconds() })
   shutdownTelemetry()
 })
 
