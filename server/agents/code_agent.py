@@ -11,21 +11,11 @@ WebSocket message protocol:
 """
 
 import os
-import sys
 import time
-from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
 from openai import AsyncOpenAI, APIConnectionError, APIError, APITimeoutError
 import anthropic
-
-# Allow imports from project root (core/)
-_PROJECT_ROOT = str(Path(__file__).resolve().parents[2])
-if _PROJECT_ROOT not in sys.path:
-    sys.path.insert(0, _PROJECT_ROOT)
-
-from core.config import Config
-from core.router import ModelRouter
 
 
 # ---------------------------------------------------------------------------
@@ -59,7 +49,18 @@ _TIER_MODELS: Dict[str, List[str]] = {
 }
 
 _FALLBACK_MODEL = "claude-haiku-4-5-20251001"
-_OLLAMA_BASE_URL = "http://localhost:11434/v1"
+
+
+def _default_ollama_base_url() -> str:
+    """OpenAI-compatible Ollama endpoint, derived from OLLAMA_HOST for parity
+    with the rest of the app (src/main/agent.ts reads the same env var)."""
+    host = os.environ.get("OLLAMA_HOST", "http://localhost:11434").rstrip("/")
+    return f"{host}/v1"
+
+
+_MODEL_TEMPERATURE = 0.1
+_MODEL_MAX_TOKENS = 4096
+_MODEL_TIMEOUT_SEC = 120
 
 
 class CodeAgent:
@@ -106,26 +107,17 @@ class CodeAgent:
         else:
             self.model = allowed[0]
 
-        base_url = custom_endpoint or _OLLAMA_BASE_URL
+        self.base_url = custom_endpoint or _default_ollama_base_url()
+        self.temperature = _MODEL_TEMPERATURE
+        self.max_tokens = _MODEL_MAX_TOKENS
 
-        # Build a Config pointing at Ollama (or the custom Enterprise endpoint)
-        cfg = Config()
-        cfg.model_provider = "ollama"
-        cfg.model_base_url = base_url
-        cfg.model_name = self.model
-        cfg.model_api_key = "ollama"
-        cfg.model_timeout = 120
-        cfg.model_temperature = 0.1
-        cfg.model_max_tokens = 4096
-
-        # Reuse ModelRouter for config management and sync operations
-        self.router = ModelRouter(cfg)
-
-        # Separate async client — ModelRouter's sync client cannot stream
+        # Async client pointing at Ollama's OpenAI-compatible API (or the
+        # Enterprise custom endpoint). Ollama ignores the api_key but the SDK
+        # requires a non-empty value.
         self._async_client = AsyncOpenAI(
-            base_url=self.router.config.model_base_url,
-            api_key=self.router.config.model_api_key,
-            timeout=float(self.router.config.model_timeout),
+            base_url=self.base_url,
+            api_key="ollama",
+            timeout=float(_MODEL_TIMEOUT_SEC),
         )
 
     # ------------------------------------------------------------------
@@ -185,8 +177,8 @@ class CodeAgent:
         response_stream = await self._async_client.chat.completions.create(
             model=self.model,
             messages=messages,
-            temperature=self.router.config.model_temperature,
-            max_tokens=self.router.config.model_max_tokens,
+            temperature=self.temperature,
+            max_tokens=self.max_tokens,
             stream=True,
         )
 
