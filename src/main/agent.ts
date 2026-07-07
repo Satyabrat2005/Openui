@@ -44,6 +44,32 @@ interface TaskUpdate {
   label: string
   status: TaskStatus
   detail?: string
+  /**
+   * When set, this row is a tool-call step nested under the plan step with this
+   * id — the renderer renders it inside the expandable parent rather than as a
+   * top-level task.
+   */
+  parentId?: string
+  /**
+   * The real model executing this work, from modelForTier(). Never a decorative
+   * label — the renderer shows exactly what the backend routed to.
+   */
+  model?: string
+}
+
+/**
+ * Coarse stage of the agent's tool-call loop, streamed live to the renderer so
+ * the "thinking" indicator shows stage-appropriate text instead of a static
+ * spinner. Always reflects the real phase the loop is in right now.
+ */
+export type AgentStage = 'idle' | 'thinking' | 'reading' | 'running' | 'rendering'
+
+export interface AgentStagePayload {
+  stage: AgentStage
+  /** The real model driving this turn (modelForTier). */
+  model: string
+  /** Optional context, e.g. the tool label while stage === 'running'. */
+  detail?: string
 }
 
 const history: Message[] = []
@@ -301,10 +327,18 @@ When writing feedback comments:
 - Prioritise: Accessibility (WCAG AA) → Usability → Visual polish.
 - Format comments in markdown with headings and bullet lists.`
 
-function modelForTier(tier: Tier): string {
+export function modelForTier(tier: Tier): string {
   if (tier === 'free') return process.env.OLLAMA_MODEL ?? 'llama3:8b'
   if (tier === 'pro') return 'claude-sonnet-4-6'
   return process.env.GLM_MODEL ?? 'glm-4'
+}
+
+/**
+ * Emit the current loop stage to the renderer's "thinking" indicator. `model` is
+ * the real routed model so any tag shown alongside the stage is accurate.
+ */
+function emitStage(win: BrowserWindow, stage: AgentStage, model: string, detail?: string): void {
+  emit(win, 'openui:agent:stage', { stage, model, detail } satisfies AgentStagePayload)
 }
 
 function classifyChatError(err: unknown): string {
@@ -372,28 +406,37 @@ function buildPlanContext(plan: Plan, steps: PlanStepRow[]): string {
  * Advance the checklist when the executor checks a step off. Marks `stepId` done
  * and the next still-pending step working, so exactly one row spins at a time.
  */
-function advancePlan(win: BrowserWindow, steps: PlanStepRow[], stepId: string): void {
+/**
+ * Advance the checklist when the executor checks a step off. Marks `stepId` done
+ * and the next still-pending step working, and returns the id of the step now in
+ * progress (or null when the plan is finished) so tool rows can nest under it.
+ */
+function advancePlan(win: BrowserWindow, steps: PlanStepRow[], stepId: string, model: string): string | null {
   const idx = steps.findIndex((s) => s.id === stepId)
-  if (idx === -1) return
+  if (idx === -1) return null
   emit(win, 'openui:task:update', {
     id: steps[idx].id,
     label: steps[idx].title,
-    status: 'done'
+    status: 'done',
+    model
   } satisfies TaskUpdate)
   const next = steps[idx + 1]
   if (next) {
     emit(win, 'openui:task:update', {
       id: next.id,
       label: next.title,
-      status: 'working'
+      status: 'working',
+      model
     } satisfies TaskUpdate)
+    return next.id
   }
+  return null
 }
 
 /** Mark every not-yet-finished plan row as done (called when the agent wraps up). */
-function settlePlan(win: BrowserWindow, steps: PlanStepRow[]): void {
+function settlePlan(win: BrowserWindow, steps: PlanStepRow[], model: string): void {
   for (const s of steps) {
-    emit(win, 'openui:task:update', { id: s.id, label: s.title, status: 'done' } satisfies TaskUpdate)
+    emit(win, 'openui:task:update', { id: s.id, label: s.title, status: 'done', model } satisfies TaskUpdate)
   }
 }
 
@@ -718,6 +761,9 @@ export async function handleChat(win: BrowserWindow, userMessage: string, tier: 
     // running anything. PR-review / designer flows keep their own scripted
     // multi-step prompts and are never re-planned here.
     let planSteps: PlanStepRow[] | null = null
+    // The plan step currently in progress, so per-tool rows can nest under it in
+    // the expandable task list. null outside a planned run.
+    let currentStepId: string | null = null
     if (!isPrReview && !isDesigner && looksLikeTask(userMessage)) {
       let plan: Plan | null = null
       try {
@@ -732,7 +778,7 @@ export async function handleChat(win: BrowserWindow, userMessage: string, tier: 
         // Show the WHOLE checklist immediately (all pending).
         emit(win, 'openui:task:reset')
         for (const s of steps) {
-          emit(win, 'openui:task:update', { id: s.id, label: s.title, status: 'pending' } satisfies TaskUpdate)
+          emit(win, 'openui:task:update', { id: s.id, label: s.title, status: 'pending', model } satisfies TaskUpdate)
         }
 
         // approve-plan: one approval for the whole plan. full-auto skips it;
@@ -745,23 +791,25 @@ export async function handleChat(win: BrowserWindow, userMessage: string, tier: 
             history.push({ role: 'assistant', content: msg })
             database.messages.addMessage(convId, 'assistant', msg)
             for (const s of steps) {
-              emit(win, 'openui:task:update', { id: s.id, label: s.title, status: 'error', detail: 'Cancelled' } satisfies TaskUpdate)
+              emit(win, 'openui:task:update', { id: s.id, label: s.title, status: 'error', detail: 'Cancelled', model } satisfies TaskUpdate)
             }
             try {
               database.feedback.recordTurn(convId, userMessage, msg)
             } catch {
               /* best-effort */
             }
+            emitStage(win, 'idle', model)
             emit(win, 'openui:chat:done', { text: msg, toolCall: null })
             return
           }
         }
 
         planSteps = steps
+        currentStepId = steps[0].id
         // Give a planned run enough turns to finish (a few tools per step).
         maxTurns = Math.min(48, 6 + plan.steps.length * 5)
         // Mark the first step in-progress and hand the plan to the executor.
-        emit(win, 'openui:task:update', { id: steps[0].id, label: steps[0].title, status: 'working' } satisfies TaskUpdate)
+        emit(win, 'openui:task:update', { id: steps[0].id, label: steps[0].title, status: 'working', model } satisfies TaskUpdate)
         // Append the approved plan to the user's turn rather than pushing a second
         // consecutive user message — Anthropic requires strictly alternating roles.
         const last = history[history.length - 1]
@@ -781,6 +829,8 @@ export async function handleChat(win: BrowserWindow, userMessage: string, tier: 
         reason: isPrReview ? 'pr_review' : isDesigner ? 'designer' : 'tier_routing'
       })
       const callStart = Date.now()
+      // Live stage: the model is reasoning about the next step.
+      emitStage(win, 'thinking', model)
       // Gate every streamed token: tool-call JSON is withheld from the renderer,
       // natural language streams through live. This is what keeps raw JSON off
       // the screen regardless of which provider/transport produced the response.
@@ -802,10 +852,11 @@ export async function handleChat(win: BrowserWindow, userMessage: string, tier: 
       )
       if (!toolCall) {
         finalText = responseText // natural-language answer ⇒ turn complete
+        emitStage(win, 'rendering', model)
         database.messages.addMessage(convId, 'assistant', finalText)
         // The agent considers the task done: tick off any steps it didn't
         // explicitly check so the checklist reads complete.
-        if (planSteps) settlePlan(win, planSteps)
+        if (planSteps) settlePlan(win, planSteps, model)
         break
       }
 
@@ -816,7 +867,7 @@ export async function handleChat(win: BrowserWindow, userMessage: string, tier: 
         const stepId = String(
           (toolCall.args.step_id ?? toolCall.args.id ?? toolCall.args.stepId) || ''
         )
-        if (planSteps) advancePlan(win, planSteps, stepId)
+        if (planSteps) currentStepId = advancePlan(win, planSteps, stepId, model)
         history.push({
           role: 'user',
           content: `TOOL RESULT [${COMPLETE_STEP_TOOL}] success: step ${stepId || '(unknown)'} checked off. Continue with the next step.`
@@ -824,20 +875,23 @@ export async function handleChat(win: BrowserWindow, userMessage: string, tier: 
         continue
       }
 
-      // Surface the call to the renderer. During a planned run the task list is
-      // the plan checklist (advanced by complete_step), so we do NOT add a
-      // per-tool row on top of it — that would double-list the work.
+      // Surface the call to the renderer. Every tool becomes its own row: a
+      // top-level task outside a plan, or a child nested under the current plan
+      // step (parentId) inside one — so a step expands to reveal its tool calls.
       emit(win, 'openui:chat:tool', toolCall)
       const taskId = `t${++taskSeq}`
       const label = describeToolCall(toolCall.tool, toolCall.args)
-      if (!planSteps) {
-        emit(win, 'openui:task:update', {
-          id: taskId,
-          label,
-          status: 'working',
-          detail: 'OpenUI is working…'
-        } satisfies TaskUpdate)
-      }
+      // read_screen is the one tool with a distinct "reading the screen" stage;
+      // everything else is the generic "running the tool" stage.
+      emitStage(win, toolCall.tool === 'read_screen' ? 'reading' : 'running', model, label)
+      emit(win, 'openui:task:update', {
+        id: taskId,
+        label,
+        status: 'working',
+        detail: 'OpenUI is working…',
+        model,
+        ...(planSteps && currentStepId ? { parentId: currentStepId } : {})
+      } satisfies TaskUpdate)
 
       // Autonomy: under approve-plan (inside an approved plan) or full-auto, run
       // the tool without a per-action prompt — EXCEPT genuinely destructive
@@ -894,17 +948,17 @@ export async function handleChat(win: BrowserWindow, userMessage: string, tier: 
         })
       }
 
-      // Per-tool rows only outside a plan; inside a plan the checklist (advanced
-      // by complete_step) is the source of truth. A failed tool still reaches the
-      // model via the TOOL RESULT below, so it can recover or explain.
-      if (!planSteps) {
-        emit(win, 'openui:task:update', {
-          id: taskId,
-          label,
-          status: result.ok ? 'done' : 'error',
-          detail: result.ok ? result.output : result.error
-        } satisfies TaskUpdate)
-      }
+      // Settle this tool's row (top-level, or nested under its plan step). A
+      // failed tool still reaches the model via the TOOL RESULT below, so it can
+      // recover or explain; the plan step itself is advanced by complete_step.
+      emit(win, 'openui:task:update', {
+        id: taskId,
+        label,
+        status: result.ok ? 'done' : 'error',
+        detail: result.ok ? result.output : result.error,
+        model,
+        ...(planSteps && currentStepId ? { parentId: currentStepId } : {})
+      } satisfies TaskUpdate)
 
       // Capture this reasoning + tool-execution step for the training store.
       recorder.recordStep({
@@ -937,10 +991,12 @@ export async function handleChat(win: BrowserWindow, userMessage: string, tier: 
     // Persist the full trajectory to the central training store (best-effort).
     recorder.commit(finalText, reachedLimit)
 
+    emitStage(win, 'idle', model)
     emit(win, 'openui:chat:done', { text: finalText, toolCall: null })
   } catch (err) {
     history.length = rollbackLen // roll back the entire failed turn
     trackEvent(Events.CHAT_ERROR, { tier: effectiveTier, model, error_type: classifyChatError(err) })
+    emitStage(win, 'idle', model)
     const message = err instanceof Error ? err.message : String(err)
     emit(win, 'openui:chat:error', message)
   }

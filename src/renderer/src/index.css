@@ -529,13 +529,39 @@ body {
    TASK CHECKLIST POPUP
 ───────────────────────────────────────── */
 #task-popup {
-  bottom: 50px;
-  right: 32px;
-  width: 278px;
+  top: 54px;
+  right: 24px;
+  bottom: auto;
+  width: 300px;
+  max-height: calc(100vh - 96px);
+  overflow-y: auto;
   background: var(--ou-bg);
   border: 1px solid var(--ou-border);
   color: var(--ou-text);
   z-index: 50;
+}
+
+/* The header doubles as the collapse/expand control for the whole panel. */
+.ou-taskpanel .task-popup-header {
+  cursor: pointer;
+  user-select: none;
+}
+.ou-taskpanel-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ou-text);
+  font-family: -apple-system, 'Segoe UI', sans-serif;
+}
+.ou-taskpanel-count {
+  font-size: 11px;
+  color: var(--ou-text-faint);
+  font-weight: 500;
+  font-family: -apple-system, 'Segoe UI', sans-serif;
+}
+.ou-taskpanel-model {
+  font-size: 10px;
+  color: var(--ou-text-faint);
+  font-family: -apple-system, 'Segoe UI', sans-serif;
 }
 
 .task-popup-header {
@@ -1289,6 +1315,577 @@ body {
   color: #c4b5fd;
   font-weight: 500;
   line-height: 1.3;
+}
+
+/* ─────────────────────────────────────────
+   TASK 1 — center composer, +menu, connect-apps,
+   thinking status, expandable tasks, live preview
+   Single accent = var(--ou-accent). Generous whitespace.
+───────────────────────────────────────── */
+
+/* ── Center-stage hero ─────────────────────────────────────────────────── */
+.ou-hero {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 22px;
+  padding: 32px 24px;
+}
+.ou-hero-welcome {
+  text-align: center;
+  max-width: 560px;
+}
+.ou-hero-title {
+  margin: 0;
+  font-size: 26px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  color: var(--ou-text);
+  font-family: -apple-system, 'Segoe UI', sans-serif;
+}
+.ou-hero-sub {
+  margin: 8px 0 0;
+  font-size: 13.5px;
+  line-height: 1.5;
+  color: var(--ou-text-dim);
+  font-family: -apple-system, 'Segoe UI', sans-serif;
+}
+.ou-hero-sub strong {
+  color: var(--ou-accent);
+  font-weight: 600;
+}
+
+/* ── Composer (centered hero + compact bottom strip share the box) ──────── */
+.ou-composer {
+  width: 100%;
+  padding: 12px 16px 14px;
+}
+.ou-composer.centered {
+  padding: 0;
+  max-width: 640px;
+}
+.ou-composer-box {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  width: 100%;
+  background: var(--ou-surface);
+  border: 1px solid var(--ou-border);
+  border-radius: 16px;
+  padding: 8px 8px 8px 10px;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.ou-composer-box:focus-within {
+  border-color: var(--ou-accent);
+  box-shadow: 0 0 0 3px var(--ou-accent-soft);
+}
+.ou-composer-input {
+  flex: 1;
+  resize: none;
+  border: none;
+  outline: none;
+  background: none;
+  color: var(--ou-text);
+  font-size: 14px;
+  line-height: 1.5;
+  padding: 6px 2px;
+  max-height: 200px;
+  font-family: -apple-system, 'Segoe UI', sans-serif;
+}
+.ou-composer-input::placeholder {
+  color: var(--ou-text-faint);
+}
+.ou-composer-plus-wrap {
+  position: relative;
+  flex-shrink: 0;
+}
+.ou-composer-plus,
+.ou-composer-mic,
+.ou-composer-send {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  border: none;
+  background: transparent;
+  color: var(--ou-text-dim);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.ou-composer-plus:hover,
+.ou-composer-mic:hover {
+  background: var(--ou-surface-2);
+  color: var(--ou-text);
+}
+.ou-composer-mic.recording {
+  color: #ff4d4d;
+}
+.ou-composer-send {
+  background: var(--ou-accent);
+  color: #fff;
+}
+.ou-composer-send:disabled {
+  background: var(--ou-surface-2);
+  color: var(--ou-text-faint);
+  cursor: default;
+}
+
+/* ── "+" popover menu ──────────────────────────────────────────────────── */
+.ou-plus-menu {
+  position: absolute;
+  bottom: 44px;
+  left: 0;
+  width: 232px;
+  background: var(--ou-surface);
+  border: 1px solid var(--ou-border);
+  border-radius: 12px;
+  padding: 6px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+  z-index: 200;
+}
+.ou-plus-item {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  width: 100%;
+  text-align: left;
+  padding: 9px 10px;
+  border: none;
+  border-radius: 8px;
+  background: none;
+  cursor: pointer;
+  color: var(--ou-text);
+  font-family: -apple-system, 'Segoe UI', sans-serif;
+  transition: background 0.12s ease;
+}
+.ou-plus-item:hover {
+  background: var(--ou-surface-2);
+}
+.ou-plus-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  background: var(--ou-accent-soft);
+  color: var(--ou-accent);
+  flex-shrink: 0;
+}
+.ou-plus-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.ou-plus-title {
+  font-size: 13px;
+  font-weight: 500;
+}
+.ou-plus-sub {
+  font-size: 11px;
+  color: var(--ou-text-faint);
+}
+
+/* Chips are now <button>s — keep them looking identical. */
+.chip {
+  font: inherit;
+  font-size: 11px;
+}
+
+/* ── Thinking indicator ────────────────────────────────────────────────── */
+.ou-thinking {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 6px 2px 2px;
+  font-family: -apple-system, 'Segoe UI', sans-serif;
+}
+.ou-thinking-dots {
+  display: inline-flex;
+  gap: 3px;
+}
+.ou-thinking-dots span {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--ou-accent);
+  animation: ou-thinking-bounce 1.2s infinite ease-in-out;
+}
+.ou-thinking-dots span:nth-child(2) {
+  animation-delay: 0.15s;
+}
+.ou-thinking-dots span:nth-child(3) {
+  animation-delay: 0.3s;
+}
+@keyframes ou-thinking-bounce {
+  0%, 80%, 100% {
+    opacity: 0.35;
+    transform: translateY(0);
+  }
+  40% {
+    opacity: 1;
+    transform: translateY(-3px);
+  }
+}
+.ou-thinking-text {
+  font-size: 12.5px;
+  color: var(--ou-text-dim);
+}
+.ou-thinking-model {
+  font-size: 10px;
+  color: var(--ou-text-faint);
+  border: 1px solid var(--ou-border);
+  border-radius: 99px;
+  padding: 1px 7px;
+  margin-left: auto;
+}
+
+/* ── Expandable task rows ──────────────────────────────────────────────── */
+.task-row-body {
+  flex: 1;
+  min-width: 0;
+}
+.task-caret {
+  display: flex;
+  align-items: center;
+  color: var(--ou-text-faint);
+  margin-top: 3px;
+  transition: transform 0.15s ease;
+}
+.task-caret.open {
+  transform: rotate(90deg);
+}
+.task-count {
+  font-size: 10px;
+  color: var(--ou-text-faint);
+  background: var(--ou-surface-2);
+  border-radius: 99px;
+  padding: 1px 7px;
+  align-self: center;
+}
+.task-group[role='button'] .task-row,
+.task-row[role='button'] {
+  cursor: pointer;
+}
+.task-children {
+  padding: 2px 0 6px 20px;
+}
+.child-row {
+  padding: 6px 14px 6px 10px;
+  border-bottom: none;
+  gap: 8px;
+}
+.child-row .task-label {
+  font-size: 11.5px;
+  color: var(--ou-text-dim);
+}
+
+/* Genuine-concurrency group header (dormant until real parallelism exists). */
+.task-parallel {
+  border-bottom: 0.5px solid var(--ou-border);
+}
+.task-parallel-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--ou-accent);
+  font-family: -apple-system, 'Segoe UI', sans-serif;
+}
+
+/* Workflow complete/error banner (replaces the old inline-styled version). */
+.ou-workflow-complete {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-top: 0.5px solid var(--ou-border);
+  animation: openui-rise 0.4s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+  font-family: -apple-system, 'Segoe UI', sans-serif;
+  font-size: 12px;
+  font-weight: 600;
+}
+.ou-workflow-complete.ok {
+  color: #34c759;
+}
+.ou-workflow-complete.err {
+  color: #ff453a;
+}
+.ou-workflow-complete-badge {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.ou-workflow-complete.ok .ou-workflow-complete-badge {
+  background: #34c759;
+}
+.ou-workflow-complete.err .ou-workflow-complete-badge {
+  background: #ff453a;
+}
+
+/* ── Right-side live-preview panel ─────────────────────────────────────── */
+.ou-preview {
+  position: fixed;
+  top: 54px;
+  right: 336px;
+  width: 220px;
+  max-height: calc(100vh - 96px);
+  overflow-y: auto;
+  background: var(--ou-bg);
+  border: 1px solid var(--ou-border);
+  border-radius: 12px;
+  padding: 12px;
+  z-index: 49;
+}
+.ou-preview-head {
+  display: flex;
+  flex-direction: column;
+  margin-bottom: 10px;
+}
+.ou-preview-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ou-text);
+  font-family: -apple-system, 'Segoe UI', sans-serif;
+}
+.ou-preview-sub {
+  font-size: 10px;
+  color: var(--ou-text-faint);
+}
+.ou-preview-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.ou-preview-card {
+  margin: 0;
+  border: 1px solid var(--ou-border);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--ou-surface);
+}
+.ou-preview-card img {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+.ou-preview-card figcaption {
+  font-size: 10px;
+  color: var(--ou-text-faint);
+  padding: 4px 8px;
+  font-family: -apple-system, 'Segoe UI', sans-serif;
+}
+
+/* ── Modal shell (Connect-apps) ────────────────────────────────────────── */
+.ou-modal-scrim {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.5);
+  z-index: 9998;
+}
+.ou-modal {
+  width: 440px;
+  max-width: 92vw;
+  max-height: 86vh;
+  overflow-y: auto;
+  background: var(--ou-surface);
+  border: 1px solid var(--ou-border);
+  border-radius: 16px;
+  padding: 20px 22px 22px;
+  font-family: -apple-system, 'Segoe UI', sans-serif;
+}
+.ou-modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.ou-modal-head h3 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--ou-text);
+}
+.ou-modal-close {
+  border: none;
+  background: none;
+  color: var(--ou-text-faint);
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+}
+.ou-modal-sub {
+  margin: 6px 0 16px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--ou-text-dim);
+}
+
+/* Connected-apps list + status chips. */
+.ou-mcp-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+.ou-mcp-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 12px;
+  background: var(--ou-bg);
+  border: 1px solid var(--ou-border);
+  border-radius: 10px;
+}
+.ou-mcp-row-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.ou-mcp-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ou-text);
+}
+.ou-mcp-meta {
+  font-size: 11px;
+  color: var(--ou-text-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ou-mcp-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.ou-mcp-chip {
+  font-size: 10.5px;
+  font-weight: 600;
+  padding: 2px 9px;
+  border-radius: 99px;
+}
+.ou-mcp-chip.connected {
+  color: #34c759;
+  background: rgba(52, 199, 89, 0.14);
+}
+.ou-mcp-chip.error {
+  color: #ff453a;
+  background: rgba(255, 69, 58, 0.14);
+}
+.ou-mcp-chip.disconnected {
+  color: var(--ou-text-faint);
+  background: var(--ou-surface-2);
+}
+.ou-mcp-disconnect {
+  font-size: 11px;
+  color: var(--ou-text-dim);
+  background: none;
+  border: 1px solid var(--ou-border);
+  border-radius: 8px;
+  padding: 3px 8px;
+  cursor: pointer;
+}
+.ou-mcp-disconnect:hover {
+  color: var(--ou-text);
+  border-color: var(--ou-border-strong);
+}
+
+/* Add-a-server form. */
+.ou-mcp-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.ou-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.ou-field span {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--ou-text-dim);
+}
+.ou-field input {
+  width: 100%;
+  box-sizing: border-box;
+  background: var(--ou-bg);
+  border: 1px solid var(--ou-border);
+  border-radius: 9px;
+  padding: 9px 11px;
+  font-size: 13px;
+  color: var(--ou-text);
+  outline: none;
+  font-family: -apple-system, 'Segoe UI', sans-serif;
+}
+.ou-field input:focus {
+  border-color: var(--ou-accent);
+  box-shadow: 0 0 0 3px var(--ou-accent-soft);
+}
+.ou-mcp-type {
+  display: flex;
+  gap: 6px;
+  background: var(--ou-bg);
+  border: 1px solid var(--ou-border);
+  border-radius: 10px;
+  padding: 3px;
+}
+.ou-mcp-type button {
+  flex: 1;
+  border: none;
+  border-radius: 8px;
+  padding: 8px;
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+  background: none;
+  color: var(--ou-text-dim);
+  font-family: -apple-system, 'Segoe UI', sans-serif;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.ou-mcp-type button.active {
+  background: var(--ou-accent);
+  color: #fff;
+}
+.ou-mcp-error {
+  font-size: 12px;
+  color: #ff453a;
+  background: rgba(255, 69, 58, 0.1);
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+.ou-mcp-connect {
+  border: none;
+  border-radius: 10px;
+  padding: 11px;
+  font-size: 13.5px;
+  font-weight: 600;
+  cursor: pointer;
+  background: var(--ou-accent);
+  color: #fff;
+  font-family: -apple-system, 'Segoe UI', sans-serif;
+}
+.ou-mcp-connect:disabled {
+  background: var(--ou-surface-2);
+  color: var(--ou-text-faint);
+  cursor: default;
 }
 
 .signin-banner-btn {

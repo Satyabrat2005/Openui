@@ -26,7 +26,7 @@ import { readFile, writeFile, mkdir, rename, copyFile, unlink, readdir, stat } f
 import { resolve as resolvePath, join as joinPath, dirname, sep } from 'node:path'
 import { homedir } from 'node:os'
 import { SENSITIVE_PATH_RE, resolveSafePath } from './fs/pathSafety'
-import { desktopCapturer, clipboard, shell, BrowserWindow } from 'electron'
+import { desktopCapturer, clipboard, shell, BrowserWindow, type NativeImage } from 'electron'
 import { checkAccessibility, type PermissionTarget } from './permissions'
 import { githubToolSchemas, githubRegistry } from './github'
 import { figmaToolSchemas, figmaRegistry } from './figma'
@@ -745,6 +745,25 @@ function notifyOcrFallback(): void {
   }
 }
 
+/**
+ * Push a downscaled thumbnail of the just-captured screen to the renderer's
+ * live-preview panel. Reuses the SAME desktopCapturer NativeImage read_screen
+ * already took — no second capture — so the preview cards show exactly what the
+ * agent is looking at. Fire-and-forget broadcast (read_screen has no window
+ * handle of its own), mirroring notifyOcrFallback.
+ */
+function emitScreenPreview(thumbnail: NativeImage): void {
+  try {
+    const dataUrl = thumbnail.resize({ width: 320 }).toDataURL()
+    const payload = { image: dataUrl, timestamp: Date.now() }
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (!win.isDestroyed()) win.webContents.send('openui:screen:preview', payload)
+    }
+  } catch {
+    // A preview is best-effort eye-candy; never let it break a screen read.
+  }
+}
+
 async function read_screen(
   _args: Record<string, unknown>,
   context?: ExecutorContext
@@ -769,6 +788,8 @@ async function read_screen(
       }
     }
     pngBuffer = sources[0].thumbnail.toPNG()
+    // Feed the live-preview panel from this same capture (no second grab).
+    emitScreenPreview(sources[0].thumbnail)
   } catch (err) {
     return {
       ok: false,

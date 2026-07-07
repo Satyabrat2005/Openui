@@ -12,6 +12,9 @@ import SettingsModal from './SettingsModal'
 import { useUpdater } from '../hooks/useUpdater'
 import LocalAIStatus from './LocalAIStatus'
 import ConversationList from './ConversationList'
+import Composer from './Composer'
+import ConnectAppsPanel from './ConnectAppsPanel'
+import ThinkingStatus from './ThinkingStatus'
 
 type HistoryMsg = { role: string; content: string | null; created_at: number }
 
@@ -67,6 +70,7 @@ export default function AssistantPopup({
   const [inputText, setInputText] = useState('')
   const initialSentRef = useRef(false)
   const [showSettings, setShowSettings] = useState(false)
+  const [showConnectApps, setShowConnectApps] = useState(false)
   const [showHistory, setShowHistory] = useState(false)
   const [activeConvId, setActiveConvId] = useState<string | null>(null)
   // On a wide/maximized window the session sidebar is pinned permanently open
@@ -372,6 +376,24 @@ export default function AssistantPopup({
     [voiceState, captionLockedRef, beginTurn, tier]
   )
 
+  // ── Composer "+" menu actions ────────────────────────────────────────────
+  // Attach a local file: pick a path in main, then reference it in the composer
+  // so the agent can read_file it as part of the request.
+  const handleAttachFile = useCallback(async (): Promise<void> => {
+    try {
+      const path = await window.openui.pickFile()
+      if (path) setInputText((v) => (v ? `${v} ${path} ` : `${path} `))
+    } catch {
+      /* dialog cancelled or unavailable — no-op */
+    }
+  }, [])
+
+  // Assign a task: seed the composer with task framing. When sent, task-shaped
+  // input already flows through the planner (approve-plan) in the main process.
+  const handleAssignTask = useCallback((): void => {
+    setInputText((v) => (v.trim().length ? v : 'Task: '))
+  }, [])
+
   // ── Rate the last response (self-improvement loop) ──────────────────────
   const rate = useCallback((kind: 'up' | 'down'): void => {
     setFeedbackGiven(kind) // optimistic — the rating is best-effort and local
@@ -634,10 +656,44 @@ export default function AssistantPopup({
         />
       )}
 
-      {/* Scrollable middle region: either the live thread or the mic hero */}
+      {/* Scrollable middle region: either the live thread or the centered hero */}
       <div className="ou-chatbody">
-      {/* Live conversation thread — the real, working chat view */}
-      {!showHero && (
+      {showHero ? (
+        /* Center-stage home: welcome + centered composer + suggestion chips */
+        <div className="ou-hero">
+          <div className="ou-hero-welcome">
+            <h1 className="ou-hero-title">What can I help you with?</h1>
+            <p className="ou-hero-sub">
+              Ask anything, or use <strong>+</strong> to attach a file, connect an app, or assign a
+              task.
+            </p>
+          </div>
+          <Composer
+            centered
+            value={inputText}
+            onChange={setInputText}
+            onSend={() => void handleSend(inputText)}
+            disabled={isBusy || isRecording}
+            isRecording={isRecording}
+            onMic={() => void handleMicClick()}
+            onAttachFile={() => void handleAttachFile()}
+            onConnectApp={() => setShowConnectApps(true)}
+            onAssignTask={handleAssignTask}
+          />
+          <div className="chips-row">
+            <button type="button" className="chip" onClick={() => void handleSend('Check my emails')}>
+              Check email
+            </button>
+            <button type="button" className="chip" onClick={() => void handleSend('Schedule an event')}>
+              Schedule event
+            </button>
+            <button type="button" className="chip" onClick={() => void handleSend('Find a file')}>
+              Find a file
+            </button>
+          </div>
+        </div>
+      ) : (
+        /* Live conversation thread — the real, working chat view */
         <div className="ou-thread">
           {messages.map((msg, i) => {
             const isLast = i === messages.length - 1
@@ -663,146 +719,31 @@ export default function AssistantPopup({
             )
           })}
 
+          {/* Live, stage-appropriate thinking indicator (real agent stage). */}
+          <ThinkingStatus />
+
           {/* Was-this-helpful rating — feeds the local self-improvement loop. */}
           {voiceState === 'done' && <FeedbackButtons given={feedbackGiven} onRate={rate} />}
 
           <div ref={threadEndRef} />
         </div>
       )}
-
-      {/* Mic stage (hero) — shown only on a blank, idle session */}
-      <div className="mic-stage" style={{ display: showHero ? undefined : 'none' }}>
-        <div id="ring-1" className="mic-ring" />
-        <div id="ring-2" className="mic-ring" />
-        <div id="ring-3" className="mic-ring" />
-
-        {/* Mic orb — click to toggle recording */}
-        <div
-          className="mic-orb"
-          onClick={isBusy ? undefined : handleMicClick}
-          style={{
-            cursor: isBusy ? 'not-allowed' : 'pointer',
-            background: isRecording
-              ? 'linear-gradient(145deg, #ff6b6b 0%, #ff3b30 50%, #cc0000 100%)'
-              : undefined,
-            boxShadow: isRecording
-              ? '0 6px 22px rgba(255, 59, 48, 0.45), 0 2px 7px rgba(255, 59, 48, 0.2)'
-              : undefined,
-            transition: 'background 0.25s, box-shadow 0.25s'
-          }}
-        >
-          {isRecording ? (
-            /* Stop icon shown while recording */
-            <svg width="28" height="28" viewBox="0 0 24 24" fill="none">
-              <rect x="6" y="6" width="12" height="12" rx="2.5" fill="white" />
-            </svg>
-          ) : (
-            /* Mic icon shown at rest */
-            <svg width="31" height="31" viewBox="0 0 24 24" fill="none">
-              <rect x="9" y="2" width="6" height="12" rx="3" fill="white" />
-              <path
-                d="M5 10c0 3.866 3.134 7 7 7s7-3.134 7-7"
-                stroke="white"
-                strokeWidth="1.8"
-                strokeLinecap="round"
-              />
-              <line x1="12" y1="19" x2="12" y2="22" stroke="white" strokeWidth="1.8" strokeLinecap="round" />
-              <line x1="8.5" y1="22" x2="15.5" y2="22" stroke="white" strokeWidth="1.8" strokeLinecap="round" />
-            </svg>
-          )}
-        </div>
-
-        {/* Caption — imperatively managed; GSAP typewriter owns it at idle */}
-        <div className="caption-area">
-          <div id="caption-text" ref={captionRef} />
-          <div id="sound-bars" ref={soundBarsRef}>
-            <div className="sbar" style={{ height: 8 }} id="sb1" />
-            <div className="sbar" style={{ height: 14 }} id="sb2" />
-            <div className="sbar" style={{ height: 6 }} id="sb3" />
-            <div className="sbar" style={{ height: 18 }} id="sb4" />
-            <div className="sbar" style={{ height: 10 }} id="sb5" />
-            <div className="sbar" style={{ height: 16 }} id="sb6" />
-            <div className="sbar" style={{ height: 7 }} id="sb7" />
-            <div className="sbar" style={{ height: 12 }} id="sb8" />
-          </div>
-        </div>
-      </div>
       </div>
       {/* /ou-chatbody */}
 
-      {/* Input strip */}
-      <div className="input-strip">
-        <svg
-          width="14"
-          height="14"
-          viewBox="0 0 24 24"
-          fill="none"
-          style={{ color: 'var(--ou-text-faint)', flexShrink: 0 }}
-        >
-          <circle cx="11" cy="11" r="8" stroke="currentColor" strokeWidth="2" />
-          <path d="m21 21-4.35-4.35" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-        </svg>
-        <input
-          type="text"
+      {/* Compact composer once a conversation is under way */}
+      {!showHero && (
+        <Composer
           value={inputText}
-          onChange={(e) => setInputText(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') handleSend(inputText)
-          }}
-          placeholder="Ask OpenUI anything…"
+          onChange={setInputText}
+          onSend={() => void handleSend(inputText)}
           disabled={isBusy || isRecording}
-          style={{
-            fontSize: 13,
-            color: 'var(--ou-text)',
-            flex: 1,
-            fontFamily: '-apple-system, sans-serif',
-            background: 'none',
-            border: 'none',
-            outline: 'none',
-            opacity: isBusy || isRecording ? 0.4 : 1
-          }}
+          isRecording={isRecording}
+          onMic={() => void handleMicClick()}
+          onAttachFile={() => void handleAttachFile()}
+          onConnectApp={() => setShowConnectApps(true)}
+          onAssignTask={handleAssignTask}
         />
-        {/* Compact mic — keeps voice reachable once we're in the chat thread */}
-        <button
-          type="button"
-          aria-label={isRecording ? 'Stop recording' : 'Start voice input'}
-          title={isRecording ? 'Stop recording' : 'Voice input'}
-          onClick={isBusy ? undefined : handleMicClick}
-          disabled={isBusy}
-          className={`ou-input-mic${isRecording ? ' recording' : ''}`}
-        >
-          {isRecording ? (
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
-              <rect x="6" y="6" width="12" height="12" rx="2.5" fill="currentColor" />
-            </svg>
-          ) : (
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none">
-              <rect x="9" y="2" width="6" height="12" rx="3" fill="currentColor" />
-              <path
-                d="M5 10c0 3.866 3.134 7 7 7s7-3.134 7-7"
-                stroke="currentColor"
-                strokeWidth="1.8"
-                strokeLinecap="round"
-              />
-              <line x1="12" y1="19" x2="12" y2="22" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-            </svg>
-          )}
-        </button>
-      </div>
-
-      {/* Suggestion chips — only on the empty hero state */}
-      {showHero && (
-        <div className="chips-row">
-          <div className="chip" onClick={() => handleSend('Check my emails')}>
-            📧 Check email
-          </div>
-          <div className="chip" onClick={() => handleSend('Schedule an event')}>
-            📅 Schedule event
-          </div>
-          <div className="chip" onClick={() => handleSend('Find a file')}>
-            📁 Find file
-          </div>
-        </div>
       )}
       </div>
       {/* /ou-chatcol */}
@@ -817,6 +758,8 @@ export default function AssistantPopup({
           onCheckForUpdates={checkForUpdates}
         />
       )}
+
+      {showConnectApps && <ConnectAppsPanel onClose={() => setShowConnectApps(false)} />}
 
       {/* Local AI status footer */}
       <LocalAIStatus />

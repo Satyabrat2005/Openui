@@ -71,7 +71,48 @@ export interface TaskUpdatePayload {
   label: string
   status: TaskStatus
   detail?: string
+  /** When set, this row is a tool step nested under the plan step with this id. */
+  parentId?: string
+  /** The real routed model (modelForTier) — never a decorative label. */
+  model?: string
 }
+
+/** Coarse stage of the agent loop, for the live "thinking" indicator. */
+export type AgentStage = 'idle' | 'thinking' | 'reading' | 'running' | 'rendering'
+
+export interface AgentStagePayload {
+  stage: AgentStage
+  /** The real model driving this turn (modelForTier). */
+  model: string
+  detail?: string
+}
+
+/** A live screen thumbnail piped from read_screen's desktopCapturer capture. */
+export interface ScreenPreviewPayload {
+  image: string
+  timestamp: number
+}
+
+/** Config for connecting an MCP server (validated in the main process). */
+export interface McpConnectConfig {
+  name: string
+  type: 'stdio' | 'sse'
+  command?: string
+  args?: string[]
+  env?: Record<string, string>
+  url?: string
+}
+
+/** Live status of one configured MCP server, for the Connect-apps panel. */
+export interface McpServerStatus {
+  name: string
+  type: 'stdio' | 'sse'
+  status: 'connected' | 'error' | 'disconnected'
+  toolCount: number
+  error?: string
+}
+
+export type McpConnectResult = { ok: boolean; error?: string; toolCount?: number }
 
 /** Payload emitted when the agent loop needs user approval before running a tool. */
 export interface HitlRequestPayload {
@@ -191,6 +232,21 @@ export interface OpenUIApi {
   onError: (cb: (error: string) => void) => () => void
   onTask: (cb: (task: TaskUpdatePayload) => void) => () => void
   onTaskReset: (cb: () => void) => () => void
+  // Live agent stage for the "thinking" indicator.
+  onAgentStage: (cb: (payload: AgentStagePayload) => void) => () => void
+  /** Real routed model for the current tier (modelForTier). */
+  getModelLabel: () => Promise<string>
+  /** Native file picker (composer "+" → Attach). Resolves to an absolute path or null. */
+  pickFile: () => Promise<string | null>
+  /** Compact idle overlay ↔ expanded task view. */
+  setWindowMode: (mode: 'compact' | 'expanded') => void
+  /** Live screen thumbnails from read_screen's capture. */
+  onScreenPreview: (cb: (payload: ScreenPreviewPayload) => void) => () => void
+  // Connect apps (MCP servers).
+  connectMcp: (config: McpConnectConfig) => Promise<McpConnectResult>
+  disconnectMcp: (name: string) => Promise<{ ok: boolean; error?: string }>
+  getMcpStatus: () => Promise<McpServerStatus[]>
+  onMcpStatus: (cb: (list: McpServerStatus[]) => void) => () => void
 
   // Voice
   transcribeAndChat: (audio: ArrayBuffer, mimeType: string, tier: Tier) => Promise<void>

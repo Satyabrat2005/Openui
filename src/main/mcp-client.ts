@@ -40,6 +40,47 @@ const servers = new Map<string, ConnectedServer>()
 // Tool-name → server-name reverse index for fast dispatch
 const toolOwner = new Map<string, string>()
 
+// ── Per-server connection status (drives the Connect-apps panel) ──────────────
+
+export type McpStatus = 'connected' | 'error' | 'disconnected'
+
+/** Live status for one configured MCP server, surfaced to the renderer. */
+export interface McpServerStatus {
+  name: string
+  type: 'stdio' | 'sse'
+  status: McpStatus
+  /** Number of tools exposed while connected (0 otherwise). */
+  toolCount: number
+  /** Last error message when status === 'error'. */
+  error?: string
+}
+
+// Status is kept even after a server disconnects so the panel can show the last
+// known state (e.g. an "error" chip) rather than the row vanishing silently.
+const statuses = new Map<string, McpServerStatus>()
+
+type StatusListener = (list: McpServerStatus[]) => void
+const statusListeners = new Set<StatusListener>()
+
+/** Snapshot of every server's current status. */
+export function getServerStatuses(): McpServerStatus[] {
+  return [...statuses.values()]
+}
+
+/** Subscribe to status changes (used by index.ts to broadcast to the renderer). */
+export function onMcpStatusChange(fn: StatusListener): () => void {
+  statusListeners.add(fn)
+  return () => {
+    statusListeners.delete(fn)
+  }
+}
+
+function setStatus(status: McpServerStatus): void {
+  statuses.set(status.name, status)
+  const list = getServerStatuses()
+  for (const fn of statusListeners) fn(list)
+}
+
 /**
  * Convert an MCP tool definition to the ToolSchema format used by agent.ts.
  * MCP inputSchema is a JSON Schema object; we flatten it to the simplified
@@ -140,11 +181,38 @@ export async function connectMcpServer(
       toolOwner.set(schema.name, serverName)
     }
 
+    setStatus({ name: serverName, type: config.type, status: 'connected', toolCount: schemas.length })
     console.log(`[mcp] Connected to "${serverName}" — ${schemas.length} tool(s) available.`)
     return { ok: true, toolCount: schemas.length }
   } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : String(err) }
+    const error = err instanceof Error ? err.message : String(err)
+    setStatus({ name: serverName, type: config.type, status: 'error', toolCount: 0, error })
+    return { ok: false, error }
   }
+}
+
+/**
+ * Tear down a single named connection and mark it disconnected. Returns true if a
+ * status row existed (so the renderer keeps showing the app as "disconnected"
+ * rather than dropping it entirely).
+ */
+export async function disconnectServer(name: string): Promise<boolean> {
+  const existing = servers.get(name)
+  if (existing) {
+    try {
+      await existing.client.close()
+    } catch {
+      // ignore cleanup errors
+    }
+    for (const [toolName, owner] of toolOwner.entries()) {
+      if (owner === name) toolOwner.delete(toolName)
+    }
+    servers.delete(name)
+  }
+  const prev = statuses.get(name)
+  if (!prev) return false
+  setStatus({ ...prev, status: 'disconnected', toolCount: 0, error: undefined })
+  return true
 }
 
 /** Return ToolSchema[] for every tool exposed by all connected MCP servers. */

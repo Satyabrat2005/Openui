@@ -1,6 +1,6 @@
-import { app, BrowserWindow, Tray, Menu, ipcMain, nativeImage, session, shell } from 'electron'
+import { app, BrowserWindow, Tray, Menu, ipcMain, nativeImage, session, shell, dialog } from 'electron'
 import { join } from 'path'
-import { registerAgentIPC, registerConversationIPC } from './agent'
+import { registerAgentIPC, registerConversationIPC, modelForTier } from './agent'
 import { startPromptRefiner, stopPromptRefiner } from './promptRefiner'
 import { registerVoiceIPC } from './voice'
 import { registerInterviewerIPC } from './interviewer'
@@ -9,7 +9,15 @@ import { openSettingsPane, type PermissionTarget } from './permissions'
 import { registerStripeIPC, isPaymentFlowWebContents } from './stripe/checkout'
 import { registerWaitlistIPC } from './waitlist'
 import { closeBrowser } from './tools'
-import { connectMcpServer, disconnectAll, type McpServerConfig } from './mcp-client'
+import {
+  connectMcpServer,
+  disconnectAll,
+  disconnectServer,
+  getServerStatuses,
+  onMcpStatusChange,
+  type McpServerConfig
+} from './mcp-client'
+import type { Tier } from './tools'
 import { initDatabase, database } from './database'
 import { registerDeepLinkProtocol, setupDeepLinkHandlers } from './auth/deeplink'
 import { openAuthWindow, isAuthWebContents } from './auth/authWindow'
@@ -158,6 +166,35 @@ const DEFAULT_WIDTH = 1120
 const DEFAULT_HEIGHT = 760
 const MIN_WIDTH = 720
 const MIN_HEIGHT = 480
+
+// Compact footprint the window shrinks to when idle. It expands back to
+// DEFAULT_* while a task is actively running (openui:window:set-mode). Kept at or
+// above MIN_WIDTH/MIN_HEIGHT so Electron never clamps the resize to a no-op.
+const COMPACT_WIDTH = 780
+const COMPACT_HEIGHT = 640
+
+// The last mode we applied, so repeated set-mode calls (e.g. several tools in one
+// run) don't thrash the window geometry.
+let windowMode: 'compact' | 'expanded' = 'expanded'
+
+/**
+ * Resize between the compact idle overlay and the expanded task view. Only acts
+ * when the window is neither maximized nor full-screen (respecting a user who has
+ * deliberately taken the window big), and re-centers so the resize feels
+ * intentional rather than jumpy.
+ */
+function setWindowMode(mode: 'compact' | 'expanded'): void {
+  if (!win || win.isDestroyed()) return
+  if (mode === windowMode) return
+  if (win.isMaximized() || win.isFullScreen()) {
+    windowMode = mode
+    return
+  }
+  windowMode = mode
+  const [w, h] = mode === 'compact' ? [COMPACT_WIDTH, COMPACT_HEIGHT] : [DEFAULT_WIDTH, DEFAULT_HEIGHT]
+  win.setSize(w, h, true)
+  win.center()
+}
 
 function createWindow(): void {
   win = new BrowserWindow({
@@ -386,6 +423,30 @@ app.whenReady().then(async () => {
   ipcMain.handle('openui:get-user', () => getCurrentUser())
   // Cached subscription tier ('free' when unknown/expired).
   ipcMain.handle('openui:get-tier', () => getUserTier())
+
+  // The REAL model the current tier routes to (modelForTier), so any model tag
+  // the UI shows is the actual routed value, never a decorative label.
+  ipcMain.handle('openui:get-model-label', () => {
+    const tier = getUserTier()
+    const coerced: Tier = tier === 'pro' || tier === 'enterprise' ? tier : 'free'
+    return modelForTier(coerced)
+  })
+
+  // ── File picker (the composer "+" → Attach a file) ──────────────────────────
+  // Opens a native open dialog and returns the chosen absolute path, which the
+  // renderer references in the chat message so the agent can read_file it.
+  ipcMain.handle('openui:pick-file', async () => {
+    if (!win) return null
+    const result = await dialog.showOpenDialog(win, { properties: ['openFile'] })
+    if (result.canceled || result.filePaths.length === 0) return null
+    return result.filePaths[0]
+  })
+
+  // ── Window mode: compact overlay at idle ↔ expanded while a task runs ───────
+  ipcMain.on('openui:window:set-mode', (_event, mode: unknown) => {
+    if (mode !== 'compact' && mode !== 'expanded') return
+    setWindowMode(mode)
+  })
 
   // ── Telemetry IPC ────────────────────────────────────────────────────────────
   ipcMain.handle('openui:set-telemetry-opt-out', (_event, optOut: unknown) => {
@@ -657,6 +718,23 @@ ipcMain.handle('openui:mcp:connect', async (_event, config: unknown) => {
     return { ok: false, error: validated.error }
   }
   return connectMcpServer(validated.config)
+})
+
+// Current status of every configured MCP server (connected/disconnected/error).
+ipcMain.handle('openui:mcp:status', () => getServerStatuses())
+
+// Tear down one named connection; the status row flips to "disconnected".
+ipcMain.handle('openui:mcp:disconnect', async (_event, name: unknown) => {
+  if (typeof name !== 'string' || !name.trim()) return { ok: false, error: 'Server name is required.' }
+  const existed = await disconnectServer(name.trim())
+  return { ok: existed }
+})
+
+// Broadcast MCP status changes so the Connect-apps panel updates live.
+onMcpStatusChange((list) => {
+  for (const w of BrowserWindow.getAllWindows()) {
+    if (!w.isDestroyed()) w.webContents.send('openui:mcp:status-changed', list)
+  }
 })
 
 app.on('before-quit', () => {

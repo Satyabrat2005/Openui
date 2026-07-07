@@ -28,7 +28,33 @@ type TaskUpdate = {
   label: string
   status: 'pending' | 'working' | 'done' | 'error'
   detail?: string
+  /** When set, this row is a tool step nested under the plan step with this id. */
+  parentId?: string
+  /** The real routed model (modelForTier) — never a decorative label. */
+  model?: string
 }
+type AgentStagePayload = {
+  stage: 'idle' | 'thinking' | 'reading' | 'running' | 'rendering'
+  model: string
+  detail?: string
+}
+type ScreenPreviewPayload = { image: string; timestamp: number }
+type McpConnectConfig = {
+  name: string
+  type: 'stdio' | 'sse'
+  command?: string
+  args?: string[]
+  env?: Record<string, string>
+  url?: string
+}
+type McpServerStatus = {
+  name: string
+  type: 'stdio' | 'sse'
+  status: 'connected' | 'error' | 'disconnected'
+  toolCount: number
+  error?: string
+}
+type McpConnectResult = { ok: boolean; error?: string; toolCount?: number }
 type AutonomousStatus = {
   active: boolean
   state: 'disabled' | 'monitoring' | 'working' | 'paused'
@@ -148,6 +174,48 @@ const api = {
     const fn = (() => cb()) as IpcListener
     ipcRenderer.on('openui:task:reset', fn)
     return (): void => { ipcRenderer.removeListener('openui:task:reset', fn) }
+  },
+
+  // Live agent stage for the "thinking" indicator (thinking/reading/running/…).
+  onAgentStage: (cb: (payload: AgentStagePayload) => void): (() => void) => {
+    const fn = wrap<AgentStagePayload>(cb)
+    ipcRenderer.on('openui:agent:stage', fn)
+    return (): void => { ipcRenderer.removeListener('openui:agent:stage', fn) }
+  },
+
+  // Real routed model for the current tier (modelForTier), for accurate tags.
+  getModelLabel: (): Promise<string> => ipcRenderer.invoke('openui:get-model-label'),
+
+  // Native file picker for the composer "+" → Attach a file. Resolves to an
+  // absolute path (or null if cancelled).
+  pickFile: (): Promise<string | null> => ipcRenderer.invoke('openui:pick-file'),
+
+  // Compact idle overlay ↔ expanded task view.
+  setWindowMode: (mode: 'compact' | 'expanded'): void =>
+    ipcRenderer.send('openui:window:set-mode', mode),
+
+  // Live thumbnails piped from read_screen's desktopCapturer capture.
+  onScreenPreview: (cb: (payload: ScreenPreviewPayload) => void): (() => void) => {
+    const fn = wrap<ScreenPreviewPayload>(cb)
+    ipcRenderer.on('openui:screen:preview', fn)
+    return (): void => { ipcRenderer.removeListener('openui:screen:preview', fn) }
+  },
+
+  // ── Connect apps (MCP servers) ──────────────────────────────────────────────
+  // Config is fully validated in the main process before it reaches
+  // connectMcpServer(); this is the renderer entry point for the existing gate.
+  connectMcp: (config: McpConnectConfig): Promise<McpConnectResult> =>
+    ipcRenderer.invoke('openui:mcp:connect', config),
+
+  disconnectMcp: (name: string): Promise<{ ok: boolean; error?: string }> =>
+    ipcRenderer.invoke('openui:mcp:disconnect', name),
+
+  getMcpStatus: (): Promise<McpServerStatus[]> => ipcRenderer.invoke('openui:mcp:status'),
+
+  onMcpStatus: (cb: (list: McpServerStatus[]) => void): (() => void) => {
+    const fn = wrap<McpServerStatus[]>(cb)
+    ipcRenderer.on('openui:mcp:status-changed', fn)
+    return (): void => { ipcRenderer.removeListener('openui:mcp:status-changed', fn) }
   },
 
   transcribeAndChat: (audio: ArrayBuffer, mimeType: string, tier: Tier): Promise<void> =>

@@ -7,6 +7,8 @@ import PlanApprovalModal from './components/PlanApprovalModal'
 import OnboardingWizard from './components/onboarding/OnboardingWizard'
 import ConsentModal from './components/ConsentModal'
 import WorkflowsUI from './components/WorkflowsUI'
+import PreviewPanel from './components/PreviewPanel'
+import { TaskActivityProvider } from './context/TaskActivityContext'
 import { useAssistantAnimations } from './hooks/useAssistantAnimations'
 import { useOnboarding } from './hooks/useOnboarding'
 import { AuthProvider } from './context/AuthContext'
@@ -189,7 +191,7 @@ function AppShell(): JSX.Element {
       ) : !isComplete ? (
         <OnboardingWizard onComplete={handleOnboardingComplete} />
       ) : (
-        <>
+        <TaskActivityProvider>
           <AssistantPopup
             recordingRef={recordingRef}
             captionLockedRef={captionLockedRef}
@@ -197,6 +199,8 @@ function AppShell(): JSX.Element {
             initialMessage={initialMessage}
           />
           <TaskListPopup />
+          {/* Right-side live-preview panel — renders only while captures arrive */}
+          <PreviewPanel />
           {/* Workflows toggle button — bottom-left corner */}
           <button
             onClick={() => setShowWorkflows(true)}
@@ -232,7 +236,7 @@ function AppShell(): JSX.Element {
               onDismiss={() => setPermissionNeeded(null)}
             />
           )}
-        </>
+        </TaskActivityProvider>
       )}
       {consentNeeded && <ConsentModal onClose={() => setConsentNeeded(false)} />}
       {hitlRequest && (
