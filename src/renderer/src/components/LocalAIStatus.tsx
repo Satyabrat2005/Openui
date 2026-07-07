@@ -1,11 +1,22 @@
 import { useEffect, useState } from 'react'
+import { labelForModel } from '../lib/modelLabel'
 
 export default function LocalAIStatus(): JSX.Element {
   // Set when a screen read used local OCR to describe the screen.
   const [ocrHint, setOcrHint] = useState(false)
+  // The REAL model id the backend reported for the most recent turn, or null
+  // before any turn has run. We only ever show a model the backend told us it is
+  // using — never a hardcoded name — and we make no claim about liveness or
+  // cloud-call counts we cannot verify from here.
+  const [model, setModel] = useState<string | null>(null)
 
   useEffect(() => {
     const off = window.openui.onScreenOcrFallback(() => setOcrHint(true))
+    return off
+  }, [])
+
+  useEffect(() => {
+    const off = window.openui.onChatModel(({ model }) => setModel(model))
     return off
   }, [])
 
@@ -34,8 +45,10 @@ export default function LocalAIStatus(): JSX.Element {
         </div>
       )}
       <div style={rowStyle}>
-        <span style={{ ...dotStyle, background: '#34c759' }} />
-        <span style={labelStyle}>Local AI · Ollama · Running on your server · 0 cloud calls</span>
+        <span style={{ ...dotStyle, background: model ? '#34c759' : '#c7c7cc' }} />
+        <span style={labelStyle}>
+          {model ? `Local AI · ${labelForModel(model)}` : 'Local AI · Ollama'}
+        </span>
       </div>
     </>
   )

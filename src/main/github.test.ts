@@ -3,7 +3,10 @@ import {
   check_repo_exists,
   create_repo,
   update_readme,
-  open_pull_request
+  open_pull_request,
+  list_open_prs,
+  get_pr_diff,
+  post_pr_comment
 } from './github'
 
 // These tests exercise the pure validation + token gate that runs BEFORE any
@@ -88,5 +91,62 @@ describe('open_pull_request', () => {
     const r = await open_pull_request({ repo: 'owner/repo', title: 'My PR' })
     expect(r.ok).toBe(false)
     expect(r.error).toMatch(/requires a GitHub token/)
+  })
+})
+
+// The three read/review tools validate their arguments BEFORE any Octokit call,
+// so these cases never hit the network regardless of GITHUB_TOKEN.
+describe('list_open_prs', () => {
+  it('requires a repo argument', async () => {
+    const r = await list_open_prs({})
+    expect(r.ok).toBe(false)
+    expect(r.error).toMatch(/requires a string "repo"/)
+  })
+
+  it('rejects an invalid owner/repo format', async () => {
+    const r = await list_open_prs({ repo: 'not-a-repo' })
+    expect(r.ok).toBe(false)
+    expect(r.error).toMatch(/invalid repo format/)
+  })
+})
+
+describe('get_pr_diff', () => {
+  it('requires a repo argument', async () => {
+    const r = await get_pr_diff({ pr_number: 1 })
+    expect(r.ok).toBe(false)
+    expect(r.error).toMatch(/requires a string "repo"/)
+  })
+
+  it('requires a positive integer pr_number', async () => {
+    expect((await get_pr_diff({ repo: 'owner/repo' })).error).toMatch(/positive integer "pr_number"/)
+    expect((await get_pr_diff({ repo: 'owner/repo', pr_number: -3 })).error).toMatch(
+      /positive integer "pr_number"/
+    )
+  })
+
+  it('rejects an invalid repo format', async () => {
+    const r = await get_pr_diff({ repo: 'nope', pr_number: 1 })
+    expect(r.ok).toBe(false)
+    expect(r.error).toMatch(/invalid repo format/)
+  })
+})
+
+describe('post_pr_comment', () => {
+  it('requires a repo argument', async () => {
+    const r = await post_pr_comment({ pr_number: 1, comment: 'hi' })
+    expect(r.ok).toBe(false)
+    expect(r.error).toMatch(/requires a string "repo"/)
+  })
+
+  it('requires a positive integer pr_number', async () => {
+    const r = await post_pr_comment({ repo: 'owner/repo', comment: 'hi' })
+    expect(r.ok).toBe(false)
+    expect(r.error).toMatch(/positive integer "pr_number"/)
+  })
+
+  it('requires a non-empty comment', async () => {
+    const r = await post_pr_comment({ repo: 'owner/repo', pr_number: 1, comment: '   ' })
+    expect(r.ok).toBe(false)
+    expect(r.error).toMatch(/non-empty string "comment"/)
   })
 })
