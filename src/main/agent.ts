@@ -9,6 +9,7 @@ import { database } from './database'
 import { clampTierToEntitlement } from './stripe/pricing'
 import { getCurrentUserId } from './stripe/subscriptionSync'
 import { emitLocalUsage } from './cloudFreeTier'
+import { withOllamaLock } from './ollamaLock'
 import { trackEvent } from './telemetry/posthog'
 import { Events } from './telemetry/events'
 import { classifyFeedbackSignal, getCustomSystemPrompt } from './improvement'
@@ -316,6 +317,23 @@ When writing feedback comments:
 - Prioritise: Accessibility (WCAG AA) → Usability → Visual polish.
 - Format comments in markdown with headings and bullet lists.`
 
+/**
+ * Local Ollama model for GENERAL tasks: chat, planning/refiner, and the
+ * interactive builder session. Overridable via OLLAMA_MODEL.
+ */
+function localGeneralModel(): string {
+  return process.env.OLLAMA_MODEL ?? 'qwen3.5:9b'
+}
+
+/**
+ * Local Ollama model for CODE-heavy work — used by the autonomous coding agent
+ * (autonomous.ts). Overridable via OLLAMA_CODE_MODEL; defaults to a code-tuned
+ * model that fits the 8 GB VRAM budget.
+ */
+function localCodeModel(): string {
+  return process.env.OLLAMA_CODE_MODEL ?? 'qwen2.5-coder:7b'
+}
+
 // ── Builder mode (interactive project scaffolding in the sandbox) ─────────────
 
 /**
@@ -404,11 +422,11 @@ async function runBuilderSession(win: BrowserWindow, tier: Tier, userMessage: st
 /**
  * The model every tier runs on. OpenUI is now fully local: chat, planning, and
  * the autonomous agent all run on the self-hosted Ollama server. Override the
- * model with the OLLAMA_MODEL env var (default: llama3:8b). Tiers no longer map
+ * model with the OLLAMA_MODEL env var (default: qwen3.5:9b). Tiers no longer map
  * to different cloud models — they only affect metering/entitlement plumbing.
  */
 function modelForTier(_tier: Tier): string {
-  return process.env.OLLAMA_MODEL ?? 'llama3:8b'
+  return localGeneralModel()
 }
 
 function classifyChatError(err: unknown): string {
@@ -524,10 +542,12 @@ async function callOllama(
   _win: BrowserWindow,
   messages: Message[],
   systemPrompt: string,
-  onDelta: (delta: string) => void
+  onDelta: (delta: string) => void,
+  model: string = localGeneralModel()
 ): Promise<string> {
   const ollama = new Ollama({ host: process.env.OLLAMA_HOST ?? 'http://127.0.0.1:11434' })
-  // Llama 3 8B is trained for 8192 tokens. Ollama defaults num_ctx to 4096,
+
+  // These models are trained for 8192 tokens. Ollama defaults num_ctx to 4096,
   // which silently truncates our system prompt + tool instructions (~6.5k tokens)
   // and makes the model reply with nonsense / skip tool calls. Request the full
   // trained window (overridable via OLLAMA_NUM_CTX for lower-RAM machines).
@@ -536,35 +556,40 @@ async function callOllama(
   // Pre-flight guard: Ollama truncates the *middle* of the prompt (where our tool
   // instructions live) without failing, so a heads-up here is the only warning we
   // get before the model starts replying with nonsense / skipping automation.
-  // ~4 chars/token is a rough but conservative estimate for Llama 3's BPE tokenizer.
+  // ~4 chars/token is a rough but conservative estimate for the BPE tokenizer.
   const promptChars = systemPrompt.length + messages.reduce((n, m) => n + m.content.length, 0)
   const estTokens = Math.ceil(promptChars / 4)
   if (estTokens > numCtx) {
-    const msg = `[agent] ⚠ Prompt ~${estTokens} tokens exceeds num_ctx ${numCtx}. Ollama will truncate the middle of the prompt (tool instructions), so replies may be incoherent or skip automation. Raise OLLAMA_NUM_CTX (max 8192 for llama3:8b) or start a new conversation.`
+    const msg = `[agent] ⚠ Prompt ~${estTokens} tokens exceeds num_ctx ${numCtx}. Ollama will truncate the middle of the prompt (tool instructions), so replies may be incoherent or skip automation. Raise OLLAMA_NUM_CTX or start a new conversation.`
     console.warn(msg)
     emit(_win, 'openui:chat:warning', { message: msg, estTokens, numCtx })
   } else if (estTokens > numCtx * 0.9) {
     console.warn(`[agent] Prompt ~${estTokens} tokens is nearing num_ctx ${numCtx}; conversation is close to the truncation limit.`)
   }
 
-  const stream = await ollama.chat({
-    model: process.env.OLLAMA_MODEL ?? 'llama3:8b',
-    messages: [
-      { role: 'system', content: systemPrompt },
-      ...messages.map((m) => ({ role: m.role, content: m.content }))
-    ],
-    options: { num_ctx: numCtx },
-    stream: true
-  })
-  let full = ''
-  for await (const part of stream) {
-    const delta = part.message?.content ?? ''
-    if (delta) {
-      full += delta
-      onDelta(delta)
+  // Serialize against every other local inference — one at a time on an 8 GB
+  // card (see ollamaLock.ts). The whole stream is drained inside the lock so the
+  // model stays resident for the full generation before the next call starts.
+  return withOllamaLock(async () => {
+    const stream = await ollama.chat({
+      model,
+      messages: [
+        { role: 'system', content: systemPrompt },
+        ...messages.map((m) => ({ role: m.role, content: m.content }))
+      ],
+      options: { num_ctx: numCtx },
+      stream: true
+    })
+    let full = ''
+    for await (const part of stream) {
+      const delta = part.message?.content ?? ''
+      if (delta) {
+        full += delta
+        onDelta(delta)
+      }
     }
-  }
-  return full
+    return full
+  })
 }
 
 /**
@@ -574,7 +599,7 @@ async function callOllama(
  * planner, and the autonomous agent all stream from the same Ollama server.
  *
  * Start the engine once with `ollama serve` and pull the model with
- * `ollama pull llama3:8b` (override via the OLLAMA_MODEL / OLLAMA_HOST env vars).
+ * `ollama pull qwen3.5:9b` (override via the OLLAMA_MODEL / OLLAMA_HOST env vars).
  *
  * `systemPrompt` is supplied by the caller so the same router drives both the
  * interactive desktop assistant (handleChat) and the autonomous coding agent
@@ -588,23 +613,30 @@ export async function callModel(
   // Every streamed token is delivered here. The default forwards straight to the
   // renderer (legacy behaviour, used by autonomous.ts); the interactive loop
   // passes a StreamGate so tool-call JSON is withheld from the UI.
-  onDelta: (delta: string) => void = (delta) => emit(win, 'openui:chat:chunk', delta)
+  onDelta: (delta: string) => void = (delta) => emit(win, 'openui:chat:chunk', delta),
+  // Callers whose work is code-heavy (the autonomous coding agent) set
+  // `coding: true` so the run uses the code-tuned Ollama model (OLLAMA_CODE_MODEL)
+  // instead of the general one.
+  opts: { coding?: boolean } = {}
 ): Promise<string> {
+  // Code-heavy callers (the autonomous coding agent) get the code-tuned model;
+  // everything else uses the general model.
+  const localModel = opts.coding ? localCodeModel() : localGeneralModel()
+
   // Local AI is never metered — keep the renderer's usage counter in "unlimited".
   emitLocalUsage(win, tier)
 
   if (await isOllamaRunning()) {
-    return callOllama(win, messages, systemPrompt, onDelta)
+    return callOllama(win, messages, systemPrompt, onDelta, localModel)
   }
 
   // The Ollama server isn't reachable. Give an actionable message rather than a
   // raw connection error — it is the one dependency the app needs running.
-  const model = process.env.OLLAMA_MODEL ?? 'llama3:8b'
   const host = process.env.OLLAMA_HOST ?? 'http://127.0.0.1:11434'
   const msg =
     `I can't reach the local AI engine (Ollama) at ${host}. ` +
     `Start it with "ollama serve" and make sure the model is installed ` +
-    `("ollama pull ${model}"), then try again.`
+    `("ollama pull ${localModel}"), then try again.`
   onDelta(msg)
   return msg
 }

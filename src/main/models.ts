@@ -83,7 +83,7 @@ export async function getAvailableModels(): Promise<AvailableModel[]> {
  */
 export function assignModels(pool: AvailableModel[], count: number): AvailableModel[] {
   if (pool.length === 0) {
-    const fallbackId = process.env.OLLAMA_MODEL ?? 'llama3:8b'
+    const fallbackId = process.env.OLLAMA_MODEL ?? 'qwen3.5:9b'
     const fallback: AvailableModel = { id: fallbackId, label: prettifyOllama(fallbackId), provider: 'ollama' }
     return Array.from({ length: count }, () => fallback)
   }
