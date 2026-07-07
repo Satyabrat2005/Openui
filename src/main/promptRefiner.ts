@@ -20,6 +20,7 @@ import Anthropic from '@anthropic-ai/sdk'
 import { Ollama } from 'ollama'
 import { database } from './database'
 import { buildDefaultSystemPrompt } from './agent'
+import { withOllamaLock } from './ollamaLock'
 import {
   SETTINGS,
   isImprovementEnabled,
@@ -134,16 +135,20 @@ async function generateRefinement(system: string, user: string): Promise<string 
   // 1) Local Ollama — on-device, matches the "improvement happens locally" promise.
   if (await isOllamaRunning()) {
     try {
-      const ollama = new Ollama({ host: process.env.OLLAMA_HOST ?? 'http://127.0.0.1:11434' })
-      const res = await ollama.chat({
-        model: process.env.OLLAMA_MODEL ?? 'llama3:8b',
-        messages: [
-          { role: 'system', content: system },
-          { role: 'user', content: user }
-        ],
-        stream: false
+      // Serialize behind any other local inference (chat / coding fallback) —
+      // one model on the 8 GB card at a time (see ollamaLock.ts).
+      const text = await withOllamaLock(async () => {
+        const ollama = new Ollama({ host: process.env.OLLAMA_HOST ?? 'http://127.0.0.1:11434' })
+        const res = await ollama.chat({
+          model: process.env.OLLAMA_MODEL ?? 'qwen3.5:9b',
+          messages: [
+            { role: 'system', content: system },
+            { role: 'user', content: user }
+          ],
+          stream: false
+        })
+        return res.message?.content?.trim()
       })
-      const text = res.message?.content?.trim()
       if (text) return text
     } catch (err) {
       console.error('[promptRefiner] Ollama refinement failed, trying cloud:', err)

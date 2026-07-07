@@ -9,6 +9,7 @@ import { database } from './database'
 import { clampTierToEntitlement } from './stripe/pricing'
 import { getCurrentUserId } from './stripe/subscriptionSync'
 import { isCloudProxyConfigured, callCloudProxy, CloudProxyError, emitLocalUsage } from './cloudFreeTier'
+import { withOllamaLock } from './ollamaLock'
 import { trackEvent } from './telemetry/posthog'
 import { Events } from './telemetry/events'
 import { classifyFeedbackSignal, getCustomSystemPrompt } from './improvement'
@@ -301,8 +302,25 @@ When writing feedback comments:
 - Prioritise: Accessibility (WCAG AA) → Usability → Visual polish.
 - Format comments in markdown with headings and bullet lists.`
 
+/**
+ * Local Ollama model for GENERAL tasks: on-device chat, the offline chat
+ * fallback, and the planner/refiner. Overridable via OLLAMA_MODEL.
+ */
+function localGeneralModel(): string {
+  return process.env.OLLAMA_MODEL ?? 'qwen3.5:9b'
+}
+
+/**
+ * Local Ollama model for CODE-heavy work — used only by the autonomous coding
+ * agent's offline fallback (autonomous.ts). Overridable via OLLAMA_CODE_MODEL;
+ * defaults to a code-tuned model that fits the 8 GB VRAM budget.
+ */
+function localCodeModel(): string {
+  return process.env.OLLAMA_CODE_MODEL ?? 'qwen2.5-coder:7b'
+}
+
 function modelForTier(tier: Tier): string {
-  if (tier === 'free') return process.env.OLLAMA_MODEL ?? 'llama3:8b'
+  if (tier === 'free') return localGeneralModel()
   if (tier === 'pro') return 'claude-sonnet-4-6'
   return process.env.GLM_MODEL ?? 'glm-4'
 }
@@ -426,26 +444,32 @@ async function callOllama(
   _win: BrowserWindow,
   messages: Message[],
   systemPrompt: string,
-  onDelta: (delta: string) => void
+  onDelta: (delta: string) => void,
+  model: string = localGeneralModel()
 ): Promise<string> {
   const ollama = new Ollama({ host: process.env.OLLAMA_HOST ?? 'http://127.0.0.1:11434' })
-  const stream = await ollama.chat({
-    model: process.env.OLLAMA_MODEL ?? 'llama3:8b',
-    messages: [
-      { role: 'system', content: systemPrompt },
-      ...messages.map((m) => ({ role: m.role, content: m.content }))
-    ],
-    stream: true
-  })
-  let full = ''
-  for await (const part of stream) {
-    const delta = part.message?.content ?? ''
-    if (delta) {
-      full += delta
-      onDelta(delta)
+  // Serialize against every other local inference — one at a time on an 8 GB
+  // card (see ollamaLock.ts). The whole stream is drained inside the lock so the
+  // model stays resident for the full generation before the next call starts.
+  return withOllamaLock(async () => {
+    const stream = await ollama.chat({
+      model,
+      messages: [
+        { role: 'system', content: systemPrompt },
+        ...messages.map((m) => ({ role: m.role, content: m.content }))
+      ],
+      stream: true
+    })
+    let full = ''
+    for await (const part of stream) {
+      const delta = part.message?.content ?? ''
+      if (delta) {
+        full += delta
+        onDelta(delta)
+      }
     }
-  }
-  return full
+    return full
+  })
 }
 
 async function callAnthropic(
@@ -521,11 +545,16 @@ export async function callModel(
   // Every streamed token is delivered here. The default forwards straight to the
   // renderer (legacy behaviour, used by autonomous.ts); the interactive loop
   // passes a StreamGate so tool-call JSON is withheld from the UI.
-  onDelta: (delta: string) => void = (delta) => emit(win, 'openui:chat:chunk', delta)
+  onDelta: (delta: string) => void = (delta) => emit(win, 'openui:chat:chunk', delta),
+  // Callers whose work is code-heavy (the autonomous coding agent) set
+  // `coding: true` so the LOCAL fallback path picks the code-tuned model. The
+  // cloud path is unaffected — only which Ollama model runs when offline.
+  opts: { coding?: boolean } = {}
 ): Promise<string> {
-  if (tier === 'free') return routeCloudOrDirect(win, 'free', messages, systemPrompt, 'free-default', onDelta)
-  if (tier === 'pro') return routeCloudOrDirect(win, 'pro', messages, systemPrompt, 'pro-default', onDelta)
-  return routeCloudOrDirect(win, 'enterprise', messages, systemPrompt, 'enterprise-default', onDelta)
+  const localModel = opts.coding ? localCodeModel() : localGeneralModel()
+  if (tier === 'free') return routeCloudOrDirect(win, 'free', messages, systemPrompt, 'free-default', onDelta, localModel)
+  if (tier === 'pro') return routeCloudOrDirect(win, 'pro', messages, systemPrompt, 'pro-default', onDelta, localModel)
+  return routeCloudOrDirect(win, 'enterprise', messages, systemPrompt, 'enterprise-default', onDelta, localModel)
 }
 
 /**
@@ -541,7 +570,9 @@ async function routeCloudOrDirect(
   messages: Message[],
   systemPrompt: string,
   modelKey: string,
-  onDelta: (delta: string) => void
+  onDelta: (delta: string) => void,
+  // Which local Ollama model to use if we fall through to the on-device path.
+  localModel: string = localGeneralModel()
 ): Promise<string> {
   if (isCloudProxyConfigured()) {
     try {
@@ -558,7 +589,7 @@ async function routeCloudOrDirect(
       console.error(
         `[agent] cloud proxy unavailable (HTTP ${err.status}${err.code ? `, ${err.code}` : ''}) — trying local fallback`
       )
-      const recovered = await tryLocalModelFallback(win, tier, messages, systemPrompt, onDelta)
+      const recovered = await tryLocalModelFallback(win, tier, messages, systemPrompt, onDelta, localModel)
       if (recovered !== null) return recovered
       // No local model available either — surface the friendly proxy message.
       onDelta(err.message)
@@ -578,7 +609,7 @@ async function routeCloudOrDirect(
   // is running, so the app still works pre-launch/pre-signup with zero keys.
   if (await isOllamaRunning()) {
     emitLocalUsage(win, tier)
-    return callOllama(win, messages, systemPrompt, onDelta)
+    return callOllama(win, messages, systemPrompt, onDelta, localModel)
   }
   // No cloud session, no local key, no local model: surface a neutral
   // connectivity message rather than a raw error.
@@ -602,7 +633,8 @@ async function tryLocalModelFallback(
   tier: Tier,
   messages: Message[],
   systemPrompt: string,
-  onDelta: (delta: string) => void
+  onDelta: (delta: string) => void,
+  localModel: string = localGeneralModel()
 ): Promise<string | null> {
   if (process.env.ANTHROPIC_API_KEY) {
     emitLocalUsage(win, tier)
@@ -611,7 +643,7 @@ async function tryLocalModelFallback(
   }
   if (await isOllamaRunning()) {
     emitLocalUsage(win, tier)
-    return callOllama(win, messages, systemPrompt, onDelta)
+    return callOllama(win, messages, systemPrompt, onDelta, localModel)
   }
   return null
 }

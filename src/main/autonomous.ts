@@ -118,7 +118,10 @@ async function workOnTask(win: BrowserWindow, tier: Tier, task: AgentTask): Prom
 
     // Withhold tool-call JSON from the UI, same as the interactive loop.
     const gate = new StreamGate((delta) => emit(win, 'openui:chat:chunk', delta))
-    const responseText = await callModel(win, tier, messages, CODING_SYSTEM_PROMPT, gate.push)
+    // Code-heavy loop: when this falls back to a LOCAL model (cloud proxy down /
+    // offline), route to the code-tuned Ollama model (OLLAMA_CODE_MODEL) rather
+    // than the general one. The cloud path is unchanged.
+    const responseText = await callModel(win, tier, messages, CODING_SYSTEM_PROMPT, gate.push, { coding: true })
     messages.push({ role: 'assistant', content: responseText })
 
     const toolCall = parseToolCall(responseText)
