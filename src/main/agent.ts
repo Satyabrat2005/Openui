@@ -188,7 +188,10 @@ Browser automation workflow — use this for ALL web-based tasks (booking flight
 4. Repeat steps 2–3 as needed until the task is done.
 Examples of tasks that MUST use this workflow: "book a flight", "check flight prices", "search Google", "scrape a website", "fill out a web form", "log into a website".
 
-Screen navigation workflow — use this ONLY for native desktop apps with no web interface (e.g. VS Code panels, macOS system dialogs, Electron apps):
+Visual fallback (computer_use) — the GENERALISED path for ANY app or website with no dedicated tool (native desktop apps, system dialogs, Electron panels, or a site the browser tools can't reach cleanly). Call computer_use(goal) with ONE concrete objective and it runs its own screenshot → decide → click/type loop until the goal is met — you do NOT hand-drive read_screen/move_mouse/left_click for these. This is a catch-all: reach for open_app, the browser_* tools, control_calendar, and the github/figma tools FIRST whenever they cover the task (they are faster and more reliable), and fall back to computer_use only when none of them fit.
+Example: "turn on dark mode in System Settings" → {"tool": "computer_use", "args": {"goal": "open System Settings and turn on Dark Mode"}}
+
+Manual screen control — if you need finer step-by-step control than computer_use, you can still drive the primitives yourself:
 1. Call read_screen() — it returns a description of every visible UI element with approximate X,Y coordinates.
 2. Identify the target element's coordinates from the description.
 3. Call move_mouse(x, y) to position the pointer over it.
