@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react'
 import type { TaskCard, TaskUpdatePayload, ParallelGroup, SubagentRow, StepStatus } from '../env'
 import { appKindForTool, appKindForName, type AppKind } from '../lib/appKind'
+import { labelForModel } from '../lib/modelLabel'
 
 /**
  * TaskActivityContext — the single source of truth for the center timeline (#1),
@@ -45,14 +46,6 @@ function newId(): string {
   } catch {
     return `task-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
   }
-}
-
-/** A concise, honest label for a raw model id (e.g. "llama3:8b" → "Llama 3 8B"). */
-function labelForModel(model: string): string {
-  const base = model.split(':')[0].replace(/[-_]/g, ' ')
-  const tag = model.includes(':') ? model.split(':')[1] : ''
-  const size = tag && tag !== 'latest' ? ` ${tag.toUpperCase()}` : ''
-  return base.replace(/([a-z])(\d)/gi, '$1 $2').replace(/\b\w/g, (c) => c.toUpperCase()) + size
 }
 
 export function TaskActivityProvider({ children }: { children: ReactNode }): JSX.Element {
