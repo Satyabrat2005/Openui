@@ -29,24 +29,35 @@
 
 ## Table of Contents
 
-1. [Prerequisites](#prerequisites)
-2. [Quick Start](#quick-start)
-3. [Environment Variables](#environment-variables)
-4. [Architecture Overview](#architecture-overview)
-5. [Agent & Model Routing](#agent--model-routing)
-6. [OS Automation Tools](#os-automation-tools)
-7. [Screen Vision (`read_screen`)](#screen-vision-read_screen)
-8. [Voice Input](#voice-input)
-9. [GitHub PR Review](#github-pr-review)
-10. [Figma Design Tools](#figma-design-tools)
-11. [Autonomous Coding Mode](#autonomous-coding-mode)
-12. [AI Interviewer](#ai-interviewer)
-13. [Auth & Subscription Gating](#auth--subscription-gating)
-14. [Telemetry & Privacy](#telemetry--privacy)
-15. [Auto-Updater](#auto-updater)
-16. [Onboarding & Cloud-First Routing](#onboarding--cloud-first-routing)
-17. [Building for Distribution](#building-for-distribution)
-18. [Security Model](#security-model)
+1. [Traction & Product Learnings](#traction--product-learnings)
+2. [Prerequisites](#prerequisites)
+3. [Quick Start](#quick-start)
+4. [Environment Variables](#environment-variables)
+5. [Architecture Overview](#architecture-overview)
+6. [Agent & Model Routing](#agent--model-routing)
+7. [OS Automation Tools](#os-automation-tools)
+8. [Screen Vision (`read_screen`)](#screen-vision-read_screen)
+9. [Voice Input](#voice-input)
+10. [GitHub PR Review](#github-pr-review)
+11. [Figma Design Tools](#figma-design-tools)
+12. [Autonomous Coding Mode](#autonomous-coding-mode)
+13. [AI Interviewer](#ai-interviewer)
+14. [Auth & Subscription Gating](#auth--subscription-gating)
+15. [Telemetry & Privacy](#telemetry--privacy)
+16. [Auto-Updater](#auto-updater)
+17. [Onboarding & Cloud-First Routing](#onboarding--cloud-first-routing)
+18. [Building for Distribution](#building-for-distribution)
+19. [Security Model](#security-model)
+
+---
+
+## Traction & Product Learnings
+
+OpenUI currently has **32 signups** from users booking a demo. The infrastructure described below is in place so we can learn from real usage as those sessions happen — no usage-driven product decisions have been made from it yet.
+
+- **Telemetry (built, currently inert):** PostHog (`posthog-node`) is integrated end-to-end and is consent-gated — `ConsentStatus` in `consent.ts` defaults to `UNKNOWN` on first launch, and the PostHog client is never initialised until the user explicitly opts in. The event taxonomy in `events.ts` already covers app lifecycle, auth, chat, model routing, tool execution, voice, checkout/subscription, waitlist, and feedback events. `POSTHOG_API_KEY`/`POSTHOG_HOST` in `.env.example` are present but unset by default, so telemetry collects nothing in this build — it will start capturing real usage once demo sessions begin and a production key is set.
+- **Feedback loop (local, working today):** `feedbackRepo.ts` stores a sentiment-derived rating plus an explicit 👍/👎 per assistant message locally in SQLite. `promptRefiner.ts` reads the low-rated turns weekly, clusters them by topic, and rewrites the system prompt to address recurring failure modes — a working self-improvement loop that is local-only today, not yet aggregated across users.
+- **Next phase (plan, not yet done):** as demo sessions begin, the plan is to turn on PostHog in production and use it to see which tools/model tiers get used most, where onboarding drops off, and how the waitlist converts — combined with qualitative feedback from demo users — to decide what to prioritize next.
 
 ---
 
@@ -127,6 +138,8 @@ OPENUI_WORKSPACE=/path/to/workspace
 ## Architecture Overview
 
 OpenUI is a standard Electron app with three Vite bundles (main, preload, renderer) built by `electron-vite`.
+
+For a curated tour of the most notable engineering patterns in this codebase, see [ENGINEERING_HIGHLIGHTS.md](./ENGINEERING_HIGHLIGHTS.md).
 
 ```
 src/
