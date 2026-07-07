@@ -19,7 +19,7 @@ import { codingToolSchemas, executeCodingTool, describeCodingToolCall } from './
 import { getNextTask, recordTaskOutcome, type TaskSource, type AgentTask } from './tasks'
 import type { Tier, ToolResult, ToolSchema } from './tools'
 
-/** Status the renderer reflects in the TaskListPopup "Background Agent" banner. */
+/** Status the renderer reflects in the left rail's "Background Agent" banner. */
 export interface AutonomousStatus {
   active: boolean
   state: 'disabled' | 'monitoring' | 'working' | 'paused'
@@ -75,12 +75,15 @@ ${codingToolSchemas.map(renderSchema).join('\n')}
 
 Workflow:
 1. If unsure of the current state, call list_files / read_file to inspect the workspace.
-2. Implement the task with write_file (write complete file contents each time).
-3. Call run_tests to verify. Read the output carefully.
-4. If the output starts with "TESTS FAILED", fix the code and run_tests again. Iterate.
-5. When the output starts with "TESTS PASSED", reply in plain natural language summarising what you changed. Do NOT wrap the final summary in JSON.
+2. Implement the task with write_file (write complete file contents each time). To scaffold a new project, write the WHOLE file tree — package.json (with the right dependencies and "scripts"), source files, config, and tests.
+3. If the project has dependencies, call install_dependencies once after writing package.json.
+4. Verify your work:
+   - Call run_tests to run the test suite, and/or
+   - Call run_script to run a build/train/lint script you defined (e.g. {"tool":"run_script","args":{"script":"build"}}). A dev server ("dev"/"start") is run as a boot smoke test — it confirms the app starts without crashing.
+5. Read the output carefully. If it starts with "TESTS FAILED" / "SCRIPT FAILED" / "INSTALL FAILED", read the offending file(s) with read_file, fix the code with write_file, and re-run the failing step. Iterate.
+6. When verification passes, reply in plain natural language summarising what you built/changed. Do NOT wrap the final summary in JSON.
 
-If after several honest attempts you cannot make the tests pass, reply in plain text beginning with "GIVE UP:" followed by a short explanation. Never fake a pass or delete tests to make them pass.`
+If after several honest attempts you cannot make it pass, reply in plain text beginning with "GIVE UP:" followed by a short explanation. Never fake a pass or delete tests to make them pass.`
 
 /** Build the first user message describing the task to work on. */
 function taskPrompt(task: AgentTask): string {
@@ -118,9 +121,8 @@ async function workOnTask(win: BrowserWindow, tier: Tier, task: AgentTask): Prom
 
     // Withhold tool-call JSON from the UI, same as the interactive loop.
     const gate = new StreamGate((delta) => emit(win, 'openui:chat:chunk', delta))
-    // Code-heavy loop: when this falls back to a LOCAL model (cloud proxy down /
-    // offline), route to the code-tuned Ollama model (OLLAMA_CODE_MODEL) rather
-    // than the general one. The cloud path is unchanged.
+    // Code-heavy loop: run on the code-tuned Ollama model (OLLAMA_CODE_MODEL)
+    // rather than the general one.
     const responseText = await callModel(win, tier, messages, CODING_SYSTEM_PROMPT, gate.push, { coding: true })
     messages.push({ role: 'assistant', content: responseText })
 

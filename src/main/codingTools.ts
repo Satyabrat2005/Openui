@@ -11,7 +11,14 @@
  * Schemas reuse the ToolSchema/ToolResult shapes from tools.ts so they render
  * into the system prompt with the same renderer the interactive agent uses.
  */
-import { writeSandboxFile, readSandboxFile, listSandboxFiles, runTests } from './sandbox'
+import {
+  writeSandboxFile,
+  readSandboxFile,
+  listSandboxFiles,
+  runTests,
+  runInstall,
+  runScript
+} from './sandbox'
 import type { ToolSchema, ToolResult } from './tools'
 
 type CodingExecutor = (args: Record<string, unknown>) => Promise<ToolResult>
@@ -68,6 +75,40 @@ async function run_tests(): Promise<ToolResult> {
   }
 }
 
+async function install_dependencies(): Promise<ToolResult> {
+  try {
+    const result = await runInstall()
+    // Like run_tests: always ok:true so the model reads the log and decides the
+    // next step rather than treating a normal install failure as a tool error.
+    return {
+      ok: true,
+      output: `${result.passed ? 'INSTALL OK' : 'INSTALL FAILED'}\n${result.output}`
+    }
+  } catch (err) {
+    return {
+      ok: false,
+      error: `install_dependencies failed: ${err instanceof Error ? err.message : String(err)}`
+    }
+  }
+}
+
+async function run_script(args: Record<string, unknown>): Promise<ToolResult> {
+  const script = typeof args.script === 'string' ? args.script : ''
+  if (!script) return { ok: false, error: 'run_script requires a string "script".' }
+  try {
+    const result = await runScript(script)
+    return {
+      ok: true,
+      output: `${result.passed ? 'SCRIPT OK' : 'SCRIPT FAILED'} [${script}]\n${result.output}`
+    }
+  } catch (err) {
+    return {
+      ok: false,
+      error: `run_script failed: ${err instanceof Error ? err.message : String(err)}`
+    }
+  }
+}
+
 export const codingToolSchemas: ToolSchema[] = [
   {
     name: 'write_file',
@@ -103,6 +144,32 @@ export const codingToolSchemas: ToolSchema[] = [
     description:
       'Run the workspace test suite (npm test) and return whether it passed plus the full test output. Use this to verify your changes and iterate on failures.',
     parameters: { type: 'object', properties: {}, required: [] }
+  },
+  {
+    name: 'install_dependencies',
+    description:
+      'Run "npm install" in the workspace to install the dependencies declared in package.json. ' +
+      'Call this after writing package.json (and before running a build/dev/test script) for any project that has dependencies.',
+    parameters: { type: 'object', properties: {}, required: [] }
+  },
+  {
+    name: 'run_script',
+    description:
+      'Run a named npm script from the workspace ("npm run <script>") — e.g. "build", "train", "lint", or "dev". ' +
+      'The script must already be defined in the workspace package.json. ' +
+      'Long-running scripts (dev/start/serve/watch/preview) are run as a boot smoke test: they are started, checked for a crash, then stopped. ' +
+      'One-shot scripts (build/train/lint) run to completion and return their full output. ' +
+      'Use this to build or train the project and iterate on failures the same way you would with run_tests.',
+    parameters: {
+      type: 'object',
+      properties: {
+        script: {
+          type: 'string',
+          description: 'The npm script name to run, as declared in package.json (e.g. "build").'
+        }
+      },
+      required: ['script']
+    }
   }
 ]
 
@@ -110,7 +177,9 @@ const registry: Record<string, CodingExecutor> = {
   write_file,
   read_file,
   list_files,
-  run_tests
+  run_tests,
+  install_dependencies,
+  run_script
 }
 
 /**
@@ -144,6 +213,10 @@ export function describeCodingToolCall(name: string, args: Record<string, unknow
       return 'List workspace files'
     case 'run_tests':
       return 'Run npm test'
+    case 'install_dependencies':
+      return 'Install dependencies (npm install)'
+    case 'run_script':
+      return `Run npm script "${String(args.script ?? '')}"`
     default:
       return name
   }

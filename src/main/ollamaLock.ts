@@ -8,9 +8,10 @@
  * self-improvement refiner) funnels through here and runs strictly one at a
  * time, in submission order.
  *
- * NOTE: genuine parallel multi-tasking is a CLOUD concern (chat-proxy / Claude),
- * which is not VRAM-bound. Local Ollama is intentionally single-task and
- * background-only — do NOT add a "run two local models at once" path here.
+ * NOTE: OpenUI runs entirely on local Ollama, and this card holds one model at a
+ * time — so even features that *look* concurrent (e.g. parallel subagents) funnel
+ * through here and run one after another rather than fighting over VRAM. Do NOT
+ * add a "run two local models at once" path; it does not fit the hardware.
  */
 
 // The tail of the queue. Each new call chains onto it, so at most one `fn` is

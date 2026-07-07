@@ -9,14 +9,11 @@
  * next turn — so responses genuinely get better over time without any fine-tuning
  * or external ML infrastructure.
  *
- * Privacy: the refinement runs against whichever model is reachable LOCALLY
- * first — a running Ollama keeps everything on-device. Only when no local model
- * is available does it fall back to a direct Anthropic call (dev/self-hosted with
- * an ANTHROPIC_API_KEY); with neither available the job skips quietly. Nothing is
- * ever uploaded to OpenUI's own servers.
+ * Privacy: the refinement runs entirely against the local Ollama server, so it
+ * keeps everything on-device. When Ollama isn't running the job skips quietly —
+ * nothing is ever uploaded to OpenUI's own servers or any cloud API.
  */
 import type { BrowserWindow } from 'electron'
-import Anthropic from '@anthropic-ai/sdk'
 import { Ollama } from 'ollama'
 import { database } from './database'
 import { buildDefaultSystemPrompt } from './agent'
@@ -28,9 +25,6 @@ import {
 } from './improvement'
 import { trackEvent } from './telemetry/posthog'
 import { Events } from './telemetry/events'
-
-/** Model used for the cloud fallback path (matches the project's Sonnet usage). */
-const REFINER_MODEL = 'claude-3-5-sonnet-latest'
 
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000
 const WEEK_SECONDS = 7 * 24 * 60 * 60
@@ -127,12 +121,12 @@ async function isOllamaRunning(): Promise<boolean> {
 }
 
 /**
- * Generate the improved prompt without streaming to any renderer. Prefers a
- * local Ollama model (keeps data on-device), then a direct Anthropic call when a
- * key is configured. Returns null when no model is reachable.
+ * Generate the improved prompt without streaming to any renderer. Runs entirely
+ * on the local Ollama server (keeps data on-device) — the same engine the rest of
+ * the app uses. Returns null when Ollama isn't reachable, so the job simply skips.
  */
 async function generateRefinement(system: string, user: string): Promise<string | null> {
-  // 1) Local Ollama — on-device, matches the "improvement happens locally" promise.
+  // Local Ollama — on-device, matches the "improvement happens locally" promise.
   if (await isOllamaRunning()) {
     try {
       // Serialize behind any other local inference (chat / coding fallback) —
@@ -151,27 +145,7 @@ async function generateRefinement(system: string, user: string): Promise<string 
       })
       if (text) return text
     } catch (err) {
-      console.error('[promptRefiner] Ollama refinement failed, trying cloud:', err)
-    }
-  }
-
-  // 2) Direct Anthropic (dev / self-hosted with a key present).
-  if (process.env.ANTHROPIC_API_KEY) {
-    try {
-      const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
-      const res = await client.messages.create({
-        model: REFINER_MODEL,
-        max_tokens: 2048,
-        system,
-        messages: [{ role: 'user', content: user }]
-      })
-      const text = res.content
-        .map((b) => (b.type === 'text' ? b.text : ''))
-        .join('')
-        .trim()
-      if (text) return text
-    } catch (err) {
-      console.error('[promptRefiner] Anthropic refinement failed:', err)
+      console.error('[promptRefiner] Ollama refinement failed:', err)
     }
   }
 
@@ -307,7 +281,7 @@ export async function refineSystemPromptNow(): Promise<RefineResult> {
   trackEvent(Events.PROMPT_REFINED, {
     failing_count: failing.length,
     clusters: clusters.length,
-    model: REFINER_MODEL
+    model: process.env.OLLAMA_MODEL ?? 'qwen3.5:9b'
   })
   return { refined: true, failingCount: failing.length, clusters: clusters.length }
 }

@@ -1,24 +1,84 @@
+/* Inter (UI) + JetBrains Mono (code). Loads from the network when online;
+   silently falls back to the system stack below when the app is offline.
+   Must precede the @tailwind directives — CSS requires @import first. */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 /* ─────────────────────────────────────────
-   THEME TOKENS — dark, Claude/Antigravity-style.
-   Pure black surfaces (not greyish) with hairline borders and light text.
+   THEME TOKENS — premium layered dark (Claude × Gemini × aside.com).
+   No flat black: a base, a raised sidebar shade, and a card shade give depth,
+   with an indigo primary accent, amber highlights and emerald success states.
 ───────────────────────────────────────── */
 :root {
-  --ou-bg: #000000;            /* panel base — fully black */
-  --ou-surface: #0c0c0e;       /* slightly raised surface (input, cards) */
-  --ou-surface-2: #161618;     /* hover / secondary surface */
-  --ou-border: rgba(255, 255, 255, 0.08);
-  --ou-border-strong: rgba(255, 255, 255, 0.14);
-  --ou-text: #f2f2f3;          /* primary text */
-  --ou-text-dim: #a1a1aa;      /* secondary text */
-  --ou-text-faint: #6b6b73;    /* tertiary / labels */
-  --ou-accent: #2f7bff;        /* brand blue */
-  --ou-accent-soft: rgba(47, 123, 255, 0.16);
-  --ou-user-bubble: rgba(47, 123, 255, 0.18);
-  --ou-ai-bubble: rgba(255, 255, 255, 0.05);
+  --ou-bg: #0a0a0f;            /* app base — near-black with a blue cast */
+  --ou-bg-2: #0d0d14;          /* chat area, very subtly lifted from base */
+  --ou-surface: #12121a;       /* sidebar / raised surface */
+  --ou-surface-2: #1a1a2e;     /* cards, hover */
+  --ou-surface-3: #22223a;     /* stronger hover / pressed */
+  --ou-border: rgba(255, 255, 255, 0.06);
+  --ou-border-strong: rgba(255, 255, 255, 0.10);
+  --ou-text: #f1f5f9;          /* primary text */
+  --ou-text-dim: #94a3b8;      /* secondary text */
+  --ou-text-faint: #64748b;    /* tertiary / labels */
+
+  --ou-accent: #6366f1;        /* indigo-500 — primary */
+  --ou-accent-strong: #4f46e5; /* indigo-600 — pressed / deep glow */
+  --ou-accent-2: #818cf8;      /* indigo-400 — hover/highlight */
+  --ou-amber: #f59e0b;         /* highlights / notifications */
+  --ou-emerald: #10b981;       /* success states */
+
+  --ou-accent-soft: rgba(99, 102, 241, 0.16);
+  --ou-accent-glow: rgba(99, 102, 241, 0.15);
+  --ou-user-bubble: rgba(99, 102, 241, 0.12);
+  --ou-ai-bubble: rgba(255, 255, 255, 0.03);
+
+  /* Signature gradient — indigo → violet → fuchsia. Used on brand orbs,
+     the New Chat button, the send button and the hero title. */
+  --ou-grad: linear-gradient(135deg, #6366f1 0%, #8b5cf6 50%, #d946ef 100%);
+  --ou-grad-accent: linear-gradient(135deg, #6366f1 0%, #4f46e5 100%);
+
+  --ou-font: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
+  --ou-font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', 'Cascadia Code', Menlo, Consolas, monospace;
+}
+
+/* Accent text selection across the whole app. */
+::selection {
+  background: rgba(99, 102, 241, 0.28);
+  color: #fff;
+}
+
+/* Thin, rounded custom scrollbars everywhere (sidebar, thread, panels). */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.15) transparent;
+}
+*::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+*::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.03);
+}
+*::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 99px;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.25);
+}
+
+/* Honour a user's reduced-motion preference: kill decorative animation. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
 }
 
 @keyframes bannerSlideIn {
@@ -48,11 +108,10 @@ body {
   overflow: hidden;
   /* Solid app background — this is a real, opaque window now (not an overlay). */
   background: var(--ou-bg);
-  /* -apple-system / BlinkMacSystemFont → macOS/iOS system font.
-     Segoe UI → Windows system font (falls back from the Apple entries).
-     Arial / sans-serif → final cross-platform fallback. */
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
+  /* Inter is the product face; the system stack is the offline fallback. */
+  font-family: var(--ou-font);
   -webkit-font-smoothing: antialiased;
+  letter-spacing: -0.006em;
   /* Prevent Windows from rendering a 1 px system border on frameless windows. */
   border: none;
   outline: none;
@@ -82,6 +141,7 @@ body {
   min-height: 0;
   overflow: hidden;
 }
+
 
 /* ─────────────────────────────────────────
    CUSTOM TITLE BAR + WINDOW CONTROLS
@@ -117,7 +177,8 @@ body {
   width: 15px;
   height: 15px;
   border-radius: 50%;
-  background: linear-gradient(140deg, #5ac8fa 0%, #007aff 100%);
+  background: var(--ou-grad);
+  box-shadow: 0 0 10px rgba(99, 102, 241, 0.5);
   flex-shrink: 0;
 }
 
@@ -171,6 +232,8 @@ body {
   flex: 1;
   min-height: 0;
   display: flex;
+  position: relative;
+  z-index: 1;
 }
 
 .ou-sidebar-scrim {
@@ -178,6 +241,161 @@ body {
   inset: 0;
   z-index: 90;
   background: rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(2px);
+}
+
+/* ── Sidebar interior (New Chat, section labels, footer) ─────────────────── */
+.ou-newchat {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 12px 10px 6px;
+  padding: 10px 13px;
+  background: var(--ou-grad-accent);
+  border: none;
+  border-radius: 12px;
+  cursor: pointer;
+  color: #fff;
+  font-size: 13px;
+  font-family: var(--ou-font);
+  font-weight: 600;
+  box-shadow: 0 3px 14px rgba(79, 70, 229, 0.35);
+  transition: transform 0.14s ease, box-shadow 0.16s ease, filter 0.16s ease;
+}
+.ou-newchat:hover {
+  transform: scale(1.02);
+  filter: brightness(1.06);
+  box-shadow: 0 6px 22px rgba(79, 70, 229, 0.5);
+}
+.ou-newchat:active {
+  transform: scale(0.98);
+}
+
+.ou-side-label {
+  padding: 12px 14px 5px;
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--ou-text-faint);
+  font-family: var(--ou-font);
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+}
+
+.ou-side-footer {
+  margin-top: auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  border-top: 1px solid var(--ou-border);
+}
+.ou-side-avatar {
+  position: relative;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: var(--ou-grad);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  flex-shrink: 0;
+  box-shadow: 0 0 0 2px var(--ou-surface), 0 0 0 3.5px var(--ou-emerald);
+}
+.ou-side-userinfo {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  line-height: 1.3;
+}
+.ou-side-username {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--ou-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ou-side-userstate {
+  font-size: 11px;
+  color: var(--ou-emerald);
+}
+
+/* ── Conversation history rows (grouped by day) ─────────────────────────── */
+.ou-conv-group-label {
+  padding: 12px 14px 4px;
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--ou-text-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.ou-conv-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  background: none;
+  border: none;
+  border-left: 2.5px solid transparent;
+  text-align: left;
+  padding: 9px 14px 9px 12px;
+  cursor: pointer;
+  transition: background 0.13s ease, border-color 0.13s ease;
+}
+.ou-conv-row:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+.ou-conv-row.active {
+  background: var(--ou-accent-soft);
+  border-left-color: var(--ou-accent);
+}
+.ou-conv-icon {
+  color: var(--ou-text-faint);
+  flex-shrink: 0;
+  display: flex;
+}
+.ou-conv-row.active .ou-conv-icon {
+  color: var(--ou-accent-2);
+}
+.ou-conv-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 12.5px;
+  color: var(--ou-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ou-conv-time {
+  font-size: 10.5px;
+  color: var(--ou-text-faint);
+  flex-shrink: 0;
+}
+
+/* Shimmer skeleton rows shown while history loads. */
+.ou-conv-skeleton {
+  height: 15px;
+  margin: 7px 14px;
+  border-radius: 7px;
+  background: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0.04) 25%,
+    rgba(255, 255, 255, 0.09) 50%,
+    rgba(255, 255, 255, 0.04) 75%
+  );
+  background-size: 200% 100%;
+  animation: ou-shimmer 1.3s ease-in-out infinite;
+}
+.ou-conv-skeleton:nth-child(2) { width: 78%; }
+.ou-conv-skeleton:nth-child(3) { width: 62%; }
+.ou-conv-skeleton:nth-child(4) { width: 70%; }
+
+@keyframes ou-shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
 }
 
 .ou-chatcol {
@@ -229,12 +447,30 @@ body {
   flex-direction: column;
 }
 
+/* Barely-visible indigo ambient glow — depth behind the chat area without
+   distraction. Two soft radials: high-centre and low-left. */
+#openui-popup::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  background:
+    radial-gradient(78% 52% at 64% 6%, rgba(99, 102, 241, 0.11) 0%, transparent 60%),
+    radial-gradient(56% 48% at 10% 94%, rgba(139, 92, 246, 0.06) 0%, transparent 55%);
+}
+
 .popup-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 16px;
+  height: 40px;
+  margin-bottom: 14px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--ou-border);
   flex-shrink: 0;
+  position: relative;
+  z-index: 2;
 }
 
 .popup-logo-row {
@@ -244,10 +480,11 @@ body {
 }
 
 .popup-orb {
-  width: 24px;
-  height: 24px;
+  width: 26px;
+  height: 26px;
   border-radius: 50%;
-  background: linear-gradient(140deg, #5ac8fa 0%, #007aff 100%);
+  background: var(--ou-grad);
+  box-shadow: 0 0 14px rgba(99, 102, 241, 0.45);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -383,59 +620,135 @@ body {
   min-height: 0;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 18px;
   overflow-y: auto;
-  padding: 4px 2px 12px;
+  padding: 8px 2px 14px;
   width: 100%;
-  max-width: 760px;
+  max-width: 768px;
   margin: 0 auto 4px;
 }
 
-.ou-thread::-webkit-scrollbar {
-  width: 6px;
-}
-.ou-thread::-webkit-scrollbar-thumb {
-  background: var(--ou-border-strong);
-  border-radius: 99px;
-}
-
+/* ── One message row. User rows right-align a gradient bubble; AI rows lay out
+      an avatar + a typography-first column with a hover action toolbar. ─────── */
 .ou-msg {
   display: flex;
+  gap: 11px;
+  max-width: 100%;
+  animation: ou-msg-in 0.34s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.ou-msg.user {
+  justify-content: flex-end;
+}
+.ou-msg.ai {
+  align-items: flex-start;
+}
+
+@keyframes ou-msg-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* AI avatar — a small gradient orb to the left of the reply. */
+.ou-avatar {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: var(--ou-grad);
+  box-shadow: 0 0 12px rgba(99, 102, 241, 0.35);
+  flex-shrink: 0;
+  margin-top: 2px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.ou-avatar::after {
+  content: '';
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #fff;
+}
+
+.ou-msg-main {
+  display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 4px;
+  min-width: 0;
   max-width: 100%;
 }
 
 .ou-msg-role {
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 600;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: var(--ou-text-faint);
+  letter-spacing: 0.02em;
+  color: var(--ou-text-dim);
 }
 
 .ou-bubble {
-  font-size: 13px;
-  line-height: 1.5;
+  font-size: 15px;
+  line-height: 1.6;
   color: var(--ou-text);
-  padding: 9px 12px;
-  border-radius: 12px;
   word-break: break-word;
   white-space: pre-wrap;
 }
 
 .ou-bubble.user {
-  align-self: flex-end;
-  background: var(--ou-user-bubble);
-  border: 1px solid rgba(47, 123, 255, 0.28);
-  border-bottom-right-radius: 4px;
+  max-width: 560px;
+  padding: 11px 15px;
+  border-radius: 18px;
+  border-bottom-right-radius: 6px;
+  background:
+    linear-gradient(135deg, rgba(99, 102, 241, 0.16) 0%, rgba(139, 92, 246, 0.12) 100%);
+  border: 1px solid rgba(99, 102, 241, 0.22);
 }
 
+/* AI reply is typography-first: no card, just clean text under the avatar. */
 .ou-bubble.ai {
-  align-self: flex-start;
-  background: var(--ou-ai-bubble);
-  border: 1px solid var(--ou-border);
-  border-bottom-left-radius: 4px;
+  padding: 2px 0;
+  background: none;
+  border: none;
+}
+
+/* Hover action toolbar under each completed AI reply. */
+.ou-msg-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-top: 2px;
+  opacity: 0;
+  transform: translateY(-2px);
+  transition: opacity 0.16s ease, transform 0.16s ease;
+}
+.ou-msg.ai:hover .ou-msg-toolbar,
+.ou-msg-toolbar:focus-within {
+  opacity: 1;
+  transform: translateY(0);
+}
+.ou-tool-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  border: none;
+  background: transparent;
+  color: var(--ou-text-faint);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, transform 0.1s;
+}
+.ou-tool-btn:hover {
+  background: var(--ou-surface-2);
+  color: var(--ou-text);
+}
+.ou-tool-btn:active {
+  transform: scale(0.9);
+}
+.ou-tool-btn.active-up {
+  color: var(--ou-emerald);
+}
+.ou-tool-btn.active-down {
+  color: var(--ou-amber);
 }
 
 /* Blinking caret shown on the assistant message while it streams. */
@@ -450,23 +763,30 @@ body {
   50% { opacity: 0; }
 }
 
-/* Input strip — pinned to the bottom of the chat column, centered + capped. */
+/* Input strip — the floating composer. Rounded-2xl glass container that lifts
+   on focus with an accent ring; the whole thing floats on a soft shadow. */
 .input-strip {
   display: flex;
-  align-items: center;
+  align-items: flex-end;
   gap: 8px;
-  padding: 11px 14px;
-  background: var(--ou-surface);
-  border: 1px solid var(--ou-border);
-  border-radius: 12px;
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 20px;
   flex-shrink: 0;
   width: 100%;
-  max-width: 760px;
+  max-width: 768px;
   margin: 12px auto 0;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.35);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  transition: border-color 0.18s ease, box-shadow 0.18s ease, background 0.18s ease;
 }
 
 .input-strip:focus-within {
-  border-color: var(--ou-border-strong);
+  border-color: var(--ou-accent);
+  background: rgba(255, 255, 255, 0.06);
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.35), 0 0 0 3px var(--ou-accent-glow);
 }
 
 /* Compact mic button inside the input strip (shown in chat view) */
@@ -474,67 +794,117 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 26px;
-  height: 26px;
-  border-radius: 7px;
+  width: 34px;
+  height: 34px;
+  border-radius: 11px;
   border: none;
   background: transparent;
   color: var(--ou-text-dim);
   cursor: pointer;
   flex-shrink: 0;
-  transition: background 0.15s, color 0.15s;
+  transition: background 0.15s, color 0.15s, transform 0.1s;
 }
 .ou-input-mic:hover {
   background: var(--ou-surface-2);
   color: var(--ou-text);
 }
+.ou-input-mic:active {
+  transform: scale(0.92);
+}
 .ou-input-mic.recording {
-  color: #ff4d4d;
+  color: #f87171;
+  background: rgba(248, 113, 113, 0.12);
 }
 
-/* Suggestion chips */
+/* Model selector pill — sits left of the field. */
+.ou-model-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 30px;
+  padding: 0 10px;
+  border-radius: 99px;
+  border: 1px solid var(--ou-border-strong);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--ou-text-dim);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  flex-shrink: 0;
+  white-space: nowrap;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+.ou-model-pill:hover {
+  background: var(--ou-surface-2);
+  color: var(--ou-text);
+  border-color: var(--ou-accent);
+}
+.ou-model-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--ou-emerald);
+  box-shadow: 0 0 6px var(--ou-emerald);
+}
+
+/* Contextual quick-action chips below the input bar (Gemini-style). */
 .chips-row {
   display: flex;
   justify-content: center;
-  gap: 6px;
+  gap: 8px;
   flex-wrap: wrap;
   width: 100%;
-  max-width: 760px;
-  margin: 11px auto 0;
+  max-width: 768px;
+  margin: 12px auto 0;
 }
 
 .chip {
   display: inline-flex;
   align-items: center;
-  gap: 3px;
-  padding: 5px 10px;
+  gap: 6px;
+  padding: 7px 13px;
   border-radius: 99px;
-  background: var(--ou-surface);
+  background: rgba(255, 255, 255, 0.03);
   border: 1px solid var(--ou-border);
-  font-size: 11px;
+  font-size: 12.5px;
+  font-weight: 500;
   color: var(--ou-text-dim);
   cursor: pointer;
   white-space: nowrap;
-  font-family: -apple-system, 'Segoe UI', sans-serif;
-  transition: background 0.15s, color 0.15s, border-color 0.15s;
+  transition: background 0.15s, color 0.15s, border-color 0.15s, transform 0.12s;
 }
 
 .chip:hover {
   background: var(--ou-surface-2);
   color: var(--ou-text);
-  border-color: var(--ou-border-strong);
+  border-color: var(--ou-accent);
+  transform: translateY(-1px);
+}
+.chip:active {
+  transform: scale(0.97);
 }
 
 /* ─────────────────────────────────────────
    TASK CHECKLIST POPUP
 ───────────────────────────────────────── */
+/* Task board — docked top-right. Position/chrome that used to come from
+   .mac-window now lives here so the board no longer needs that class. GSAP still
+   fades it in via the #task-popup selector in useAssistantAnimations. */
 #task-popup {
-  bottom: 50px;
-  right: 32px;
-  width: 278px;
+  position: fixed;
+  top: 54px;
+  right: 20px;
+  width: 300px;
+  max-height: 46vh;
+  display: flex;
+  flex-direction: column;
   background: var(--ou-bg);
   border: 1px solid var(--ou-border);
+  border-radius: 12px;
+  overflow: hidden;
   color: var(--ou-text);
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.5), 0 0 0 0.5px rgba(0, 0, 0, 0.4);
+  opacity: 0; /* revealed by the GSAP entrance timeline */
   z-index: 50;
 }
 
@@ -1302,4 +1672,1289 @@ body {
   padding: 5px 11px;
   cursor: pointer;
   font-family: -apple-system, 'Segoe UI', sans-serif;
+}
+
+/* ═════════════════════════════════════════════════════════════════════════
+   UI/UX OVERHAUL — center-stage composer, "+" menu, connect-apps panel,
+   thinking status, docked task board, and live activity panel.
+   ═════════════════════════════════════════════════════════════════════════ */
+
+/* ── Welcome / empty state: gradient title, suggestion cards, composer ───── */
+.ou-chatbody.hero {
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+}
+
+/* Gradient hero title (indigo → violet → fuchsia). */
+.ou-hero-greeting {
+  font-size: 40px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1.15;
+  text-align: center;
+  margin-bottom: 4px;
+  background: var(--ou-grad);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+  animation: ou-rise 0.5s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.ou-hero-sub {
+  font-size: 15px;
+  color: var(--ou-text-dim);
+  text-align: center;
+  margin-bottom: 22px;
+  animation: ou-rise 0.5s cubic-bezier(0.22, 1, 0.36, 1) 0.05s both;
+}
+
+@keyframes ou-rise {
+  from { opacity: 0; transform: translateY(10px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* Suggestion cards — responsive 2-column grid. */
+.ou-suggest-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  width: 100%;
+  max-width: 620px;
+  margin: 0 auto 22px;
+}
+@media (max-width: 640px) {
+  .ou-suggest-grid {
+    grid-template-columns: 1fr;
+  }
+}
+.ou-suggest-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  text-align: left;
+  padding: 15px 16px;
+  border-radius: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.03);
+  cursor: pointer;
+  transition: transform 0.18s ease, border-color 0.18s ease,
+    background 0.18s ease, box-shadow 0.18s ease;
+  animation: ou-rise 0.5s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.ou-suggest-card:hover {
+  transform: translateY(-2px);
+  background: rgba(255, 255, 255, 0.05);
+  border-color: var(--ou-accent);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.35), 0 0 0 1px var(--ou-accent-soft);
+}
+.ou-suggest-card:active {
+  transform: scale(0.98);
+}
+.ou-suggest-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  flex-shrink: 0;
+  background: var(--ou-accent-soft);
+  color: var(--ou-accent-2);
+}
+.ou-suggest-body {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+.ou-suggest-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ou-text);
+}
+.ou-suggest-desc {
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--ou-text-faint);
+}
+
+/* ── Composer wrapper (hosts the input strip + attachments) ──────────────── */
+.ou-composer {
+  width: 100%;
+  max-width: 768px;
+  margin: 0 auto;
+  flex-shrink: 0;
+}
+.ou-composer.hero {
+  max-width: 620px;
+}
+.ou-composer.docked {
+  margin-top: 10px;
+}
+.ou-composer .input-strip {
+  max-width: none;
+  margin: 0;
+  width: 100%;
+}
+.ou-composer-input {
+  flex: 1;
+  min-width: 0;
+  background: none;
+  border: none;
+  outline: none;
+  color: var(--ou-text);
+  font-size: 15px;
+  font-family: var(--ou-font);
+  line-height: 1.5;
+  padding: 6px 4px;
+  resize: none;
+  max-height: 168px;   /* ≈ 6 lines before it scrolls */
+  overflow-y: auto;
+}
+.ou-composer-input::placeholder {
+  color: var(--ou-text-faint);
+}
+.ou-composer-input:disabled {
+  opacity: 0.4;
+}
+
+/* Send button — appears once there's text to send. */
+.ou-send-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 11px;
+  border: none;
+  background: var(--ou-grad-accent);
+  color: #fff;
+  cursor: pointer;
+  flex-shrink: 0;
+  box-shadow: 0 2px 10px rgba(79, 70, 229, 0.4);
+  transition: filter 0.15s, transform 0.1s, box-shadow 0.15s;
+}
+.ou-send-btn:hover {
+  filter: brightness(1.1);
+  box-shadow: 0 4px 16px rgba(79, 70, 229, 0.55);
+}
+.ou-send-btn:active {
+  transform: scale(0.92);
+}
+
+/* Attachment chips above the composer. */
+.ou-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.ou-attach-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 220px;
+  padding: 4px 8px;
+  border-radius: 8px;
+  background: var(--ou-surface);
+  border: 1px solid var(--ou-border);
+  font-size: 11px;
+  color: var(--ou-text-dim);
+}
+.ou-attach-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ou-attach-x {
+  border: none;
+  background: none;
+  color: var(--ou-text-faint);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0;
+}
+.ou-attach-x:hover {
+  color: var(--ou-text);
+}
+
+/* ── "+" menu ────────────────────────────────────────────────────────────── */
+.ou-plus {
+  position: relative;
+  flex-shrink: 0;
+}
+.ou-plus-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  border: 1px solid var(--ou-border);
+  background: var(--ou-surface);
+  color: var(--ou-text-dim);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+.ou-plus-btn:hover,
+.ou-plus-btn.open {
+  background: var(--ou-surface-2);
+  color: var(--ou-text);
+  border-color: var(--ou-border-strong);
+}
+.ou-plus-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.ou-plus-fileinput {
+  display: none;
+}
+.ou-plus-menu {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 0;
+  z-index: 200;
+  width: 244px;
+  padding: 6px;
+  background: var(--ou-surface);
+  border: 1px solid var(--ou-border-strong);
+  border-radius: 12px;
+  box-shadow: 0 16px 44px rgba(0, 0, 0, 0.55);
+  animation: openui-rise 0.16s ease-out both;
+}
+.ou-plus-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 9px 10px;
+  border: none;
+  border-radius: 8px;
+  background: none;
+  color: var(--ou-text-dim);
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.12s, color 0.12s;
+}
+.ou-plus-item:hover {
+  background: var(--ou-surface-2);
+  color: var(--ou-text);
+}
+.ou-plus-item svg {
+  flex-shrink: 0;
+}
+.ou-plus-item-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.ou-plus-item-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--ou-text);
+}
+.ou-plus-item-sub {
+  font-size: 10.5px;
+  color: var(--ou-text-faint);
+}
+
+/* ── Thinking status (dynamic line above the streaming reply) ────────────── */
+.ou-thinking {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--ou-border);
+  background: var(--ou-ai-bubble);
+  align-self: flex-start;
+}
+.ou-thinking-dots {
+  display: inline-flex;
+  gap: 3px;
+}
+.ou-thinking-dots span {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--ou-accent);
+  animation: ou-think-bounce 1.2s ease-in-out infinite;
+}
+.ou-thinking-dots span:nth-child(2) {
+  animation-delay: 0.15s;
+}
+.ou-thinking-dots span:nth-child(3) {
+  animation-delay: 0.3s;
+}
+@keyframes ou-think-bounce {
+  0%, 60%, 100% { opacity: 0.3; transform: translateY(0); }
+  30% { opacity: 1; transform: translateY(-3px); }
+}
+.ou-thinking-text {
+  font-size: 12.5px;
+  color: var(--ou-text-dim);
+  animation: openui-fade 0.3s ease both;
+}
+@keyframes openui-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+/* ── Shared modal scrim + app-kind icon tints ────────────────────────────── */
+.ou-modal-scrim {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 9998;
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+}
+
+.ou-conn-icon,
+.ou-card-appicon,
+.ou-hist-icon,
+.ou-activity-glyph {
+  color: var(--ou-text-dim);
+}
+.ou-conn-icon.browser, .ou-card-appicon.browser, .ou-hist-icon.browser, .ou-activity-glyph.browser { color: #4a9eff; }
+.ou-conn-icon.github, .ou-card-appicon.github, .ou-hist-icon.github, .ou-activity-glyph.github { color: #e6e6e6; }
+.ou-conn-icon.figma, .ou-card-appicon.figma, .ou-hist-icon.figma, .ou-activity-glyph.figma { color: #ff7262; }
+.ou-conn-icon.files, .ou-card-appicon.files, .ou-hist-icon.files, .ou-activity-glyph.files { color: #f5b74a; }
+.ou-conn-icon.clipboard, .ou-card-appicon.clipboard, .ou-hist-icon.clipboard, .ou-activity-glyph.clipboard { color: #a0a0a8; }
+.ou-conn-icon.calendar, .ou-card-appicon.calendar, .ou-hist-icon.calendar, .ou-activity-glyph.calendar { color: #ff6b6b; }
+.ou-conn-icon.screen, .ou-card-appicon.screen, .ou-hist-icon.screen, .ou-activity-glyph.screen { color: #5ac8fa; }
+.ou-conn-icon.whatsapp, .ou-card-appicon.whatsapp, .ou-hist-icon.whatsapp, .ou-activity-glyph.whatsapp { color: #25d366; }
+.ou-conn-icon.messaging, .ou-card-appicon.messaging, .ou-hist-icon.messaging, .ou-activity-glyph.messaging { color: #7c9cff; }
+
+/* ── Connect-apps (MCP) panel ────────────────────────────────────────────── */
+.ou-conn-panel {
+  width: 92%;
+  max-width: 480px;
+  max-height: 80vh;
+  overflow-y: auto;
+  background: var(--ou-surface);
+  border: 1px solid var(--ou-border-strong);
+  border-radius: 16px;
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.6);
+}
+.ou-conn-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 18px 20px 12px;
+  border-bottom: 1px solid var(--ou-border);
+}
+.ou-conn-h3 {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--ou-text);
+}
+.ou-conn-sub {
+  font-size: 12px;
+  color: var(--ou-text-dim);
+  line-height: 1.5;
+  margin-top: 4px;
+  max-width: 380px;
+}
+.ou-conn-close {
+  flex-shrink: 0;
+  border: none;
+  background: none;
+  color: var(--ou-text-faint);
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 2px 4px;
+}
+.ou-conn-close:hover {
+  color: var(--ou-text);
+}
+.ou-conn-list {
+  padding: 8px;
+}
+.ou-conn-row {
+  display: flex;
+  gap: 12px;
+  padding: 12px;
+  border-radius: 12px;
+  border: 1px solid transparent;
+  transition: background 0.12s, border-color 0.12s;
+}
+.ou-conn-row:hover {
+  background: var(--ou-bg);
+  border-color: var(--ou-border);
+}
+.ou-conn-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 9px;
+  background: var(--ou-bg);
+  border: 1px solid var(--ou-border);
+  flex-shrink: 0;
+}
+.ou-conn-main {
+  flex: 1;
+  min-width: 0;
+}
+.ou-conn-titlerow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.ou-conn-name {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--ou-text);
+}
+.ou-conn-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10.5px;
+  color: var(--ou-text-faint);
+}
+.ou-conn-status.connected { color: #34c759; }
+.ou-conn-status.error { color: #ff5a4d; }
+.ou-conn-status.connecting { color: var(--ou-accent); }
+.ou-conn-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--ou-text-faint);
+}
+.ou-conn-dot.connected { background: #34c759; }
+.ou-conn-dot.error { background: #ff5a4d; }
+.ou-conn-dot.connecting { background: var(--ou-accent); animation: ou-pulse 1s ease-in-out infinite; }
+@keyframes ou-pulse {
+  50% { opacity: 0.35; }
+}
+.ou-conn-blurb {
+  font-size: 11.5px;
+  color: var(--ou-text-dim);
+  line-height: 1.45;
+  margin: 4px 0 8px;
+}
+.ou-conn-fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.ou-conn-input {
+  flex: 1;
+  min-width: 120px;
+  box-sizing: border-box;
+  padding: 7px 9px;
+  border-radius: 8px;
+  border: 1px solid var(--ou-border);
+  background: var(--ou-bg);
+  color: var(--ou-text);
+  font-size: 12px;
+  font-family: -apple-system, 'Segoe UI', sans-serif;
+  outline: none;
+}
+.ou-conn-input:focus {
+  border-color: var(--ou-border-strong);
+}
+.ou-conn-btn {
+  flex-shrink: 0;
+  padding: 7px 16px;
+  border-radius: 8px;
+  border: none;
+  background: var(--ou-accent);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: filter 0.15s;
+}
+.ou-conn-btn:hover:not(:disabled) {
+  filter: brightness(1.12);
+}
+.ou-conn-btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+/* ── Assign-a-task modal ─────────────────────────────────────────────────── */
+.ou-assign-panel {
+  width: 92%;
+  max-width: 440px;
+  padding: 18px 20px 20px;
+  background: var(--ou-surface);
+  border: 1px solid var(--ou-border-strong);
+  border-radius: 16px;
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.6);
+}
+.ou-assign-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.ou-assign-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--ou-text);
+}
+.ou-assign-sub {
+  font-size: 12px;
+  color: var(--ou-text-dim);
+  line-height: 1.5;
+  margin: 6px 0 12px;
+}
+.ou-assign-input {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+  min-height: 92px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--ou-border);
+  background: var(--ou-bg);
+  color: var(--ou-text);
+  font-size: 13px;
+  line-height: 1.5;
+  font-family: -apple-system, 'Segoe UI', sans-serif;
+  outline: none;
+}
+.ou-assign-input:focus {
+  border-color: var(--ou-border-strong);
+}
+.ou-assign-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 14px;
+}
+.ou-assign-cancel,
+.ou-assign-go {
+  padding: 8px 16px;
+  border-radius: 9px;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: -apple-system, 'Segoe UI', sans-serif;
+}
+.ou-assign-cancel {
+  border: 1px solid var(--ou-border);
+  background: none;
+  color: var(--ou-text-dim);
+}
+.ou-assign-cancel:hover {
+  background: var(--ou-surface-2);
+  color: var(--ou-text);
+}
+.ou-assign-go {
+  border: none;
+  background: var(--ou-accent);
+  color: #fff;
+}
+.ou-assign-go:hover:not(:disabled) {
+  filter: brightness(1.12);
+}
+.ou-assign-go:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* ── Task board (docked top-right; internal layout only — chrome is on #task-popup) ── */
+.ou-taskboard-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 11px 14px;
+  border-bottom: 1px solid var(--ou-border);
+  flex-shrink: 0;
+}
+.ou-taskboard-heading {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--ou-text);
+}
+.ou-taskboard-count {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--ou-text-faint);
+}
+.ou-taskboard-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.ou-taskboard-empty {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 18px 12px;
+  text-align: center;
+}
+.ou-taskboard-empty-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ou-text-dim);
+}
+.ou-taskboard-empty-sub {
+  font-size: 11px;
+  color: var(--ou-text-faint);
+  line-height: 1.4;
+}
+.ou-taskboard-footer-text {
+  font-size: 10px;
+  color: var(--ou-text-faint);
+  font-family: -apple-system, 'Segoe UI', sans-serif;
+}
+
+/* Task cards */
+.ou-card {
+  border: 1px solid var(--ou-border);
+  border-radius: 10px;
+  background: var(--ou-surface);
+  overflow: hidden;
+  transition: border-color 0.15s;
+}
+.ou-card.in_progress {
+  border-color: rgba(47, 123, 255, 0.4);
+}
+.ou-card.failed {
+  border-color: rgba(255, 90, 77, 0.35);
+}
+.ou-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 10px 11px;
+  border: none;
+  background: none;
+  cursor: pointer;
+  text-align: left;
+}
+.ou-card-head:hover {
+  background: var(--ou-surface-2);
+}
+.ou-card-appicon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 7px;
+  background: var(--ou-bg);
+  border: 1px solid var(--ou-border);
+  flex-shrink: 0;
+}
+.ou-card-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--ou-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ou-card-badge {
+  flex-shrink: 0;
+  font-size: 9.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  padding: 3px 7px;
+  border-radius: 99px;
+}
+.ou-card-badge.in_progress {
+  color: var(--ou-accent);
+  background: var(--ou-accent-soft);
+}
+.ou-card-badge.done {
+  color: #34c759;
+  background: rgba(52, 199, 89, 0.14);
+}
+.ou-card-badge.failed {
+  color: #ff5a4d;
+  background: rgba(255, 90, 77, 0.14);
+}
+.ou-card-chevron {
+  flex-shrink: 0;
+  color: var(--ou-text-faint);
+  transition: transform 0.18s ease;
+}
+.ou-card-chevron.open {
+  transform: rotate(180deg);
+}
+.ou-card-meta {
+  padding: 0 11px 8px 43px;
+  font-size: 10.5px;
+  color: var(--ou-text-faint);
+}
+.ou-card-steps {
+  border-top: 1px solid var(--ou-border);
+  padding: 4px 0;
+  animation: openui-fade 0.2s ease both;
+}
+.ou-step {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 7px 12px;
+}
+.ou-step-body {
+  min-width: 0;
+}
+.ou-step .task-label.error {
+  color: #ff6b6b;
+}
+
+/* ── Live activity panel (docked bottom-right) ───────────────────────────── */
+.ou-activity {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  width: 300px;
+  max-height: 46vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--ou-bg);
+  border: 1px solid var(--ou-border);
+  border-radius: 12px;
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.5), 0 0 0 0.5px rgba(0, 0, 0, 0.4);
+  z-index: 49;
+  overflow: hidden;
+  animation: openui-rise 0.3s cubic-bezier(0.34, 1.2, 0.64, 1) both;
+}
+.ou-activity-header {
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--ou-border);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--ou-text-faint);
+  flex-shrink: 0;
+}
+.ou-activity-tile {
+  margin: 12px;
+  border-radius: 12px;
+  overflow: hidden;
+  border: 1px solid var(--ou-border);
+  background: var(--ou-surface);
+  flex-shrink: 0;
+}
+.ou-activity-screen {
+  position: relative;
+  height: 104px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background:
+    radial-gradient(120% 120% at 50% 0%, rgba(47, 123, 255, 0.16), transparent 60%),
+    repeating-linear-gradient(0deg, rgba(255, 255, 255, 0.02) 0px, rgba(255, 255, 255, 0.02) 1px, transparent 1px, transparent 4px);
+  overflow: hidden;
+}
+.ou-activity-scanline {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 40px;
+  background: linear-gradient(180deg, transparent, rgba(90, 200, 250, 0.18), transparent);
+  animation: ou-scan 2.4s linear infinite;
+}
+@keyframes ou-scan {
+  from { transform: translateY(-40px); }
+  to { transform: translateY(104px); }
+}
+.ou-activity-glyph {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 62px;
+  height: 62px;
+  border-radius: 14px;
+  background: var(--ou-bg);
+  border: 1px solid var(--ou-border-strong);
+}
+.ou-activity-caption {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 12px;
+}
+.ou-activity-live {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 9.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #ff5a4d;
+}
+.ou-activity-live-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #ff5a4d;
+  animation: ou-pulse 1s ease-in-out infinite;
+}
+.ou-activity-app {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ou-text);
+}
+.ou-activity-phrase {
+  font-size: 11.5px;
+  color: var(--ou-text-dim);
+  line-height: 1.4;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+.ou-activity-idle {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 12px;
+  padding: 12px;
+  border-radius: 10px;
+  border: 1px dashed var(--ou-border);
+  font-size: 11.5px;
+  color: var(--ou-text-faint);
+  flex-shrink: 0;
+}
+.ou-activity-idle-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--ou-text-faint);
+}
+.ou-activity-history-label {
+  padding: 4px 14px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--ou-text-faint);
+  flex-shrink: 0;
+}
+.ou-activity-history {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 4px 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.ou-activity-history-empty {
+  padding: 10px 8px;
+  font-size: 11px;
+  color: var(--ou-text-faint);
+}
+.ou-hist-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 8px;
+  border-radius: 9px;
+  transition: background 0.12s;
+}
+.ou-hist-row:hover {
+  background: var(--ou-surface);
+}
+.ou-hist-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  background: var(--ou-surface);
+  border: 1px solid var(--ou-border);
+  flex-shrink: 0;
+}
+.ou-hist-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.ou-hist-title {
+  font-size: 12px;
+  color: var(--ou-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ou-hist-sub {
+  font-size: 10px;
+  color: var(--ou-text-faint);
+}
+.ou-hist-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--ou-text-faint);
+}
+.ou-hist-dot.done { background: #34c759; }
+.ou-hist-dot.failed { background: #ff5a4d; }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   TASK VIEW — three-zone layout (left rail | center timeline | right previews)
+   The compact centered composer is the idle state; when a task starts, the app
+   expands into these three zones (App.tsx toggles .ou-taskview on .ou-content).
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* Center chat clears the docked side columns while a task runs. */
+.ou-content.ou-taskview .ou-workspace {
+  margin-left: 244px;
+  margin-right: 340px;
+  transition: margin 0.28s cubic-bezier(0.34, 1.1, 0.64, 1);
+}
+
+/* ── Left rail ─────────────────────────────────────────────────────────────*/
+.ou-rail {
+  position: fixed;
+  left: 0;
+  top: 40px; /* below the custom title bar */
+  bottom: 0;
+  width: 244px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px 12px;
+  background: var(--ou-bg);
+  border-right: 1px solid var(--ou-border);
+  z-index: 48;
+  animation: ou-rail-in 0.32s cubic-bezier(0.34, 1.1, 0.64, 1) both;
+}
+@keyframes ou-rail-in {
+  from { opacity: 0; transform: translateX(-16px); }
+  to   { opacity: 1; transform: none; }
+}
+.ou-rail-section { display: flex; flex-direction: column; gap: 6px; }
+.ou-rail-tasks { flex: 1; min-height: 0; }
+.ou-rail-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 2px 4px;
+}
+.ou-rail-title {
+  font-size: 10.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--ou-text-faint);
+}
+.ou-rail-count { font-size: 10.5px; color: var(--ou-text-faint); }
+.ou-rail-add {
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+  border: 1px solid var(--ou-border);
+  background: var(--ou-surface);
+  color: var(--ou-text-dim);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.ou-rail-add:hover { background: var(--ou-surface-2); color: var(--ou-text); }
+.ou-rail-conns { display: flex; flex-direction: column; gap: 2px; }
+.ou-rail-conn { display: flex; align-items: center; gap: 9px; padding: 6px 7px; border-radius: 8px; }
+.ou-rail-conn:hover { background: var(--ou-surface); }
+.ou-rail-conn-icon {
+  width: 24px;
+  height: 24px;
+  border-radius: 7px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--ou-surface);
+  border: 1px solid var(--ou-border);
+  color: var(--ou-text-dim);
+  flex-shrink: 0;
+}
+.ou-rail-conn-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--ou-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ou-rail-conn-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; background: var(--ou-text-faint); }
+.ou-rail-conn-dot.connected { background: #34c759; box-shadow: 0 0 0 3px rgba(52, 199, 89, 0.14); }
+.ou-rail-conn-dot.connecting { background: #f5a623; animation: ou-pulse 1s infinite; }
+.ou-rail-conn-dot.error { background: #ff5a4d; }
+.ou-rail-tasklist { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 3px; }
+.ou-rail-empty { padding: 8px 6px; font-size: 11px; color: var(--ou-text-faint); }
+.ou-rail-task {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 8px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  width: 100%;
+}
+.ou-rail-task:hover { background: var(--ou-surface); }
+.ou-rail-task.focused { background: var(--ou-surface); border-color: var(--ou-border-strong); }
+.ou-rail-task-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; background: var(--ou-text-faint); }
+.ou-rail-task-dot.in_progress { background: var(--ou-accent); animation: ou-pulse 1.1s infinite; }
+.ou-rail-task-dot.done { background: #34c759; }
+.ou-rail-task-dot.failed { background: #ff5a4d; }
+.ou-rail-task-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--ou-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ou-rail-task-status { font-size: 9.5px; color: var(--ou-text-faint); flex-shrink: 0; }
+.ou-rail-task-status.in_progress { color: var(--ou-accent); }
+.ou-rail-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 10px;
+  border-top: 1px solid var(--ou-border);
+}
+
+/* ── Center timeline (inline in the transcript) ─────────────────────────────*/
+.ou-timeline { display: flex; flex-direction: column; gap: 2px; margin: 4px 0 8px; }
+.ou-tl-row { display: flex; align-items: flex-start; gap: 10px; padding: 7px 9px; border-radius: 9px; }
+.ou-tl-row:hover { background: var(--ou-surface); }
+.ou-tl-check {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-top: 2px;
+}
+.ou-tl-check.pending { border: 1.5px solid var(--ou-border-strong); }
+.ou-tl-check.working { color: #fff; background: var(--ou-accent); }
+.ou-tl-check.done { color: #fff; background: #34c759; }
+.ou-tl-check.error { color: #fff; background: #ff5a4d; }
+.ou-tl-spinner {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  border: 1.5px solid rgba(255, 255, 255, 0.4);
+  border-top-color: #fff;
+  animation: ou-spin 0.7s linear infinite;
+}
+@keyframes ou-spin { to { transform: rotate(360deg); } }
+.ou-tl-icon {
+  width: 24px;
+  height: 24px;
+  border-radius: 7px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--ou-surface);
+  border: 1px solid var(--ou-border);
+  color: var(--ou-text-dim);
+}
+.ou-tl-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.ou-tl-label { font-size: 12.5px; color: var(--ou-text); }
+.ou-tl-detail { font-size: 11px; color: var(--ou-text-faint); }
+.ou-tl-detail.error { color: #ff8a7d; }
+
+/* Parallel sub-agent group */
+.ou-tl-parallel {
+  margin: 4px 0 4px 6px;
+  border-left: 2px solid var(--ou-border-strong);
+  border-radius: 0 10px 10px 0;
+  background: linear-gradient(90deg, rgba(47, 123, 255, 0.05), transparent 62%);
+}
+.ou-tl-parallel.working { border-left-color: var(--ou-accent); }
+.ou-tl-parallel.error { border-left-color: #ff5a4d; }
+.ou-tl-parallel-head {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 9px 10px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+}
+.ou-tl-parallel-glyph { color: var(--ou-accent); flex-shrink: 0; }
+.ou-tl-parallel-label { flex: 1; text-align: left; font-size: 12px; font-weight: 600; color: var(--ou-text); }
+.ou-tl-chevron { color: var(--ou-text-faint); transition: transform 0.18s ease; }
+.ou-tl-chevron.open { transform: rotate(180deg); }
+.ou-tl-parallel-subs { display: flex; flex-direction: column; gap: 2px; padding: 0 8px 8px 10px; }
+.ou-tl-sub { display: flex; align-items: center; gap: 9px; padding: 6px 8px; border-radius: 8px; }
+.ou-tl-sub:hover { background: var(--ou-surface); }
+.ou-tl-sub-branch { display: none; }
+.ou-tl-sub-icon {
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--ou-surface);
+  border: 1px solid var(--ou-border);
+  color: var(--ou-text-dim);
+}
+.ou-tl-sub-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.ou-tl-sub-title { font-size: 12px; color: var(--ou-text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ou-tl-sub-summary { font-size: 10.5px; color: var(--ou-text-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Honest model tag chip */
+.ou-model-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 0;
+  padding: 3px 8px;
+  border-radius: 20px;
+  background: var(--ou-surface-2);
+  border: 1px solid var(--ou-border);
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--ou-text-dim);
+  white-space: nowrap;
+}
+.ou-model-tag-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--ou-accent); }
+.ou-model-tag.sm { padding: 2px 6px; font-size: 9.5px; }
+
+/* ── Right column: live-preview cards ───────────────────────────────────────*/
+.ou-activity {
+  position: fixed;
+  right: 0;
+  top: 40px;
+  bottom: 0;
+  width: 340px;
+  max-height: none;
+  display: flex;
+  flex-direction: column;
+  background: var(--ou-bg);
+  border: none;
+  border-left: 1px solid var(--ou-border);
+  border-radius: 0;
+  box-shadow: none;
+  z-index: 48;
+  overflow-y: auto;
+  animation: ou-rail-in 0.32s cubic-bezier(0.34, 1.1, 0.64, 1) both;
+}
+.ou-preview-card {
+  margin: 10px 12px 0;
+  border-radius: 12px;
+  overflow: hidden;
+  border: 1px solid var(--ou-border);
+  background: var(--ou-surface);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  flex-shrink: 0;
+  animation: openui-rise 0.3s cubic-bezier(0.34, 1.2, 0.64, 1) both;
+}
+.ou-preview-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--ou-border);
+  background: var(--ou-surface-2);
+}
+.ou-preview-appicon {
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--ou-bg);
+  border: 1px solid var(--ou-border);
+  color: var(--ou-text-dim);
+  flex-shrink: 0;
+}
+.ou-preview-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ou-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ou-preview-live {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #ff5a4d;
+  flex-shrink: 0;
+}
+.ou-preview-body {
+  position: relative;
+  height: 150px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  background: radial-gradient(120% 120% at 50% 0%, rgba(47, 123, 255, 0.14), transparent 60%);
+}
+.ou-preview-card.sub .ou-preview-body { height: 96px; }
+.ou-preview-shot { width: 100%; height: 100%; object-fit: cover; display: block; }
+.ou-preview-foot { padding: 8px 10px; font-size: 11px; color: var(--ou-text-dim); border-top: 1px solid var(--ou-border); }
+
+/* Per-kind icon tints for the new wrappers (mirrors the existing tint block). */
+.ou-tl-icon.browser, .ou-tl-sub-icon.browser, .ou-preview-appicon.browser, .ou-rail-conn-icon.browser { color: #4a9eff; }
+.ou-tl-icon.github, .ou-tl-sub-icon.github, .ou-preview-appicon.github, .ou-rail-conn-icon.github { color: #e6e6e6; }
+.ou-tl-icon.figma, .ou-tl-sub-icon.figma, .ou-preview-appicon.figma, .ou-rail-conn-icon.figma { color: #ff7262; }
+.ou-tl-icon.files, .ou-tl-sub-icon.files, .ou-preview-appicon.files, .ou-rail-conn-icon.files { color: #f5b74a; }
+.ou-tl-icon.clipboard, .ou-tl-sub-icon.clipboard, .ou-preview-appicon.clipboard, .ou-rail-conn-icon.clipboard { color: #a0a0a8; }
+.ou-tl-icon.calendar, .ou-tl-sub-icon.calendar, .ou-preview-appicon.calendar, .ou-rail-conn-icon.calendar { color: #ff6b6b; }
+.ou-tl-icon.screen, .ou-tl-sub-icon.screen, .ou-preview-appicon.screen, .ou-rail-conn-icon.screen { color: #5ac8fa; }
+.ou-tl-icon.whatsapp, .ou-tl-sub-icon.whatsapp, .ou-preview-appicon.whatsapp, .ou-rail-conn-icon.whatsapp { color: #25d366; }
+.ou-tl-icon.messaging, .ou-tl-sub-icon.messaging, .ou-preview-appicon.messaging, .ou-rail-conn-icon.messaging { color: #7c9cff; }
+
+/* On narrow windows the docked columns would cover the centered chat, so hide
+   them and let the chat return to full width (the compact/idle layout). */
+@media (max-width: 1024px) {
+  .ou-rail,
+  .ou-activity {
+    display: none;
+  }
+  .ou-content.ou-taskview .ou-workspace {
+    margin-left: 0;
+    margin-right: 0;
+  }
 }

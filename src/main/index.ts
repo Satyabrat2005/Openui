@@ -1,4 +1,4 @@
-import { app, BrowserWindow, Tray, Menu, ipcMain, nativeImage, session, shell } from 'electron'
+import { app, BrowserWindow, Tray, Menu, ipcMain, nativeImage, session, shell, desktopCapturer } from 'electron'
 import { join } from 'path'
 import { registerAgentIPC, registerConversationIPC } from './agent'
 import { startPromptRefiner, stopPromptRefiner } from './promptRefiner'
@@ -39,6 +39,31 @@ import { installCrashReporter } from './telemetry/crashReporter'
 // setup below can throw — so startup crashes are logged and reported too.
 installCrashReporter()
 
+// GUI-launched macOS .app bundles inherit a minimal PATH (typically just
+// /usr/bin:/bin:/usr/sbin:/sbin) that omits Homebrew/nvm/Volta install
+// locations, so subprocess helpers (e.g. `ollama`, `open_app`'s tools) can
+// silently fail to resolve binaries that work fine from a Terminal shell.
+// Append a fixed list of known-safe install locations — do NOT shell out to
+// the user's login shell to read its real PATH (e.g. `$SHELL -lic 'echo
+// $PATH'`), since that would execute arbitrary shell-profile content as a
+// side effect of merely launching the app.
+if (process.platform === 'darwin') {
+  const KNOWN_MAC_BIN_DIRS = [
+    '/opt/homebrew/bin', // Homebrew on Apple Silicon
+    '/opt/homebrew/sbin',
+    '/usr/local/bin', // Homebrew on Intel
+    '/usr/local/sbin',
+    `${process.env.HOME}/.nvm/current/bin`,
+    `${process.env.HOME}/.volta/bin`
+  ]
+  const currentPath = process.env.PATH ?? ''
+  const existingDirs = new Set(currentPath.split(':').filter(Boolean))
+  const additions = KNOWN_MAC_BIN_DIRS.filter((dir) => !existingDirs.has(dir))
+  if (additions.length) {
+    process.env.PATH = [currentPath, ...additions].filter(Boolean).join(':')
+  }
+}
+
 let tray: Tray | null = null
 let win: BrowserWindow | null = null
 
@@ -56,7 +81,7 @@ let launchRevealedAt = 0
 
 const isDev = !app.isPackaged
 
-const PERMISSION_TARGETS: readonly PermissionTarget[] = ['accessibility', 'microphone']
+const PERMISSION_TARGETS: readonly PermissionTarget[] = ['accessibility', 'microphone', 'screenRecording']
 
 /**
  * Content-Security-Policy applied to every renderer response.
@@ -158,6 +183,36 @@ const DEFAULT_WIDTH = 1120
 const DEFAULT_HEIGHT = 760
 const MIN_WIDTH = 720
 const MIN_HEIGHT = 480
+
+// Compact footprint the window shrinks to when idle. It expands back to
+// DEFAULT_* while a task is actively running (openui:window:set-mode, driven by
+// the renderer's taskViewActive). Kept at/above MIN_WIDTH/MIN_HEIGHT so Electron
+// never clamps the resize to a no-op.
+const COMPACT_WIDTH = 780
+const COMPACT_HEIGHT = 640
+
+// The last mode we applied, so repeated set-mode calls (several tools in one run)
+// don't thrash the window geometry.
+let windowMode: 'compact' | 'expanded' = 'expanded'
+
+/**
+ * Resize between the compact idle footprint and the expanded task view. Only
+ * acts when the window is neither maximized nor full-screen (respecting a user
+ * who has deliberately taken the window big), and re-centers so the resize reads
+ * as intentional rather than jumpy.
+ */
+function setWindowMode(mode: 'compact' | 'expanded'): void {
+  if (!win || win.isDestroyed()) return
+  if (mode === windowMode) return
+  if (win.isMaximized() || win.isFullScreen()) {
+    windowMode = mode
+    return
+  }
+  windowMode = mode
+  const [w, h] = mode === 'compact' ? [COMPACT_WIDTH, COMPACT_HEIGHT] : [DEFAULT_WIDTH, DEFAULT_HEIGHT]
+  win.setSize(w, h, true)
+  win.center()
+}
 
 function createWindow(): void {
   win = new BrowserWindow({
@@ -288,6 +343,13 @@ function createTray(): void {
   // Left click toggles the popup; right click opens the context menu.
   tray.on('click', () => toggleWindow())
   tray.on('right-click', () => tray?.popUpContextMenu(contextMenu))
+
+  // macOS: the same menu, right-click/Ctrl-click on the Dock icon — Dock
+  // right-clicks are handled natively by the OS once a menu is set, no event
+  // wiring needed the way the Tray above requires.
+  if (process.platform === 'darwin') {
+    app.dock?.setMenu(contextMenu)
+  }
 }
 
 // Claim the single-instance lock and register the openui:// protocol BEFORE the
@@ -359,6 +421,12 @@ app.whenReady().then(async () => {
   })
   ipcMain.on('openui:window:close', () => hideWindow())
   ipcMain.handle('openui:window:is-maximized', () => win?.isMaximized() ?? false)
+
+  // Compact idle footprint ↔ expanded task view. Driven by the renderer's
+  // taskViewActive so the window only grows while a task is actively running.
+  ipcMain.on('openui:window:set-mode', (_event, mode: unknown) => {
+    if (mode === 'compact' || mode === 'expanded') setWindowMode(mode)
+  })
 
   // Open the OS settings pane for the requested permission so the user can
   // grant it without navigating the Settings UI manually.
@@ -555,6 +623,7 @@ app.whenReady().then(async () => {
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
+    else showWindow()
   })
 })
 
@@ -657,6 +726,26 @@ ipcMain.handle('openui:mcp:connect', async (_event, config: unknown) => {
     return { ok: false, error: validated.error }
   }
   return connectMcpServer(validated.config)
+})
+
+// Live-preview thumbnail for the activity panel. Read-only: captures the primary
+// display at a SMALL, main-controlled size and returns a data URL. The renderer
+// supplies no parameters (dimensions are hardcoded here), so there is no
+// injection surface — this is the same desktopCapturer path read_screen() uses,
+// narrowed to a cheap thumbnail the UI can poll while a screen/app tool runs.
+const THUMB_WIDTH = 480
+const THUMB_HEIGHT = 270
+ipcMain.handle('openui:screen:thumbnail', async () => {
+  try {
+    const sources = await desktopCapturer.getSources({
+      types: ['screen'],
+      thumbnailSize: { width: THUMB_WIDTH, height: THUMB_HEIGHT }
+    })
+    if (!sources.length) return { ok: false as const, error: 'No screen source available.' }
+    return { ok: true as const, dataUrl: sources[0].thumbnail.toDataURL() }
+  } catch (err) {
+    return { ok: false as const, error: err instanceof Error ? err.message : String(err) }
+  }
 })
 
 app.on('before-quit', () => {
