@@ -23,11 +23,46 @@ import type { ToolResult, ToolSchema } from './tools'
 // "owner/repo" — alphanumeric, dots, hyphens, underscores only.
 const REPO_RE = /^[\w.-]+\/[\w.-]+$/
 
+// A bare repository name (no owner) for create_repo — GitHub's own charset.
+const REPO_NAME_RE = /^[\w.-]{1,100}$/
+
 // Large diffs (monorepo sweeps, generated files) would flood the context window.
 const MAX_DIFF_CHARS = 24_000
 
 // GitHub's hard limit on issue / PR comment bodies.
 const MAX_COMMENT_CHARS = 65_536
+
+// Defensive caps on repo-write payloads (README content, PR title/body).
+const MAX_README_CHARS = 512 * 1024
+const MAX_TITLE_CHARS = 256
+const MAX_PR_BODY_CHARS = 65_536
+
+// Default branch name used when committing a README so it can be opened as a PR
+// against the repo's default branch rather than committing straight to it.
+const INIT_BRANCH = 'openui/init'
+
+/** True only when a GITHUB_TOKEN is configured — required for any write op. */
+function hasToken(): boolean {
+  return !!process.env.GITHUB_TOKEN?.trim()
+}
+
+/** Uniform "you need a token" error for the write tools. */
+function tokenRequiredError(tool: string): ToolResult {
+  return {
+    ok: false,
+    error:
+      `${tool} requires a GitHub token with "repo" scope. ` +
+      `Set GITHUB_TOKEN in your environment (create one at github.com → Settings → ` +
+      `Developer settings → Personal access tokens) and try again.`
+  }
+}
+
+/** Narrow an Octokit error to its HTTP status, if present. */
+function errStatus(err: unknown): number | undefined {
+  return typeof err === 'object' && err !== null && 'status' in err
+    ? Number((err as { status?: unknown }).status)
+    : undefined
+}
 
 /** Lazy-load @octokit/rest and return the Octokit constructor. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -214,6 +249,214 @@ export async function post_pr_comment(args: Record<string, unknown>): Promise<To
   }
 }
 
+// ── repo automation: check → create → README → PR (Task 2, Item 5) ───────────
+//
+// SECURITY / SAFETY: these are outward-facing, hard-to-reverse writes to GitHub.
+// They are registered as STATE_CHANGING_TOOLS in tools.ts, so the agent loop
+// gates each behind the HITL approval modal; open_pull_request is additionally
+// in DESTRUCTIVE_TOOLS so it ALWAYS asks — even under approve-plan / full-auto.
+// There is deliberately NO merge tool: merging is left to a human click on
+// GitHub. The autonomous loop never calls these (tasks.ts keeps GitHub writes
+// under explicit user control).
+
+/** Check whether a repository exists (read-only). */
+export async function check_repo_exists(args: Record<string, unknown>): Promise<ToolResult> {
+  const repoStr = typeof args.repo === 'string' ? args.repo.trim() : ''
+  if (!repoStr) {
+    return { ok: false, error: 'check_repo_exists requires a string "repo" (e.g. "owner/repo").' }
+  }
+  const parsed = parseRepo(repoStr)
+  if (!parsed) {
+    return { ok: false, error: `check_repo_exists: invalid repo format "${repoStr}". Expected "owner/repo".` }
+  }
+  try {
+    const octokit = buildClient()
+    const { data } = await octokit.repos.get(parsed)
+    return {
+      ok: true,
+      output:
+        `Repository ${repoStr} EXISTS (default branch: ${data.default_branch as string}, ` +
+        `${data.private ? 'private' : 'public'}). URL: ${data.html_url as string}`
+    }
+  } catch (err) {
+    if (errStatus(err) === 404) {
+      return { ok: true, output: `Repository ${repoStr} does NOT exist.` }
+    }
+    return {
+      ok: false,
+      error: `check_repo_exists failed: ${err instanceof Error ? err.message : String(err)}`
+    }
+  }
+}
+
+/** Create a new repository for the authenticated user (initialised with a commit). */
+export async function create_repo(args: Record<string, unknown>): Promise<ToolResult> {
+  const name = typeof args.name === 'string' ? args.name.trim() : ''
+  const description = typeof args.description === 'string' ? args.description.trim() : undefined
+  const isPrivate = args.private === true || args.private === 'true'
+  if (!name) return { ok: false, error: 'create_repo requires a string "name".' }
+  if (!REPO_NAME_RE.test(name)) {
+    return {
+      ok: false,
+      error: `create_repo: invalid repository name "${name}". Use letters, digits, ".", "-" or "_" (max 100 chars).`
+    }
+  }
+  if (!hasToken()) return tokenRequiredError('create_repo')
+
+  try {
+    const octokit = buildClient()
+    // auto_init creates the default branch with an initial commit, so a README
+    // can later be committed to a branch and opened as a PR against it.
+    const { data } = await octokit.repos.createForAuthenticatedUser({
+      name,
+      description,
+      private: isPrivate,
+      auto_init: true
+    })
+    return {
+      ok: true,
+      output:
+        `Created repository ${data.full_name as string} ` +
+        `(${data.private ? 'private' : 'public'}, default branch: ${data.default_branch as string}). ` +
+        `URL: ${data.html_url as string}`
+    }
+  } catch (err) {
+    if (errStatus(err) === 422) {
+      return { ok: false, error: `create_repo: a repository named "${name}" already exists on your account.` }
+    }
+    return {
+      ok: false,
+      error: `create_repo failed: ${err instanceof Error ? err.message : String(err)}`
+    }
+  }
+}
+
+/**
+ * Create or update README.md on a branch (default: openui/init, branched off the
+ * repo's default branch) so it can be opened as a pull request. Handles both the
+ * create and update cases by looking up the existing file SHA on the branch.
+ */
+export async function update_readme(args: Record<string, unknown>): Promise<ToolResult> {
+  const repoStr = typeof args.repo === 'string' ? args.repo.trim() : ''
+  const content = typeof args.content === 'string' ? args.content : ''
+  const branch = typeof args.branch === 'string' && args.branch.trim() ? args.branch.trim() : INIT_BRANCH
+  if (!repoStr) return { ok: false, error: 'update_readme requires a string "repo" (e.g. "owner/repo").' }
+  if (!content) return { ok: false, error: 'update_readme requires non-empty string "content".' }
+  if (content.length > MAX_README_CHARS) {
+    return { ok: false, error: `update_readme "content" exceeds the ${MAX_README_CHARS}-character limit.` }
+  }
+  const parsed = parseRepo(repoStr)
+  if (!parsed) {
+    return { ok: false, error: `update_readme: invalid repo format "${repoStr}". Expected "owner/repo".` }
+  }
+  if (!hasToken()) return tokenRequiredError('update_readme')
+
+  try {
+    const octokit = buildClient()
+
+    // Discover the default branch to base the working branch on.
+    const { data: repoData } = await octokit.repos.get(parsed)
+    const base = repoData.default_branch as string
+
+    // Ensure the target branch exists; create it off the default branch if not.
+    if (branch !== base) {
+      try {
+        await octokit.git.getRef({ ...parsed, ref: `heads/${branch}` })
+      } catch (err) {
+        if (errStatus(err) !== 404) throw err
+        const { data: baseRef } = await octokit.git.getRef({ ...parsed, ref: `heads/${base}` })
+        await octokit.git.createRef({
+          ...parsed,
+          ref: `refs/heads/${branch}`,
+          sha: baseRef.object.sha as string
+        })
+      }
+    }
+
+    // Look up the existing README SHA on the branch (required for updates).
+    let existingSha: string | undefined
+    try {
+      const { data: file } = await octokit.repos.getContent({ ...parsed, path: 'README.md', ref: branch })
+      if (!Array.isArray(file) && 'sha' in file) existingSha = file.sha as string
+    } catch (err) {
+      if (errStatus(err) !== 404) throw err // 404 ⇒ new file, leave sha undefined
+    }
+
+    const { data } = await octokit.repos.createOrUpdateFileContents({
+      ...parsed,
+      path: 'README.md',
+      message: existingSha ? 'docs: update README (via OpenUI)' : 'docs: add README (via OpenUI)',
+      content: Buffer.from(content, 'utf8').toString('base64'),
+      branch,
+      ...(existingSha ? { sha: existingSha } : {})
+    })
+    return {
+      ok: true,
+      output:
+        `${existingSha ? 'Updated' : 'Created'} README.md on branch "${branch}" of ${repoStr}. ` +
+        `Commit: ${data.commit?.html_url as string}`
+    }
+  } catch (err) {
+    return {
+      ok: false,
+      error: `update_readme failed: ${err instanceof Error ? err.message : String(err)}`
+    }
+  }
+}
+
+/**
+ * Open a pull request. base defaults to the repo's default branch; head defaults
+ * to the openui/init branch that update_readme commits to. This never merges —
+ * that stays a human click on GitHub.
+ */
+export async function open_pull_request(args: Record<string, unknown>): Promise<ToolResult> {
+  const repoStr = typeof args.repo === 'string' ? args.repo.trim() : ''
+  const title = typeof args.title === 'string' ? args.title.trim() : ''
+  const body = typeof args.body === 'string' ? args.body : ''
+  const head = typeof args.head === 'string' && args.head.trim() ? args.head.trim() : INIT_BRANCH
+  const baseArg = typeof args.base === 'string' && args.base.trim() ? args.base.trim() : ''
+  if (!repoStr) return { ok: false, error: 'open_pull_request requires a string "repo" (e.g. "owner/repo").' }
+  if (!title) return { ok: false, error: 'open_pull_request requires a non-empty string "title".' }
+  if (title.length > MAX_TITLE_CHARS) {
+    return { ok: false, error: `open_pull_request "title" exceeds ${MAX_TITLE_CHARS} characters.` }
+  }
+  if (body.length > MAX_PR_BODY_CHARS) {
+    return { ok: false, error: `open_pull_request "body" exceeds ${MAX_PR_BODY_CHARS} characters.` }
+  }
+  const parsed = parseRepo(repoStr)
+  if (!parsed) {
+    return { ok: false, error: `open_pull_request: invalid repo format "${repoStr}". Expected "owner/repo".` }
+  }
+  if (!hasToken()) return tokenRequiredError('open_pull_request')
+
+  try {
+    const octokit = buildClient()
+    let base = baseArg
+    if (!base) {
+      const { data: repoData } = await octokit.repos.get(parsed)
+      base = repoData.default_branch as string
+    }
+    if (head === base) {
+      return {
+        ok: false,
+        error: `open_pull_request: head and base are both "${base}". Commit your changes to a different branch (e.g. "${INIT_BRANCH}") first.`
+      }
+    }
+    const { data } = await octokit.pulls.create({ ...parsed, title, body, head, base })
+    return {
+      ok: true,
+      output:
+        `Opened PR #${data.number as number} "${title}" (${head} → ${base}) in ${repoStr}. ` +
+        `Review and merge it here: ${data.html_url as string}`
+    }
+  } catch (err) {
+    return {
+      ok: false,
+      error: `open_pull_request failed: ${err instanceof Error ? err.message : String(err)}`
+    }
+  }
+}
+
 // ── schemas (LLM-facing surface) ─────────────────────────────────────────────
 
 /** JSON schemas for the three GitHub PR review tools. */
@@ -281,6 +524,68 @@ export const githubToolSchemas: ToolSchema[] = [
       },
       required: ['repo', 'pr_number', 'comment']
     }
+  },
+  {
+    name: 'check_repo_exists',
+    description:
+      'Check whether a GitHub repository exists (read-only). Returns whether it exists and, if so, its default branch and visibility. ' +
+      'Call this FIRST when automating repo setup, to decide whether to create the repo.',
+    parameters: {
+      type: 'object',
+      properties: {
+        repo: { type: 'string', description: 'GitHub repository in "owner/repo" format.' }
+      },
+      required: ['repo']
+    }
+  },
+  {
+    name: 'create_repo',
+    description:
+      'Create a new GitHub repository for the authenticated user, initialised with a first commit. ' +
+      'Requires GITHUB_TOKEN with "repo" scope. Use after check_repo_exists reports the repo is missing. ' +
+      'This is a state-changing action — the user will be asked to approve it.',
+    parameters: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'The repository name (no owner), e.g. "my-app".' },
+        description: { type: 'string', description: 'Optional short description of the repository.' },
+        private: { type: 'boolean', description: 'Whether the repository is private (default false).' }
+      },
+      required: ['name']
+    }
+  },
+  {
+    name: 'update_readme',
+    description:
+      'Create or update README.md in a GitHub repository on a working branch (default "openui/init", branched off the default branch) so it can be opened as a pull request. ' +
+      'Requires GITHUB_TOKEN with "repo" scope. State-changing — the user will be asked to approve it.',
+    parameters: {
+      type: 'object',
+      properties: {
+        repo: { type: 'string', description: 'GitHub repository in "owner/repo" format.' },
+        content: { type: 'string', description: 'The full markdown content for README.md.' },
+        branch: { type: 'string', description: 'Branch to commit to (default "openui/init").' }
+      },
+      required: ['repo', 'content']
+    }
+  },
+  {
+    name: 'open_pull_request',
+    description:
+      'Open a pull request in a GitHub repository from a head branch (default "openui/init") into the base branch (default: the repo default branch). ' +
+      'Requires GITHUB_TOKEN with "repo" scope. This does NOT merge — merging is left to a human on GitHub. ' +
+      'ALWAYS requires explicit user approval before it runs.',
+    parameters: {
+      type: 'object',
+      properties: {
+        repo: { type: 'string', description: 'GitHub repository in "owner/repo" format.' },
+        title: { type: 'string', description: 'The pull request title.' },
+        body: { type: 'string', description: 'The pull request description (markdown).' },
+        head: { type: 'string', description: 'The branch with your changes (default "openui/init").' },
+        base: { type: 'string', description: 'The branch to merge into (default: repo default branch).' }
+      },
+      required: ['repo', 'title']
+    }
   }
 ]
 
@@ -291,5 +596,9 @@ export const githubRegistry: Record<
 > = {
   list_open_prs,
   get_pr_diff,
-  post_pr_comment
+  post_pr_comment,
+  check_repo_exists,
+  create_repo,
+  update_readme,
+  open_pull_request
 }

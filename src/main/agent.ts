@@ -2,6 +2,7 @@ import { Ollama } from 'ollama'
 import { BrowserWindow, ipcMain } from 'electron'
 import { toolSchemas, executeTool, describeToolCall, DESTRUCTIVE_TOOLS, type ToolSchema, type ToolResult, type PendingApprovalResult, type Tier } from './tools'
 import { SPAWN_SUBAGENTS_TOOL, runParallelSubagents, parseSubTaskSpecs } from './subagents'
+import { codingToolSchemas, executeCodingTool, describeCodingToolCall } from './codingTools'
 import { generatePlan, looksLikeTask, type Plan } from './planner'
 import { getMcpToolSchemas, callMcpTool } from './mcp-client'
 import { database } from './database'
@@ -214,7 +215,14 @@ Figma design workflow — use this when the user mentions "Figma", asks for a de
 1. Call get_figma_file(file_key) to discover the file structure and all top-level frame IDs.
 2. Call export_figma_frames(file_key, node_ids?) to export frames as PNGs and analyse them with Claude Vision. Prefer the most important screens (main view, key flows).
 3. Call create_figma_comment(file_key, message, node_id?) to post AI-generated feedback directly on the Figma file, anchored to specific frames.
-If the user needs to interact with the Figma web UI directly (inspect prototypes, view comments), call browser_navigate("https://www.figma.com/file/{file_key}") to open it in the Playwright browser.`
+If the user needs to interact with the Figma web UI directly (inspect prototypes, view comments), call browser_navigate("https://www.figma.com/file/{file_key}") to open it in the Playwright browser.
+
+GitHub repo automation workflow — use this when the user asks you to publish a project to GitHub, create a repo, add a README, or open a PR:
+1. Call check_repo_exists(repo) to see whether "owner/repo" already exists.
+2. If it does NOT exist, call create_repo(name) to create it (the user will be asked to approve).
+3. Call update_readme(repo, content) to write a README on the "openui/init" branch.
+4. Call open_pull_request(repo, title, body) to open a PR from "openui/init" into the default branch.
+NEVER try to merge the PR — merging is always left to the user. create_repo, update_readme and open_pull_request all require the user's approval before they run; opening a PR always asks. Requires GITHUB_TOKEN with "repo" scope.`
 }
 
 /**
@@ -307,6 +315,91 @@ When writing feedback comments:
 - Give concrete values (e.g. "increase line-height from 1.2 to 1.5", "use #1A73E8 for primary CTA to meet WCAG AA 4.5:1").
 - Prioritise: Accessibility (WCAG AA) → Usability → Visual polish.
 - Format comments in markdown with headings and bullet lists.`
+
+// ── Builder mode (interactive project scaffolding in the sandbox) ─────────────
+
+/**
+ * Triggers the interactive "builder" session: the user asks OpenUI to build /
+ * scaffold a real project. This routes the turn through the sandboxed coding
+ * toolset (write files → install deps → build/run → iterate) instead of the OS
+ * automation tools, so scaffolding stays inside the autonomous-workspace
+ * boundary (see sandbox.ts) and can never touch the live desktop. Heuristic by
+ * design — it pairs a build verb with a software noun to avoid firing on OS
+ * requests like "create a folder on my Desktop".
+ */
+const BUILD_RE =
+  /\b(build|scaffold|bootstrap|create|make|generate|code|develop)\b[^.!?]{0,60}\b(react|next(?:\.?js)?|vue|svelte|angular|node(?:\.?js)?|express|vite|website|web\s?site|web\s?app|webapp|web\s?page|webpage|landing\s?page|front\s?end|frontend|back\s?end|backend|app|application|project|game|api|cli|dashboard|component|script|program)\b/i
+
+/** Per-request step budget for a builder session — matches the autonomous cap. */
+const MAX_BUILDER_TURNS = 20
+
+/**
+ * System prompt for interactive builder sessions. Mirrors the autonomous coding
+ * prompt but is framed for a user who is present: it still works UNATTENDED
+ * within the turn (one tool per message, no clarifying questions) and confines
+ * every action to the sandbox workspace.
+ */
+const BUILDER_SYSTEM_PROMPT = `You are OpenUI's build agent. The user asked you to build a real, working project. You work in a sandboxed workspace on this machine — make reasonable decisions and proceed without asking clarifying questions.
+
+To call a tool, respond with ONLY a raw JSON object and nothing else (no prose, no markdown fences):
+{"tool": "tool_name", "args": {"key": "value"}}
+
+The very first character of a tool-call message MUST be "{". After each tool runs you receive a message starting with "TOOL RESULT". Use it to decide the next step. Call exactly one tool per message.
+
+Available tools:
+${codingToolSchemas.map(renderSchema).join('\n')}
+
+Workflow:
+1. Scaffold the WHOLE project with write_file — package.json (correct dependencies + a "scripts" section), all source files, config, and at least one test where it makes sense. Write complete file contents each time.
+2. If the project has dependencies, call install_dependencies once after writing package.json.
+3. Verify it works: call run_script to run the build (e.g. {"tool":"run_script","args":{"script":"build"}}) and/or run_tests. For a web app, running the "dev" script performs a boot smoke test (confirms it starts without crashing).
+4. If verification fails ("INSTALL FAILED" / "SCRIPT FAILED" / "TESTS FAILED"), read the offending file(s) with read_file, fix them with write_file, and re-run the failing step. Iterate until it passes.
+5. When it works, reply in plain natural language: summarise what you built, the key files, and how to run it. Do NOT wrap the final summary in JSON.
+
+If after several honest attempts you cannot get it working, reply in plain text beginning with "GIVE UP:" and a short explanation. Never fake a pass or delete tests to make them pass.`
+
+/** Tool names the builder session can execute (the sandboxed coding toolset). */
+function knownCodingToolNames(): Set<string> {
+  return new Set(codingToolSchemas.map((s) => s.name))
+}
+
+/**
+ * Drive an interactive builder turn: stream the model, and while it emits coding
+ * tool calls, run each in the sandbox and feed the result back. Coding tool JSON
+ * is withheld from the UI (StreamGate) and each step surfaces as a task-list row,
+ * exactly like the OS-automation loop. Returns the final natural-language reply.
+ */
+async function runBuilderSession(win: BrowserWindow, tier: Tier, userMessage: string): Promise<string> {
+  const messages: Message[] = [{ role: 'user', content: userMessage }]
+  const codingNames = knownCodingToolNames()
+
+  for (let turn = 0; turn < MAX_BUILDER_TURNS; turn++) {
+    const gate = new StreamGate((delta) => emit(win, 'openui:chat:chunk', delta))
+    const responseText = await callModel(win, tier, messages, BUILDER_SYSTEM_PROMPT, gate.push)
+    messages.push({ role: 'assistant', content: responseText })
+
+    const toolCall = parseToolCallCore(responseText, codingNames)
+    gate.finalize(toolCall !== null)
+    if (!toolCall) return responseText.trim() // natural-language reply ⇒ done
+
+    const taskId = `b${++taskSeq}`
+    const label = describeCodingToolCall(toolCall.tool, toolCall.args)
+    emit(win, 'openui:chat:tool', toolCall)
+    emit(win, 'openui:task:update', { id: taskId, label, status: 'working', detail: 'Building…' } satisfies TaskUpdate)
+
+    const result = await executeCodingTool(toolCall.tool, toolCall.args)
+    emit(win, 'openui:task:update', {
+      id: taskId,
+      label,
+      status: result.ok ? 'done' : 'error',
+      detail: result.ok ? result.output?.slice(0, 200) : result.error
+    } satisfies TaskUpdate)
+
+    messages.push({ role: 'user', content: formatToolResult(toolCall, result) })
+  }
+
+  return 'Reached the build-step limit for this request. Tell me if you want me to keep going.'
+}
 
 /**
  * The model every tier runs on. OpenUI is now fully local: chat, planning, and
@@ -552,6 +645,9 @@ export async function handleChat(win: BrowserWindow, userMessage: string, tier: 
   // Designer: force pro tier (Claude Vision) and use the Figma design review prompt.
   const isPrReview = PR_REVIEW_RE.test(userMessage)
   const isDesigner = DESIGNER_RE.test(userMessage) && !isPrReview
+  // Builder: scaffold a real project in the sandbox. Never re-planned or routed
+  // through the OS tools — it runs its own coding loop below.
+  const isBuild = !isPrReview && !isDesigner && BUILD_RE.test(userMessage)
   // PR review / designer want pro-tier models. SECURITY: clamp the final tier to
   // the signed-in user's verified entitlement so the untrusted renderer (or these
   // forced-pro modes) can't route to models the user hasn't paid for. No-op when
@@ -615,6 +711,25 @@ export async function handleChat(win: BrowserWindow, userMessage: string, tier: 
   try {
     let finalText = ''
     let reachedLimit = false
+
+    // ── Builder stage ─────────────────────────────────────────────────────────
+    // "Build me a React app" runs entirely in the sandbox via the coding tools —
+    // it is NOT planned or routed through the OS-automation tools. One focused
+    // loop, then we record the turn like any other and return.
+    if (isBuild) {
+      emit(win, 'openui:task:reset')
+      finalText = await runBuilderSession(win, effectiveTier, userMessage)
+      history.push({ role: 'assistant', content: finalText })
+      database.messages.addMessage(convId, 'assistant', finalText)
+      try {
+        database.feedback.recordTurn(convId, userMessage, finalText)
+      } catch {
+        /* best-effort */
+      }
+      recorder.commit(finalText, false)
+      emit(win, 'openui:chat:done', { text: finalText, toolCall: null })
+      return
+    }
 
     // ── Planning stage ────────────────────────────────────────────────────────
     // For task-shaped requests, decompose into a checklist FIRST, show every
