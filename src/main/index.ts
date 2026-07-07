@@ -34,6 +34,7 @@ import {
   type RecorderAction,
 } from './recorder'
 import { installCrashReporter } from './telemetry/crashReporter'
+import { pruneOldRunLogs } from './runLog'
 
 // Capture uncaught main-process errors as early as possible — before any of the
 // setup below can throw — so startup crashes are logged and reported too.
@@ -348,6 +349,9 @@ app.whenReady().then(async () => {
   trackEvent(Events.APP_STARTED, { platform: process.platform, version: app.getVersion() })
   // Daily-active + time-in-app tracking (active-window heartbeat). See usage.ts.
   startUsageTracking()
+
+  // Structured task-run logs (Task 5): bounded retention, pruned at startup.
+  void pruneOldRunLogs()
 
   createWindow()
   createTray()

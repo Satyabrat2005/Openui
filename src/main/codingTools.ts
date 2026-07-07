@@ -19,6 +19,7 @@ import {
   runInstall,
   runScript
 } from './sandbox'
+import { snapshotBeforeWrite } from './snapshots'
 import type { ToolSchema, ToolResult } from './tools'
 
 type CodingExecutor = (args: Record<string, unknown>) => Promise<ToolResult>
@@ -28,6 +29,10 @@ async function write_file(args: Record<string, unknown>): Promise<ToolResult> {
   const content = typeof args.content === 'string' ? args.content : ''
   if (!path) return { ok: false, error: 'write_file requires a string "path".' }
   try {
+    // Rollback safety (Task 5): capture the pre-image before the first write to
+    // each file so a failed task can restore the workspace. No-op outside a
+    // snapshot transaction (interactive writes).
+    await snapshotBeforeWrite(path)
     const written = await writeSandboxFile(path, content)
     return { ok: true, output: `Wrote ${Buffer.byteLength(content, 'utf8')} bytes to ${written}.` }
   } catch (err) {

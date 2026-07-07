@@ -17,6 +17,13 @@ import type { BrowserWindow } from 'electron'
 import { callModel, parseToolCall, emit, StreamGate, type Message } from './agent'
 import { codingToolSchemas, executeCodingTool, describeCodingToolCall } from './codingTools'
 import { getNextTask, recordTaskOutcome, type TaskSource, type AgentTask } from './tasks'
+import { startRun, type RunLog } from './runLog'
+import {
+  beginTaskSnapshot,
+  discardActiveSnapshot,
+  pruneSnapshots,
+  restoreActiveSnapshot
+} from './snapshots'
 import type { Tier, ToolResult, ToolSchema } from './tools'
 
 /** Status the renderer reflects in the left rail's "Background Agent" banner. */
@@ -110,7 +117,12 @@ interface TaskOutcome {
  * with passing tests. Each tool call is surfaced as a task-list row so the user
  * can watch what the background agent did.
  */
-async function workOnTask(win: BrowserWindow, tier: Tier, task: AgentTask): Promise<TaskOutcome> {
+async function workOnTask(
+  win: BrowserWindow,
+  tier: Tier,
+  task: AgentTask,
+  runLog: RunLog
+): Promise<TaskOutcome> {
   const messages: Message[] = [{ role: 'user', content: taskPrompt(task) }]
   let lastTestsPassed = false
 
@@ -138,7 +150,15 @@ async function workOnTask(win: BrowserWindow, tier: Tier, task: AgentTask): Prom
     const label = describeCodingToolCall(toolCall.tool, toolCall.args)
     emit(win, 'openui:task:update', { id: taskId, label, status: 'working', detail: 'Coding…' })
 
+    const toolT0 = Date.now()
     const result = await executeCodingTool(toolCall.tool, toolCall.args)
+    runLog.toolCall({
+      tool: toolCall.tool,
+      ok: result.ok,
+      ms: Date.now() - toolT0,
+      argsSummary: label,
+      error: result.ok ? undefined : result.error?.slice(0, 300)
+    })
     if (toolCall.tool === 'run_tests' && result.ok) {
       lastTestsPassed = (result.output ?? '').startsWith('TESTS PASSED')
     }
@@ -172,6 +192,8 @@ export async function runAutonomousCoding(
 
   try {
     let worked = 0
+    void pruneSnapshots()
+
     while (!stopRequested && worked < MAX_TASKS_PER_RUN) {
       let task: AgentTask | null
       try {
@@ -197,18 +219,46 @@ export async function runAutonomousCoding(
       emit(win, 'openui:task:reset')
       emitAutonomousStatus(win, { active: true, state: 'working', currentTask: task.title })
 
+      // Transactional task run (Task 5): snapshot pre-images of every file the
+      // task writes, and journal the whole run as structured JSONL.
+      const runLog = startRun('autonomous-task', {
+        taskId: task.id,
+        title: task.title,
+        source: task.source,
+        tier
+      })
+      try {
+        await beginTaskSnapshot(task.id)
+      } catch (err) {
+        console.warn('[autonomous] snapshot unavailable for this task:', err)
+      }
+
       let outcome: TaskOutcome
       try {
-        outcome = await workOnTask(win, tier, task)
+        outcome = await workOnTask(win, tier, task, runLog)
       } catch (err) {
         outcome = { success: false, summary: err instanceof Error ? err.message : String(err) }
       }
 
       // If we stopped because the user returned, leave the task pending so it is
-      // retried next idle window rather than being marked failed.
+      // retried next idle window rather than being marked failed. Partial
+      // progress is kept (the retry opens a fresh snapshot from that state).
       if (stopRequested && !outcome.success) {
+        discardActiveSnapshot()
+        runLog.end('cancelled', 'paused — user became active')
         emitAutonomousStatus(win, { active: true, state: 'paused', currentTask: task.title })
         break
+      }
+
+      if (outcome.success) {
+        discardActiveSnapshot()
+        runLog.end('success', outcome.summary.slice(0, 300))
+      } else {
+        // Definitive failure (GIVE UP / turn limit / crash): roll the workspace
+        // back so the next task never starts on top of half-broken edits.
+        const rollback = await restoreActiveSnapshot()
+        runLog.event('rollback', { detail: rollback })
+        runLog.end('failure', outcome.summary.slice(0, 300))
       }
 
       await recordTaskOutcome(task, outcome.success ? 'done' : 'failed')

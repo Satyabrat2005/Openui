@@ -13,6 +13,7 @@ import { withOllamaLock } from './ollamaLock'
 import { trackEvent } from './telemetry/posthog'
 import { Events } from './telemetry/events'
 import { classifyFeedbackSignal, getCustomSystemPrompt } from './improvement'
+import { startRun } from './runLog'
 import {
   TrajectoryRecorder,
   applyQualitySignal,
@@ -735,6 +736,9 @@ export async function handleChat(win: BrowserWindow, userMessage: string, tier: 
   // Central training store: capture this turn's full trajectory (instruction +
   // every reasoning/tool step + outcome) for the self-reinforcing dataset.
   // Best-effort — recording must never break the chat turn.
+  // Structured run log (Task 5): one run per chat turn, one line per tool call.
+  const runLog = startRun('chat', { conversationId: convId, tier, fromVoice })
+
   const recorder = new TrajectoryRecorder({
     conversationId: convId,
     userId: getCurrentUserId(),
@@ -762,6 +766,7 @@ export async function handleChat(win: BrowserWindow, userMessage: string, tier: 
         /* best-effort */
       }
       recorder.commit(finalText, false)
+      runLog.end('success', 'builder session')
       emit(win, 'openui:chat:done', { text: finalText, toolCall: null })
       return
     }
@@ -980,6 +985,14 @@ export async function handleChat(win: BrowserWindow, userMessage: string, tier: 
         } satisfies TaskUpdate)
       }
 
+      runLog.toolCall({
+        tool: toolCall.tool,
+        ok: result.ok,
+        ms: Date.now() - toolStart,
+        argsSummary: label,
+        error: result.ok ? undefined : result.error?.slice(0, 300)
+      })
+
       // Capture this reasoning + tool-execution step for the training store.
       recorder.recordStep({
         reasoning: responseText,
@@ -1010,12 +1023,14 @@ export async function handleChat(win: BrowserWindow, userMessage: string, tier: 
 
     // Persist the full trajectory to the central training store (best-effort).
     recorder.commit(finalText, reachedLimit)
+    runLog.end('success')
 
     emit(win, 'openui:chat:done', { text: finalText, toolCall: null })
   } catch (err) {
     history.length = rollbackLen // roll back the entire failed turn
     trackEvent(Events.CHAT_ERROR, { tier: effectiveTier, model, error_type: classifyChatError(err) })
     const message = err instanceof Error ? err.message : String(err)
+    runLog.end('failure', message.slice(0, 300))
     emit(win, 'openui:chat:error', message)
   }
 }
