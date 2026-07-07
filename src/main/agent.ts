@@ -1,14 +1,15 @@
-import Anthropic from '@anthropic-ai/sdk'
-import OpenAI from 'openai'
 import { Ollama } from 'ollama'
 import { BrowserWindow, ipcMain } from 'electron'
 import { toolSchemas, executeTool, describeToolCall, DESTRUCTIVE_TOOLS, type ToolSchema, type ToolResult, type PendingApprovalResult, type Tier } from './tools'
+import { SPAWN_SUBAGENTS_TOOL, runParallelSubagents, parseSubTaskSpecs } from './subagents'
+import { codingToolSchemas, executeCodingTool, describeCodingToolCall } from './codingTools'
 import { generatePlan, looksLikeTask, type Plan } from './planner'
 import { getMcpToolSchemas, callMcpTool } from './mcp-client'
 import { database } from './database'
 import { clampTierToEntitlement } from './stripe/pricing'
 import { getCurrentUserId } from './stripe/subscriptionSync'
-import { isCloudProxyConfigured, callCloudProxy, CloudProxyError, emitLocalUsage } from './cloudFreeTier'
+import { emitLocalUsage } from './cloudFreeTier'
+import { withOllamaLock } from './ollamaLock'
 import { trackEvent } from './telemetry/posthog'
 import { Events } from './telemetry/events'
 import { classifyFeedbackSignal, getCustomSystemPrompt } from './improvement'
@@ -177,16 +178,20 @@ ${allSchemas.map(renderSchema).join('\n')}
 Examples — map the request to a single tool-call message (emit ONLY the JSON):
 - "open the OpenUI folder" / "open Downloads" → {"tool": "open_app", "args": {"appName": "C:\\\\Users\\\\You\\\\Downloads"}}
 - "open Spotify" / "launch Chrome" → {"tool": "open_app", "args": {"appName": "Spotify"}}
+- "open Edge" / "open Microsoft Edge" / "open my browser" → {"tool": "open_app", "args": {"appName": "Microsoft Edge"}}
 - "find a file named report" / "search my files for budget" → {"tool": "search_files", "args": {"query": "report"}}
-- "check my email" / "open Gmail in the browser" → {"tool": "browser_navigate", "args": {"url": "https://mail.google.com/"}}
 - "schedule a meeting tomorrow at 3pm" → {"tool": "control_calendar", "args": {"action": "create", "eventDetails": {"title": "Meeting", "start": "2025-01-01T15:00:00"}}}
 
-Browser automation workflow — use this for ALL web-based tasks (booking flights, scraping websites, filling web forms, reading prices, searching the web). Playwright targets elements directly by CSS selector: faster, more reliable, and more precise than pixel-coordinate clicking:
-1. Call browser_navigate(url) — opens the URL in a visible Chromium window the user can watch.
+CRITICAL — opening an app or browser vs. automating a web page. These are DIFFERENT tools; do not confuse them:
+- When the user asks to OPEN or LAUNCH an application or a browser for THEM to use ("open Edge", "open Chrome", "open my browser", "open WhatsApp"), ALWAYS use open_app. This launches their REAL installed app with their normal profile, logins and extensions.
+- NEVER use browser_navigate just to "open a browser". browser_navigate opens a SEPARATE automation window (the user's installed browser driven by OpenUI in a dedicated profile) — use it ONLY when YOU need to read or interact with a web page to complete a task the user asked you to do.
+
+Browser automation workflow — use this ONLY when you must drive a web page yourself to complete a task (booking flights, scraping a site, filling web forms, reading prices, logging into a site on the user's behalf). It opens the user's installed browser (Edge/Chrome) in an OpenUI-controlled profile; it is NOT the way to simply hand the user their browser. Playwright targets elements directly by CSS selector: faster and more precise than pixel clicking:
+1. Call browser_navigate(url) — opens the URL in a visible browser window the user can watch.
 2. Call browser_extract_text() — reads the page body to understand the layout, find form labels, or scrape data.
 3. Call browser_click(selector) or browser_fill_input(selector, text) to interact with the page.
 4. Repeat steps 2–3 as needed until the task is done.
-Examples of tasks that MUST use this workflow: "book a flight", "check flight prices", "search Google", "scrape a website", "fill out a web form", "log into a website".
+Examples of tasks that MUST use this workflow: "book a flight for me", "check flight prices", "scrape a website", "fill out this web form", "log into this site and download my invoice".
 
 Visual fallback (computer_use) — the GENERALISED path for ANY app or website with no dedicated tool (native desktop apps, system dialogs, Electron panels, or a site the browser tools can't reach cleanly). Call computer_use(goal) with ONE concrete objective and it runs its own screenshot → decide → click/type loop until the goal is met — you do NOT hand-drive read_screen/move_mouse/left_click for these. This is a catch-all: reach for open_app, the browser_* tools, control_calendar, and the github/figma tools FIRST whenever they cover the task (they are faster and more reliable), and fall back to computer_use only when none of them fit.
 Example: "turn on dark mode in System Settings" → {"tool": "computer_use", "args": {"goal": "open System Settings and turn on Dark Mode"}}
@@ -199,6 +204,10 @@ Manual screen control — if you need finer step-by-step control than computer_u
 
 For anything that does not require a system action, just reply in plain text.
 
+Parallel sub-agents — when a request splits into INDEPENDENT sub-tasks that do not depend on each other's results (e.g. "check whether I used Netflix, Amazon Prime, and LinkedIn last month"), run them at the same time by emitting ONE call:
+{"tool": "spawn_subagents", "args": {"tasks": [{"title": "Check Netflix usage", "instruction": "Open netflix.com viewing activity and report whether it was used last month.", "app": "netflix"}, {"title": "Check Amazon Prime usage", "instruction": "Open Amazon order/watch history and report Prime usage last month.", "app": "amazon"}]}}
+Each task runs concurrently in its own sub-agent on its own model. Use this ONLY for genuinely independent work (max 4 tasks) — never for sequential steps that depend on one another. When they finish you receive one combined TOOL RESULT summarising every sub-agent; use it to reply to the user.
+
 GitHub PR review workflow — use this when the user asks to "Review my PRs" or "review pull requests":
 1. Call list_open_prs(repo) — use the repo the user mentions, or the value of GITHUB_REPO env var if they say "my PRs".
 2. For each open PR, call get_pr_diff(repo, pr_number) to fetch the code changes.
@@ -210,7 +219,14 @@ Figma design workflow — use this when the user mentions "Figma", asks for a de
 1. Call get_figma_file(file_key) to discover the file structure and all top-level frame IDs.
 2. Call export_figma_frames(file_key, node_ids?) to export frames as PNGs and analyse them with Claude Vision. Prefer the most important screens (main view, key flows).
 3. Call create_figma_comment(file_key, message, node_id?) to post AI-generated feedback directly on the Figma file, anchored to specific frames.
-If the user needs to interact with the Figma web UI directly (inspect prototypes, view comments), call browser_navigate("https://www.figma.com/file/{file_key}") to open it in the Playwright browser.`
+If the user needs to interact with the Figma web UI directly (inspect prototypes, view comments), call browser_navigate("https://www.figma.com/file/{file_key}") to open it in the Playwright browser.
+
+GitHub repo automation workflow — use this when the user asks you to publish a project to GitHub, create a repo, add a README, or open a PR:
+1. Call check_repo_exists(repo) to see whether "owner/repo" already exists.
+2. If it does NOT exist, call create_repo(name) to create it (the user will be asked to approve).
+3. Call update_readme(repo, content) to write a README on the "openui/init" branch.
+4. Call open_pull_request(repo, title, body) to open a PR from "openui/init" into the default branch.
+NEVER try to merge the PR — merging is always left to the user. create_repo, update_readme and open_pull_request all require the user's approval before they run; opening a PR always asks. Requires GITHUB_TOKEN with "repo" scope.`
 }
 
 /**
@@ -304,10 +320,116 @@ When writing feedback comments:
 - Prioritise: Accessibility (WCAG AA) → Usability → Visual polish.
 - Format comments in markdown with headings and bullet lists.`
 
-function modelForTier(tier: Tier): string {
-  if (tier === 'free') return process.env.OLLAMA_MODEL ?? 'llama3:8b'
-  if (tier === 'pro') return 'claude-sonnet-4-6'
-  return process.env.GLM_MODEL ?? 'glm-4'
+/**
+ * Local Ollama model for GENERAL tasks: chat, planning/refiner, and the
+ * interactive builder session. Overridable via OLLAMA_MODEL.
+ */
+function localGeneralModel(): string {
+  return process.env.OLLAMA_MODEL ?? 'qwen3.5:9b'
+}
+
+/**
+ * Local Ollama model for CODE-heavy work — used by the autonomous coding agent
+ * (autonomous.ts). Overridable via OLLAMA_CODE_MODEL; defaults to a code-tuned
+ * model that fits the 8 GB VRAM budget.
+ */
+function localCodeModel(): string {
+  return process.env.OLLAMA_CODE_MODEL ?? 'qwen2.5-coder:7b'
+}
+
+// ── Builder mode (interactive project scaffolding in the sandbox) ─────────────
+
+/**
+ * Triggers the interactive "builder" session: the user asks OpenUI to build /
+ * scaffold a real project. This routes the turn through the sandboxed coding
+ * toolset (write files → install deps → build/run → iterate) instead of the OS
+ * automation tools, so scaffolding stays inside the autonomous-workspace
+ * boundary (see sandbox.ts) and can never touch the live desktop. Heuristic by
+ * design — it pairs a build verb with a software noun to avoid firing on OS
+ * requests like "create a folder on my Desktop".
+ */
+const BUILD_RE =
+  /\b(build|scaffold|bootstrap|create|make|generate|code|develop)\b[^.!?]{0,60}\b(react|next(?:\.?js)?|vue|svelte|angular|node(?:\.?js)?|express|vite|website|web\s?site|web\s?app|webapp|web\s?page|webpage|landing\s?page|front\s?end|frontend|back\s?end|backend|app|application|project|game|api|cli|dashboard|component|script|program)\b/i
+
+/** Per-request step budget for a builder session — matches the autonomous cap. */
+const MAX_BUILDER_TURNS = 20
+
+/**
+ * System prompt for interactive builder sessions. Mirrors the autonomous coding
+ * prompt but is framed for a user who is present: it still works UNATTENDED
+ * within the turn (one tool per message, no clarifying questions) and confines
+ * every action to the sandbox workspace.
+ */
+const BUILDER_SYSTEM_PROMPT = `You are OpenUI's build agent. The user asked you to build a real, working project. You work in a sandboxed workspace on this machine — make reasonable decisions and proceed without asking clarifying questions.
+
+To call a tool, respond with ONLY a raw JSON object and nothing else (no prose, no markdown fences):
+{"tool": "tool_name", "args": {"key": "value"}}
+
+The very first character of a tool-call message MUST be "{". After each tool runs you receive a message starting with "TOOL RESULT". Use it to decide the next step. Call exactly one tool per message.
+
+Available tools:
+${codingToolSchemas.map(renderSchema).join('\n')}
+
+Workflow:
+1. Scaffold the WHOLE project with write_file — package.json (correct dependencies + a "scripts" section), all source files, config, and at least one test where it makes sense. Write complete file contents each time.
+2. If the project has dependencies, call install_dependencies once after writing package.json.
+3. Verify it works: call run_script to run the build (e.g. {"tool":"run_script","args":{"script":"build"}}) and/or run_tests. For a web app, running the "dev" script performs a boot smoke test (confirms it starts without crashing).
+4. If verification fails ("INSTALL FAILED" / "SCRIPT FAILED" / "TESTS FAILED"), read the offending file(s) with read_file, fix them with write_file, and re-run the failing step. Iterate until it passes.
+5. When it works, reply in plain natural language: summarise what you built, the key files, and how to run it. Do NOT wrap the final summary in JSON.
+
+If after several honest attempts you cannot get it working, reply in plain text beginning with "GIVE UP:" and a short explanation. Never fake a pass or delete tests to make them pass.`
+
+/** Tool names the builder session can execute (the sandboxed coding toolset). */
+function knownCodingToolNames(): Set<string> {
+  return new Set(codingToolSchemas.map((s) => s.name))
+}
+
+/**
+ * Drive an interactive builder turn: stream the model, and while it emits coding
+ * tool calls, run each in the sandbox and feed the result back. Coding tool JSON
+ * is withheld from the UI (StreamGate) and each step surfaces as a task-list row,
+ * exactly like the OS-automation loop. Returns the final natural-language reply.
+ */
+async function runBuilderSession(win: BrowserWindow, tier: Tier, userMessage: string): Promise<string> {
+  const messages: Message[] = [{ role: 'user', content: userMessage }]
+  const codingNames = knownCodingToolNames()
+
+  for (let turn = 0; turn < MAX_BUILDER_TURNS; turn++) {
+    const gate = new StreamGate((delta) => emit(win, 'openui:chat:chunk', delta))
+    const responseText = await callModel(win, tier, messages, BUILDER_SYSTEM_PROMPT, gate.push)
+    messages.push({ role: 'assistant', content: responseText })
+
+    const toolCall = parseToolCallCore(responseText, codingNames)
+    gate.finalize(toolCall !== null)
+    if (!toolCall) return responseText.trim() // natural-language reply ⇒ done
+
+    const taskId = `b${++taskSeq}`
+    const label = describeCodingToolCall(toolCall.tool, toolCall.args)
+    emit(win, 'openui:chat:tool', toolCall)
+    emit(win, 'openui:task:update', { id: taskId, label, status: 'working', detail: 'Building…' } satisfies TaskUpdate)
+
+    const result = await executeCodingTool(toolCall.tool, toolCall.args)
+    emit(win, 'openui:task:update', {
+      id: taskId,
+      label,
+      status: result.ok ? 'done' : 'error',
+      detail: result.ok ? result.output?.slice(0, 200) : result.error
+    } satisfies TaskUpdate)
+
+    messages.push({ role: 'user', content: formatToolResult(toolCall, result) })
+  }
+
+  return 'Reached the build-step limit for this request. Tell me if you want me to keep going.'
+}
+
+/**
+ * The model every tier runs on. OpenUI is now fully local: chat, planning, and
+ * the autonomous agent all run on the self-hosted Ollama server. Override the
+ * model with the OLLAMA_MODEL env var (default: qwen3.5:9b). Tiers no longer map
+ * to different cloud models — they only affect metering/entitlement plumbing.
+ */
+function modelForTier(_tier: Tier): string {
+  return localGeneralModel()
 }
 
 function classifyChatError(err: unknown): string {
@@ -408,12 +530,6 @@ function formatToolResult(call: ToolCall, result: ToolResult): string {
   return `TOOL RESULT [${call.tool}] error: ${result.error ?? 'unknown error'}`
 }
 
-// Direct-API model ids used ONLY by the local-dev fallback (no Supabase / not
-// signed in). In production every cloud turn goes through the chat-proxy Edge
-// Function, whose own model map is the source of truth for shipped users.
-const DIRECT_PRO_MODEL = 'claude-sonnet-4-6'
-const DIRECT_FREE_MODEL = 'claude-3-5-haiku-latest'
-
 /** Quick reachability check against the local Ollama server (short timeout, never throws). */
 async function isOllamaRunning(): Promise<boolean> {
   const host = process.env.OLLAMA_HOST ?? 'http://127.0.0.1:11434'
@@ -429,88 +545,64 @@ async function callOllama(
   _win: BrowserWindow,
   messages: Message[],
   systemPrompt: string,
-  onDelta: (delta: string) => void
+  onDelta: (delta: string) => void,
+  model: string = localGeneralModel()
 ): Promise<string> {
   const ollama = new Ollama({ host: process.env.OLLAMA_HOST ?? 'http://127.0.0.1:11434' })
-  const stream = await ollama.chat({
-    model: process.env.OLLAMA_MODEL ?? 'llama3:8b',
-    messages: [
-      { role: 'system', content: systemPrompt },
-      ...messages.map((m) => ({ role: m.role, content: m.content }))
-    ],
-    stream: true
-  })
-  let full = ''
-  for await (const part of stream) {
-    const delta = part.message?.content ?? ''
-    if (delta) {
-      full += delta
-      onDelta(delta)
-    }
-  }
-  return full
-}
 
-async function callAnthropic(
-  _win: BrowserWindow,
-  messages: Message[],
-  systemPrompt: string,
-  model: string,
-  onDelta: (delta: string) => void
-): Promise<string> {
-  const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
-  const stream = client.messages.stream({
-    model,
-    max_tokens: 2048,
-    system: systemPrompt,
-    messages: messages.map((m) => ({ role: m.role, content: m.content }))
-  })
-  let full = ''
-  for await (const event of stream) {
-    if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
-      const delta = event.delta.text
-      full += delta
-      onDelta(delta)
-    }
-  }
-  return full
-}
+  // These models are trained for 8192 tokens. Ollama defaults num_ctx to 4096,
+  // which silently truncates our system prompt + tool instructions (~6.5k tokens)
+  // and makes the model reply with nonsense / skip tool calls. Request the full
+  // trained window (overridable via OLLAMA_NUM_CTX for lower-RAM machines).
+  const numCtx = Number(process.env.OLLAMA_NUM_CTX ?? 8192)
 
-async function callEnterprise(
-  _win: BrowserWindow,
-  messages: Message[],
-  systemPrompt: string,
-  onDelta: (delta: string) => void
-): Promise<string> {
-  const client = new OpenAI({
-    baseURL: process.env.GLM_BASE_URL ?? 'http://127.0.0.1:8080/v1',
-    apiKey: process.env.GLM_API_KEY ?? 'no-key'
-  })
-  const stream = await client.chat.completions.create({
-    model: process.env.GLM_MODEL ?? 'glm-4',
-    messages: [
-      { role: 'system', content: systemPrompt },
-      ...messages.map((m) => ({ role: m.role as 'user' | 'assistant', content: m.content }))
-    ],
-    stream: true
-  })
-  let full = ''
-  for await (const chunk of stream) {
-    const delta = chunk.choices[0]?.delta?.content ?? ''
-    if (delta) {
-      full += delta
-      onDelta(delta)
-    }
+  // Pre-flight guard: Ollama truncates the *middle* of the prompt (where our tool
+  // instructions live) without failing, so a heads-up here is the only warning we
+  // get before the model starts replying with nonsense / skipping automation.
+  // ~4 chars/token is a rough but conservative estimate for the BPE tokenizer.
+  const promptChars = systemPrompt.length + messages.reduce((n, m) => n + m.content.length, 0)
+  const estTokens = Math.ceil(promptChars / 4)
+  if (estTokens > numCtx) {
+    const msg = `[agent] ⚠ Prompt ~${estTokens} tokens exceeds num_ctx ${numCtx}. Ollama will truncate the middle of the prompt (tool instructions), so replies may be incoherent or skip automation. Raise OLLAMA_NUM_CTX or start a new conversation.`
+    console.warn(msg)
+    emit(_win, 'openui:chat:warning', { message: msg, estTokens, numCtx })
+  } else if (estTokens > numCtx * 0.9) {
+    console.warn(`[agent] Prompt ~${estTokens} tokens is nearing num_ctx ${numCtx}; conversation is close to the truncation limit.`)
   }
-  return full
+
+  // Serialize against every other local inference — one at a time on an 8 GB
+  // card (see ollamaLock.ts). The whole stream is drained inside the lock so the
+  // model stays resident for the full generation before the next call starts.
+  return withOllamaLock(async () => {
+    const stream = await ollama.chat({
+      model,
+      messages: [
+        { role: 'system', content: systemPrompt },
+        ...messages.map((m) => ({ role: m.role, content: m.content }))
+      ],
+      options: { num_ctx: numCtx },
+      stream: true
+    })
+    let full = ''
+    for await (const part of stream) {
+      const delta = part.message?.content ?? ''
+      if (delta) {
+        full += delta
+        onDelta(delta)
+      }
+    }
+    return full
+  })
 }
 
 /**
- * Cloud-first model router. Every tier prefers our backend (the chat-proxy Edge
- * Function, our API keys, server-side metering). When the cloud path is not
- * configured or the proxy is unreachable, it falls back to a local Ollama
- * server if one is running — this trades away bypass-proofing for uptime while
- * the hosted backend isn't fully provisioned (no server-side LLM key yet).
+ * The model router. OpenUI runs entirely on a local / self-hosted Ollama server —
+ * there is no cloud proxy, no Anthropic/OpenAI keys, and no per-message metering
+ * or credit balance that can run out. Every tier (free / pro / enterprise), the
+ * planner, and the autonomous agent all stream from the same Ollama server.
+ *
+ * Start the engine once with `ollama serve` and pull the model with
+ * `ollama pull qwen3.5:9b` (override via the OLLAMA_MODEL / OLLAMA_HOST env vars).
  *
  * `systemPrompt` is supplied by the caller so the same router drives both the
  * interactive desktop assistant (handleChat) and the autonomous coding agent
@@ -524,99 +616,32 @@ export async function callModel(
   // Every streamed token is delivered here. The default forwards straight to the
   // renderer (legacy behaviour, used by autonomous.ts); the interactive loop
   // passes a StreamGate so tool-call JSON is withheld from the UI.
-  onDelta: (delta: string) => void = (delta) => emit(win, 'openui:chat:chunk', delta)
+  onDelta: (delta: string) => void = (delta) => emit(win, 'openui:chat:chunk', delta),
+  // Callers whose work is code-heavy (the autonomous coding agent) set
+  // `coding: true` so the run uses the code-tuned Ollama model (OLLAMA_CODE_MODEL)
+  // instead of the general one.
+  opts: { coding?: boolean } = {}
 ): Promise<string> {
-  if (tier === 'free') return routeCloudOrDirect(win, 'free', messages, systemPrompt, 'free-default', onDelta)
-  if (tier === 'pro') return routeCloudOrDirect(win, 'pro', messages, systemPrompt, 'pro-default', onDelta)
-  return routeCloudOrDirect(win, 'enterprise', messages, systemPrompt, 'enterprise-default', onDelta)
-}
+  // Code-heavy callers (the autonomous coding agent) get the code-tuned model;
+  // everything else uses the general model.
+  const localModel = opts.coding ? localCodeModel() : localGeneralModel()
 
-/**
- * Route a turn through the cloud proxy when configured (signed in + Supabase),
- * otherwise fall back to direct provider APIs using local env keys. The direct
- * path exists only for local development before auth/Supabase are wired up — a
- * shipped, signed-in user always takes the proxy path, so this is never reachable
- * in production and never routes to a local model.
- */
-async function routeCloudOrDirect(
-  win: BrowserWindow,
-  tier: Tier,
-  messages: Message[],
-  systemPrompt: string,
-  modelKey: string,
-  onDelta: (delta: string) => void
-): Promise<string> {
-  if (isCloudProxyConfigured()) {
-    try {
-      return await callCloudProxy(win, tier, messages, systemPrompt, modelKey, onDelta)
-    } catch (err) {
-      // Anything other than a cloud-proxy server failure (network, programming
-      // error) propagates unchanged.
-      if (!(err instanceof CloudProxyError)) throw err
-      // The proxy is down (typically a server-side LLM key/credit problem). The
-      // failure is detected BEFORE any token is streamed, so nothing has reached
-      // the UI yet and it is safe to retry the turn against a local model. This
-      // keeps the app usable even when the cloud backend is broken — critical so
-      // a single server dependency can't take the whole product offline.
-      console.error(
-        `[agent] cloud proxy unavailable (HTTP ${err.status}${err.code ? `, ${err.code}` : ''}) — trying local fallback`
-      )
-      const recovered = await tryLocalModelFallback(win, tier, messages, systemPrompt, onDelta)
-      if (recovered !== null) return recovered
-      // No local model available either — surface the friendly proxy message.
-      onDelta(err.message)
-      return err.message
-    }
-  }
-
-  // ── Local-dev / unauthenticated fallback (direct API keys) ──────────────────
+  // Local AI is never metered — keep the renderer's usage counter in "unlimited".
   emitLocalUsage(win, tier)
-  if (tier === 'enterprise') return callEnterprise(win, messages, systemPrompt, onDelta)
-  if (tier === 'pro') return callAnthropic(win, messages, systemPrompt, DIRECT_PRO_MODEL, onDelta)
 
-  if (process.env.ANTHROPIC_API_KEY) {
-    return callAnthropic(win, messages, systemPrompt, DIRECT_FREE_MODEL, onDelta)
-  }
-  // No cloud key on this machine: fall through to a local Ollama server if one
-  // is running, so the app still works pre-launch/pre-signup with zero keys.
   if (await isOllamaRunning()) {
-    emitLocalUsage(win, tier)
-    return callOllama(win, messages, systemPrompt, onDelta)
+    return callOllama(win, messages, systemPrompt, onDelta, localModel)
   }
-  // No cloud session, no local key, no local model: surface a neutral
-  // connectivity message rather than a raw error.
+
+  // The Ollama server isn't reachable. Give an actionable message rather than a
+  // raw connection error — it is the one dependency the app needs running.
+  const host = process.env.OLLAMA_HOST ?? 'http://127.0.0.1:11434'
   const msg =
-    "I couldn't reach the AI service just now. Please check your internet " +
-    'connection and try again in a moment.'
+    `I can't reach the local AI engine (Ollama) at ${host}. ` +
+    `Start it with "ollama serve" and make sure the model is installed ` +
+    `("ollama pull ${localModel}"), then try again.`
   onDelta(msg)
   return msg
-}
-
-/**
- * Last-resort provider call when the cloud proxy is unreachable (e.g. its
- * server-side LLM key is missing/out of credit). Tries a direct provider call
- * when a local API key is present (dev/self-hosted setup), then falls back to
- * a local Ollama server if one is running, so a broken/unset cloud key never
- * takes the whole app offline. Resolves `null` (never throws) when neither is
- * available, and the caller surfaces the friendly cloud-unavailable message.
- */
-async function tryLocalModelFallback(
-  win: BrowserWindow,
-  tier: Tier,
-  messages: Message[],
-  systemPrompt: string,
-  onDelta: (delta: string) => void
-): Promise<string | null> {
-  if (process.env.ANTHROPIC_API_KEY) {
-    emitLocalUsage(win, tier)
-    const model = tier === 'free' ? DIRECT_FREE_MODEL : DIRECT_PRO_MODEL
-    return callAnthropic(win, messages, systemPrompt, model, onDelta)
-  }
-  if (await isOllamaRunning()) {
-    emitLocalUsage(win, tier)
-    return callOllama(win, messages, systemPrompt, onDelta)
-  }
-  return null
 }
 
 /**
@@ -655,6 +680,9 @@ export async function handleChat(win: BrowserWindow, userMessage: string, tier: 
   // Designer: force pro tier (Claude Vision) and use the Figma design review prompt.
   const isPrReview = PR_REVIEW_RE.test(userMessage)
   const isDesigner = DESIGNER_RE.test(userMessage) && !isPrReview
+  // Builder: scaffold a real project in the sandbox. Never re-planned or routed
+  // through the OS tools — it runs its own coding loop below.
+  const isBuild = !isPrReview && !isDesigner && BUILD_RE.test(userMessage)
   // PR review / designer want pro-tier models. SECURITY: clamp the final tier to
   // the signed-in user's verified entitlement so the untrusted renderer (or these
   // forced-pro modes) can't route to models the user hasn't paid for. No-op when
@@ -686,6 +714,10 @@ export async function handleChat(win: BrowserWindow, userMessage: string, tier: 
   const autonomy = getAutonomyLevel()
 
   const model = modelForTier(effectiveTier)
+  // Tell the renderer the model the backend is ACTUALLY using this turn, so the
+  // UI's model tag reflects reality (client-side tier ≠ effective model after
+  // entitlement clamping). Read-only main→renderer push.
+  emit(win, 'openui:chat:model', { model, tier: effectiveTier })
   if (requestedTier !== effectiveTier) {
     trackEvent(Events.MODEL_DOWNGRADE, {
       tier,
@@ -714,6 +746,25 @@ export async function handleChat(win: BrowserWindow, userMessage: string, tier: 
   try {
     let finalText = ''
     let reachedLimit = false
+
+    // ── Builder stage ─────────────────────────────────────────────────────────
+    // "Build me a React app" runs entirely in the sandbox via the coding tools —
+    // it is NOT planned or routed through the OS-automation tools. One focused
+    // loop, then we record the turn like any other and return.
+    if (isBuild) {
+      emit(win, 'openui:task:reset')
+      finalText = await runBuilderSession(win, effectiveTier, userMessage)
+      history.push({ role: 'assistant', content: finalText })
+      database.messages.addMessage(convId, 'assistant', finalText)
+      try {
+        database.feedback.recordTurn(convId, userMessage, finalText)
+      } catch {
+        /* best-effort */
+      }
+      recorder.commit(finalText, false)
+      emit(win, 'openui:chat:done', { text: finalText, toolCall: null })
+      return
+    }
 
     // ── Planning stage ────────────────────────────────────────────────────────
     // For task-shaped requests, decompose into a checklist FIRST, show every
@@ -823,6 +874,26 @@ export async function handleChat(win: BrowserWindow, userMessage: string, tier: 
         history.push({
           role: 'user',
           content: `TOOL RESULT [${COMPLETE_STEP_TOOL}] success: step ${stepId || '(unknown)'} checked off. Continue with the next step.`
+        })
+        continue
+      }
+
+      // spawn_subagents fans the turn out into REAL concurrent sub-agents, each
+      // on its own model from the live pool. It is orchestrated here (never via
+      // executeTool) and feeds a merged summary back so the parent can continue.
+      if (toolCall.tool === SPAWN_SUBAGENTS_TOOL) {
+        const specs = parseSubTaskSpecs(toolCall.args)
+        if (specs.length === 0) {
+          history.push({
+            role: 'user',
+            content: `TOOL RESULT [${SPAWN_SUBAGENTS_TOOL}] error: no valid tasks. Provide {"tasks":[{"title":"…","instruction":"…"}]}.`
+          })
+          continue
+        }
+        const summary = await runParallelSubagents(win, specs, effectiveTier)
+        history.push({
+          role: 'user',
+          content: `TOOL RESULT [${SPAWN_SUBAGENTS_TOOL}] success: ${summary}`
         })
         continue
       }

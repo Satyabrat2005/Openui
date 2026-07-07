@@ -10,7 +10,7 @@
  *
  * PLATFORM: open_app, search_files, and control_calendar select a backend at
  * call time via process.platform:
- *   macOS   → AppleScript via node-osascript (lazy-loaded)
+ *   macOS   → AppleScript via the `osascript` binary (execFile, no shell)
  *   Windows → PowerShell (Start-Process / Get-ChildItem / Outlook COM)
  *   Linux   → best-effort xdg-open / find (limited functionality)
  * Mouse/keyboard tools use @nut-tree/nut-js which is cross-platform.
@@ -26,8 +26,9 @@ import { readFile, writeFile, mkdir, rename, copyFile, unlink, readdir, stat } f
 import { resolve as resolvePath, join as joinPath, dirname, sep } from 'node:path'
 import { homedir } from 'node:os'
 import { SENSITIVE_PATH_RE, resolveSafePath } from './fs/pathSafety'
-import { desktopCapturer, clipboard, shell, BrowserWindow } from 'electron'
-import { checkAccessibility, type PermissionTarget } from './permissions'
+import { app, desktopCapturer, clipboard, shell, BrowserWindow } from 'electron'
+import { checkAccessibility, checkScreenRecording, type PermissionTarget } from './permissions'
+import { resolveApp, type InstalledApp } from './appResolver'
 import { githubToolSchemas, githubRegistry } from './github'
 import { figmaToolSchemas, figmaRegistry } from './figma'
 import { callChatProxyText } from './edgeFunctions'
@@ -101,6 +102,7 @@ export const STATE_CHANGING_TOOLS = new Set<string>([
   'left_click',
   'type_text',
   'open_app',
+  'open_whatsapp_chat',
   'move_mouse',
   // computer_use hands the loop autonomous mouse/keyboard control; the whole loop
   // takes ONE approval up front rather than gating each synthesised action.
@@ -117,6 +119,12 @@ export const STATE_CHANGING_TOOLS = new Set<string>([
   'copy_file',
   'delete_file',
   'write_clipboard',
+  // GitHub repo automation — outward-facing writes, gated behind the HITL modal.
+  // check_repo_exists is intentionally absent (read-only). open_pull_request is
+  // additionally listed in DESTRUCTIVE_TOOLS so it ALWAYS confirms.
+  'create_repo',
+  'update_readme',
+  'open_pull_request',
 ])
 
 /**
@@ -130,8 +138,12 @@ export const STATE_CHANGING_TOOLS = new Set<string>([
  * delete_file moves the target to the OS Recycle Bin / Trash (recoverable)
  * rather than hard-unlinking, but it is still listed here so it ALWAYS asks —
  * even under approve-plan / full-auto autonomy a deletion is never silently run.
+ *
+ * open_pull_request is the outward-facing, hard-to-reverse GitHub step (auto-merge
+ * is explicitly out of scope): opening a PR always requires one human approval,
+ * so it lives here rather than only in STATE_CHANGING_TOOLS.
  */
-export const DESTRUCTIVE_TOOLS = new Set<string>(['delete_file'])
+export const DESTRUCTIVE_TOOLS = new Set<string>(['delete_file', 'open_pull_request'])
 
 /**
  * Returned by executeTool when a state-changing tool needs user approval.
@@ -163,7 +175,7 @@ const TIER_ORDER: Tier[] = ['free', 'pro', 'enterprise']
 
 type Executor = (args: Record<string, unknown>, context?: ExecutorContext) => Promise<ToolResult>
 
-// ── macOS helpers (AppleScript via node-osascript) ────────────────────────────
+// ── macOS helpers (AppleScript via osascript) ──────────────────────────────
 
 /** require() the first module name that resolves; throws if none do. */
 function requireFirst(names: string[]): unknown {
@@ -183,30 +195,37 @@ function requireFirst(names: string[]): unknown {
  * Escape a JS string for safe interpolation into an AppleScript double-quoted
  * string literal.
  *
- * SECURITY: node-osascript's variable-injection helper serialises strings as
- * '"' + value + '"' with NO escaping, so any '"' in a value breaks out of the
- * literal and the rest of the value is executed as AppleScript. We therefore
- * build the full script ourselves with every untrusted value passed through
- * this escaper and never use the package's variable injection.
+ * SECURITY: the script text is interpolated directly (there is no separate
+ * variable-injection channel to osascript), so any unescaped '"' in a value
+ * would break out of the literal and the rest of the value would execute as
+ * AppleScript. Every untrusted value MUST be passed through this escaper
+ * before being embedded in a script string.
  */
 function asStringLiteral(value: string): string {
   return '"' + value.replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"'
 }
 
+// Hard wall-clock bound on every AppleScript child, matching PS_TIMEOUT_MS/
+// PS_MAX_BUFFER below — a hung `tell application` call (e.g. a modal dialog)
+// is killed rather than left to hang the tool call indefinitely.
+const AS_TIMEOUT_MS = 15_000
+const AS_MAX_BUFFER = 1024 * 1024
+
 /**
- * Run a fully-formed AppleScript via node-osascript. All dynamic values must
- * already be embedded as escaped literals via asStringLiteral() — the broken
- * built-in serialiser is never exercised.
+ * Run a fully-formed AppleScript via the `osascript` binary directly (no
+ * shell — the script is passed as a single argv element to execFile). All
+ * dynamic values must already be embedded as escaped literals via
+ * asStringLiteral(). Bounded by AS_TIMEOUT_MS/AS_MAX_BUFFER so a hung script
+ * (and its child process) cannot hang a tool call forever — a Promise.race
+ * alone would not achieve this, since it only stops waiting without killing
+ * the underlying process.
  */
-function runAppleScript(script: string): Promise<string> {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const osascript = requireFirst(['node-osascript']) as any
-  return new Promise<string>((resolve, reject) => {
-    osascript.execute(script, (err: unknown, result: unknown): void => {
-      if (err) reject(err instanceof Error ? err : new Error(String(err)))
-      else resolve(Array.isArray(result) ? result.join(', ') : String(result ?? ''))
-    })
+async function runAppleScript(script: string): Promise<string> {
+  const { stdout } = await execFileAsync('osascript', ['-e', script], {
+    timeout: AS_TIMEOUT_MS,
+    maxBuffer: AS_MAX_BUFFER
   })
+  return stdout.trim()
 }
 
 // ── Windows helpers (PowerShell) ──────────────────────────────────────────────
@@ -308,6 +327,255 @@ const WIN_BLOCKED_APPS = new Set([
   'regedit', 'regedt32', 'reg', 'bcdedit', 'wmic'
 ])
 
+/**
+ * macOS counterpart to WIN_BLOCKED_APPS: shells, terminals and scripting
+ * hosts that turn open_app + type_text into arbitrary code execution.
+ * Matched case-insensitively, with any ".app" stripped.
+ */
+const MAC_BLOCKED_APPS = new Set([
+  'terminal', 'iterm', 'iterm2', 'script editor', 'applescript editor',
+  'automator', 'console', 'shortcuts'
+])
+
+/**
+ * PowerShell resolver for open_app on Windows. A plain `Start-Process -FilePath
+ * <name>` only works for a full path or an executable already on PATH — it fails
+ * for Store/UWP apps (WhatsApp, Spotify, WhatsApp Desktop) and for desktop apps
+ * whose .exe isn't on PATH. This script resolves a friendly name the way a user
+ * would from the Start menu, trying each strategy in order and stopping at the
+ * first that launches:
+ *   1. A literal existing path (full path passed straight through).
+ *   2. An installed app matched by display name via Get-StartApps — this covers
+ *      both Store/UWP apps (launched via shell:AppsFolder\<AppUserModelID>) and
+ *      registered desktop apps.
+ *   3. A Start-menu shortcut (.lnk) whose name matches.
+ *   4. A last-resort Start-Process so PATH names (notepad, msedge, code) still work.
+ *
+ * SECURITY: the untrusted app name is read only as the VALUE `$env:OPENUI_APP`
+ * (supplied via extraEnv) and is never spliced into the script text, so it cannot
+ * be re-parsed as PowerShell code. open_app also whitelists the name against
+ * APP_NAME_RE (no `*?[]` wildcards) before this runs.
+ */
+const WIN_OPEN_APP_SCRIPT = `
+$ErrorActionPreference = 'SilentlyContinue'
+$ProgressPreference = 'SilentlyContinue'
+$app = $env:OPENUI_APP
+if ([string]::IsNullOrWhiteSpace($app)) { Write-Error 'No application name provided.'; exit 1 }
+
+# 1) A literal file/path that exists — launch it directly.
+if (Test-Path -LiteralPath $app) {
+  Start-Process -FilePath $app
+  Write-Output 'path'
+  exit 0
+}
+
+# 2) Match an installed app by display name (covers Store/UWP + registered desktop apps).
+$match = $null
+try {
+  $apps = Get-StartApps
+  $match = $apps | Where-Object { $_.Name -ieq $app } | Select-Object -First 1
+  if (-not $match) { $match = $apps | Where-Object { $_.Name -like ('*' + $app + '*') } | Select-Object -First 1 }
+} catch { }
+if ($match) {
+  Start-Process ('shell:AppsFolder\\' + $match.AppID)
+  Write-Output ('app: ' + $match.Name)
+  exit 0
+}
+
+# 3) A Start-menu shortcut (.lnk) whose name matches.
+$roots = @(
+  (Join-Path $env:ProgramData 'Microsoft\\Windows\\Start Menu\\Programs'),
+  (Join-Path $env:AppData 'Microsoft\\Windows\\Start Menu\\Programs')
+)
+foreach ($root in $roots) {
+  if (Test-Path -LiteralPath $root) {
+    $links = Get-ChildItem -LiteralPath $root -Recurse -Filter *.lnk -ErrorAction SilentlyContinue
+    $lnk = $links | Where-Object { $_.BaseName -ieq $app } | Select-Object -First 1
+    if (-not $lnk) { $lnk = $links | Where-Object { $_.BaseName -like ('*' + $app + '*') } | Select-Object -First 1 }
+    if ($lnk) {
+      Start-Process -FilePath $lnk.FullName
+      Write-Output ('shortcut: ' + $lnk.BaseName)
+      exit 0
+    }
+  }
+}
+
+# 4) Last resort: let Start-Process resolve it on PATH (notepad, calc, msedge, code...).
+try {
+  Start-Process -FilePath $app -ErrorAction Stop
+  Write-Output 'path'
+  exit 0
+} catch {
+  # Write straight to the stderr stream: Write-Error is swallowed here because
+  # $ErrorActionPreference = 'SilentlyContinue', which would leave the caller with
+  # only Node's opaque "Command failed: <base64>" message and no real reason.
+  [Console]::Error.WriteLine("Could not find an application named '" + $app + "'. Try its exact name as shown in the Start menu (e.g. 'Visual Studio Code', not 'VS Code'), or a full path to its .exe.")
+  exit 1
+}
+`.trim()
+
+/**
+ * Static index script for the OpenUI app resolver: enumerate every installed app
+ * the user could open, as JSON. Two sources cover the vast majority of apps:
+ *   • Get-StartApps — Store/UWP apps + registered desktop apps, each with an
+ *     AppUserModelID we can launch via shell:AppsFolder.
+ *   • Start-menu .lnk shortcuts — path-launchable, and a safety net for anything
+ *     Get-StartApps misses.
+ * Takes NO user input, so nothing untrusted is ever spliced into the script.
+ */
+const WIN_LIST_APPS_SCRIPT = `
+$ErrorActionPreference = 'SilentlyContinue'
+$ProgressPreference = 'SilentlyContinue'
+$apps = New-Object System.Collections.ArrayList
+foreach ($a in (Get-StartApps)) {
+  if ($a.Name) {
+    [void]$apps.Add([pscustomobject]@{ name = [string]$a.Name; appId = [string]$a.AppID; path = ''; source = 'startapps' })
+  }
+}
+$roots = @(
+  (Join-Path $env:ProgramData 'Microsoft\\Windows\\Start Menu\\Programs'),
+  (Join-Path $env:AppData 'Microsoft\\Windows\\Start Menu\\Programs')
+)
+foreach ($root in $roots) {
+  if (Test-Path -LiteralPath $root) {
+    Get-ChildItem -LiteralPath $root -Recurse -Filter *.lnk -ErrorAction SilentlyContinue | ForEach-Object {
+      [void]$apps.Add([pscustomobject]@{ name = [string]$_.BaseName; appId = ''; path = [string]$_.FullName; source = 'shortcut' })
+    }
+  }
+}
+# @(...) guarantees a JSON array even when only one app is found.
+ConvertTo-Json -InputObject @($apps) -Compress -Depth 3
+`.trim()
+
+/** Launch a resolved app by its Start-menu AppID (Store/UWP + registered desktop). */
+const WIN_LAUNCH_APPID_SCRIPT = `
+$ErrorActionPreference = 'Stop'
+Start-Process ('shell:AppsFolder\\' + $env:OPENUI_LAUNCH_TARGET)
+`.trim()
+
+/** Launch a resolved app by a full path to its .exe/.lnk. */
+const WIN_LAUNCH_PATH_SCRIPT = `
+$ErrorActionPreference = 'Stop'
+Start-Process -FilePath $env:OPENUI_LAUNCH_TARGET
+`.trim()
+
+// In-memory index of installed apps. Enumerating shells out to PowerShell (a few
+// hundred ms), so a short TTL cache keeps rapid "open X / open Y" sequences snappy
+// without going stale as the user installs/uninstalls apps across a session.
+let _winAppCache: { at: number; apps: InstalledApp[] } | null = null
+const WIN_APP_CACHE_TTL_MS = 60_000
+
+/** Enumerate installed Windows apps (cached), for the resolver + list_apps. */
+async function enumerateWindowsApps(): Promise<InstalledApp[]> {
+  if (_winAppCache && Date.now() - _winAppCache.at < WIN_APP_CACHE_TTL_MS) {
+    return _winAppCache.apps
+  }
+  const out = await runPowerShellScript(WIN_LIST_APPS_SCRIPT)
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(out || '[]')
+  } catch {
+    parsed = []
+  }
+  const arr = Array.isArray(parsed) ? parsed : parsed ? [parsed] : []
+  const apps: InstalledApp[] = []
+  for (const raw of arr) {
+    const a = raw as Record<string, unknown>
+    const name = typeof a?.name === 'string' ? a.name.trim() : ''
+    if (!name) continue
+    apps.push({
+      name,
+      appId: typeof a.appId === 'string' && a.appId ? a.appId : undefined,
+      path: typeof a.path === 'string' && a.path ? a.path : undefined,
+      source: a.source === 'shortcut' ? 'shortcut' : 'startapps'
+    })
+  }
+  _winAppCache = { at: Date.now(), apps }
+  return apps
+}
+
+// Standard locations for .app bundles. readdir (not `mdfind`) so this works
+// even when Spotlight is disabled or still indexing.
+const MAC_APP_DIRS = [
+  '/Applications',
+  '/Applications/Utilities',
+  '/System/Applications',
+  '/System/Applications/Utilities',
+  joinPath(homedir(), 'Applications')
+]
+
+let _macAppCache: { at: number; apps: InstalledApp[] } | null = null
+const MAC_APP_CACHE_TTL_MS = 60_000
+
+/** Enumerate installed macOS apps (cached), for the resolver + list_apps. */
+async function enumerateMacApps(): Promise<InstalledApp[]> {
+  if (_macAppCache && Date.now() - _macAppCache.at < MAC_APP_CACHE_TTL_MS) {
+    return _macAppCache.apps
+  }
+  const apps: InstalledApp[] = []
+  for (const dir of MAC_APP_DIRS) {
+    let entries: string[]
+    try {
+      entries = await readdir(dir)
+    } catch {
+      continue
+    }
+    for (const entry of entries) {
+      if (!entry.endsWith('.app')) continue
+      apps.push({
+        name: entry.slice(0, -'.app'.length),
+        path: joinPath(dir, entry),
+        source: 'app-bundle'
+      })
+    }
+  }
+  _macAppCache = { at: Date.now(), apps }
+  return apps
+}
+
+/** Launch a resolved app by AppID (preferred) or path. Throws on failure. */
+async function launchWindowsApp(match: InstalledApp): Promise<void> {
+  if (match.appId) {
+    await runPowerShellScript(WIN_LAUNCH_APPID_SCRIPT, { OPENUI_LAUNCH_TARGET: match.appId })
+  } else if (match.path) {
+    await runPowerShellScript(WIN_LAUNCH_PATH_SCRIPT, { OPENUI_LAUNCH_TARGET: match.path })
+  } else {
+    throw new Error(`No launch target for "${match.name}".`)
+  }
+}
+
+/**
+ * List the apps installed on this machine (read-only). Lets the model discover
+ * the exact name to pass to open_app when the user's phrasing is ambiguous, and
+ * lets the user ask "what can you open?". Supported on Windows (Start-menu +
+ * Get-StartApps index) and macOS (.app bundles in the standard Applications
+ * directories); Linux returns a clear "not supported yet" message.
+ */
+async function list_apps(args: Record<string, unknown>): Promise<ToolResult> {
+  if (!IS_WIN && !IS_MAC) {
+    return {
+      ok: false,
+      error: 'list_apps is currently supported on Windows and macOS only.'
+    }
+  }
+  try {
+    const apps = IS_MAC ? await enumerateMacApps() : await enumerateWindowsApps()
+    const filter = typeof args.filter === 'string' ? args.filter.toLowerCase().trim() : ''
+    const names = [...new Set(apps.map((a) => a.name))].sort((a, b) => a.localeCompare(b))
+    const shown = filter ? names.filter((n) => n.toLowerCase().includes(filter)) : names
+    if (shown.length === 0) {
+      return { ok: true, output: filter ? `No installed apps match "${filter}".` : 'No installed apps found.' }
+    }
+    const header = filter
+      ? `Installed apps matching "${filter}" (${shown.length}):`
+      : `Installed apps (${shown.length}):`
+    return { ok: true, output: `${header}\n${shown.join('\n')}` }
+  } catch (err) {
+    const stderr = (err as { stderr?: string }).stderr?.trim()
+    return { ok: false, error: `list_apps failed: ${stderr || (err instanceof Error ? err.message : String(err))}` }
+  }
+}
+
 // SENSITIVE_PATH_RE + resolveSafePath live in ./fs/pathSafety so the filesystem
 // trust boundary can be unit-tested without importing this heavyweight module.
 // search_files also uses SENSITIVE_PATH_RE to withhold credential/token paths
@@ -321,29 +589,67 @@ function loadNut(): any {
 
 // ── Playwright browser automation ─────────────────────────────────────────────
 
-// Singleton headful Chromium browser and page.  null before the first
-// browser_navigate call, or after the browser is closed/crashed.
+// Singleton headful browser CONTEXT (persistent profile) and page. null before
+// the first browser_navigate call, or after the browser is closed/crashed.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-let _pwBrowser: any = null
+let _pwContext: any = null
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let _pwPage: any = null
 
 /**
- * Lazy-load Playwright (must be `npm install`-ed separately, along with
- * `npx playwright install chromium`) and return the shared Page, launching a
- * headful Chromium window if none is already open.  The same browser window
- * persists across tool calls so the user can watch OpenUI work.
+ * Browser channels tried, in order, when launching the automation browser.
+ * We prefer the user's REAL installed browser (Edge, then Chrome) so the window
+ * looks and behaves like their normal browser; `undefined` falls back to
+ * Playwright's bundled Chromium when neither is installed.
+ */
+const BROWSER_CHANNELS: (string | undefined)[] = IS_WIN
+  ? ['msedge', 'chrome', undefined]
+  : ['chrome', 'msedge', undefined]
+
+/**
+ * Lazy-load Playwright (must be `npm install`-ed separately) and return the
+ * shared Page, launching a headful window if none is already open.
+ *
+ * This drives the user's REAL installed browser (Edge/Chrome via a Playwright
+ * channel) inside a PERSISTENT profile stored under the app's userData dir — not
+ * a throwaway "guest" Chromium. That means cookies/logins survive across runs,
+ * so the user can sign in once and the automation window stays useful instead of
+ * being an empty test browser. The same window persists across tool calls so the
+ * user can watch OpenUI work.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function getOrCreatePage(): Promise<any> {
   if (_pwPage) return _pwPage
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const pw = requireFirst(['playwright']) as any
-  _pwBrowser = await pw.chromium.launch({ headless: false })
-  _pwPage = await _pwBrowser.newPage()
+
+  // A dedicated, persistent profile dir keeps logins/cookies between sessions.
+  // It is separate from the user's live browser profile (which is locked while
+  // their browser is open), so launching never conflicts with normal browsing.
+  const profileDir = joinPath(app.getPath('userData'), 'browser-profile')
+
+  let lastErr: unknown = null
+  for (const channel of BROWSER_CHANNELS) {
+    try {
+      _pwContext = await pw.chromium.launchPersistentContext(profileDir, {
+        headless: false,
+        channel,
+        viewport: null,
+        args: ['--start-maximized', '--no-first-run', '--no-default-browser-check']
+      })
+      break
+    } catch (err) {
+      lastErr = err // channel not installed — try the next one
+    }
+  }
+  if (!_pwContext) {
+    throw lastErr instanceof Error ? lastErr : new Error('Failed to launch a browser')
+  }
+
+  _pwPage = _pwContext.pages()[0] ?? (await _pwContext.newPage())
   // Reset state if the browser is closed by the user or crashes.
-  _pwBrowser.on('disconnected', () => {
-    _pwBrowser = null
+  _pwContext.on('close', () => {
+    _pwContext = null
     _pwPage = null
   })
   return _pwPage
@@ -351,16 +657,16 @@ async function getOrCreatePage(): Promise<any> {
 
 /**
  * Gracefully close the Playwright browser.  Should be called from the main
- * process before the Electron app quits so Chromium exits cleanly.
+ * process before the Electron app quits so the browser exits cleanly.
  */
 export async function closeBrowser(): Promise<void> {
-  if (_pwBrowser) {
+  if (_pwContext) {
     try {
-      await _pwBrowser.close()
+      await _pwContext.close()
     } catch {
       // ignore — process exit will kill the child anyway
     }
-    _pwBrowser = null
+    _pwContext = null
     _pwPage = null
   }
 }
@@ -393,6 +699,39 @@ async function open_app(args: Record<string, unknown>): Promise<ToolResult> {
   }
   try {
     if (IS_MAC) {
+      const isMacBlocked = (name: string): boolean =>
+        MAC_BLOCKED_APPS.has(name.toLowerCase().replace(/\.app$/, '').trim())
+      if (isMacBlocked(appName)) {
+        return {
+          ok: false,
+          error: `open_app refuses to launch "${appName}": shells, terminals and scripting hosts are blocked for safety.`
+        }
+      }
+      // OpenUI resolver: index installed .app bundles and fuzzy-match the
+      // user's phrasing ("vs code" → "Visual Studio Code"), mirroring the
+      // Windows path below. Matched in JS against system-supplied names —
+      // never spliced into a script — and the winner launched via `open -a`
+      // (no shell). Re-checked against the blocklist in case an alias ever
+      // maps a benign phrase to a blocked app name.
+      const match = resolveApp(appName, await enumerateMacApps())
+      if (match) {
+        if (isMacBlocked(match.name)) {
+          return {
+            ok: false,
+            error: `open_app refuses to launch "${match.name}": shells, terminals and scripting hosts are blocked for safety.`
+          }
+        }
+        if (match.path) {
+          await execFileAsync('open', ['-a', match.path])
+        } else {
+          await runAppleScript(`tell application ${asStringLiteral(match.name)} to activate`)
+        }
+        const via = match.name.toLowerCase() === appName.toLowerCase() ? '' : ` (matched "${appName}")`
+        return { ok: true, output: `Launched ${match.name}${via}.` }
+      }
+      // Fallback: not in the standard bundle directories (e.g. a system
+      // service, or an app addressed by its AppleScript application name
+      // rather than its bundle display name) — let AppleScript resolve it.
       await runAppleScript(`tell application ${asStringLiteral(appName)} to activate`)
     } else if (IS_WIN) {
       const base = appName.toLowerCase().replace(/\.exe$/, '').trim()
@@ -402,26 +741,148 @@ async function open_app(args: Record<string, unknown>): Promise<ToolResult> {
           error: `open_app refuses to launch "${appName}": shells, scripting hosts and registry tools are blocked for safety.`
         }
       }
-      // The app name is passed out-of-band via the environment and read as a
-      // value ($env:OPENUI_APP); it never appears in the command text, so it
-      // cannot be parsed as PowerShell code.
-      await runPowerShell('Start-Process -FilePath $env:OPENUI_APP', { OPENUI_APP: appName })
+      // OpenUI resolver: index the installed apps and fuzzy-match the user's
+      // phrasing ("VS Code" → "Visual Studio Code", "chrome" → "Google Chrome").
+      // The user text is matched in JS against system-supplied names — it is never
+      // spliced into a script — and the winner is launched by its AppID/path.
+      const match = resolveApp(appName, await enumerateWindowsApps())
+      if (match) {
+        await launchWindowsApp(match)
+        const via = match.name.toLowerCase() === appName.toLowerCase() ? '' : ` (matched "${appName}")`
+        return { ok: true, output: `Launched ${match.name}${via}.` }
+      }
+      // Fallback resolver script: handles literal full paths and bare PATH names
+      // (notepad, msedge, code) that aren't in the Start-menu index. The app name
+      // is passed out-of-band via $env:OPENUI_APP, never spliced into the script.
+      const out = await runPowerShellScript(WIN_OPEN_APP_SCRIPT, { OPENUI_APP: appName })
+      return { ok: true, output: `Launched ${appName}${out ? ` (${out})` : ''}.` }
     } else {
       // Linux best-effort: xdg-open treats the argument as a file/URI/app name.
       await execFileAsync('xdg-open', [appName])
     }
     return { ok: true, output: `Activated ${appName}.` }
   } catch (err) {
+    // execFile rejects with message "Command failed: <full command line>", which
+    // for -EncodedCommand is a giant base64 blob — useless to the model/user and
+    // context-polluting. Prefer the process's real stderr (the friendly resolver
+    // message) and fall back to the raw message only when stderr is empty.
+    const stderr = (err as { stderr?: string }).stderr?.trim()
+    const detail = stderr || (err instanceof Error ? err.message : String(err))
     return {
       ok: false,
-      error: `Tool execution failed: ${err instanceof Error ? err.message : String(err)}`
+      error: `open_app could not launch "${appName}": ${detail}`
     }
+  }
+}
+
+/** Sleep helper for scripted UI flows (WhatsApp chat opening, etc.). */
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+/** Press then release a key combo via nut-js (e.g. Ctrl+F). */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function tapKeys(nut: any, ...keys: any[]): Promise<void> {
+  await nut.keyboard.pressKey(...keys)
+  await nut.keyboard.releaseKey(...keys)
+}
+
+/**
+ * Open a specific WhatsApp conversation by contact/group name.
+ *
+ * Why a dedicated tool instead of letting the model chain open_app → read_screen
+ * → click: on the local/free tier read_screen only returns OCR *text*, never the
+ * X,Y coordinates that move_mouse/left_click need, so a visual "find the search
+ * box and click it" flow is impossible there. Modelling the whole flow as one
+ * deterministic, keyboard-driven tool sidesteps that — WhatsApp Desktop's own
+ * shortcuts (Ctrl+F to focus chat search, type, Enter to open the top hit) work
+ * without any coordinates. This is UI automation, so timings are necessarily
+ * best-effort; the delays are overridable via OPENUI_WA_* env vars for tuning.
+ */
+async function open_whatsapp_chat(args: Record<string, unknown>): Promise<ToolResult> {
+  const raw =
+    typeof args.contact === 'string'
+      ? args.contact
+      : typeof args.name === 'string'
+        ? args.name
+        : typeof args.query === 'string'
+          ? args.query
+          : ''
+  // Strip control chars/newlines: a stray newline would submit the search early.
+  // eslint-disable-next-line no-control-regex
+  const contact = raw.replace(/[\x00-\x1f\x7f]/g, '').trim()
+  if (!contact) {
+    return { ok: false, error: 'open_whatsapp_chat requires a "contact" name (the chat to open).' }
+  }
+  if (contact.length > 128) {
+    return { ok: false, error: 'open_whatsapp_chat "contact" is too long (max 128 characters).' }
+  }
+  if (!checkAccessibility()) {
+    return {
+      ok: false,
+      error:
+        'Tool execution failed: Missing OS permissions — Accessibility access is required for keyboard control. ' +
+        'Please grant access in System Settings → Privacy & Security → Accessibility.',
+      permissionDenied: 'accessibility'
+    }
+  }
+
+  const launchMs = Number(process.env.OPENUI_WA_LAUNCH_MS ?? 3000)
+  const searchMs = Number(process.env.OPENUI_WA_SEARCH_MS ?? 900)
+  const filterMs = Number(process.env.OPENUI_WA_FILTER_MS ?? 2000)
+
+  try {
+    // 1) Launch or focus WhatsApp. Reuse the Start-menu resolver on Windows so the
+    //    Store/UWP app is found the same way `open_app WhatsApp` finds it.
+    if (IS_MAC) {
+      await runAppleScript('tell application "WhatsApp" to activate')
+    } else if (IS_WIN) {
+      await runPowerShellScript(WIN_OPEN_APP_SCRIPT, { OPENUI_APP: 'WhatsApp' })
+    } else {
+      await execFileAsync('xdg-open', ['whatsapp://'])
+    }
+
+    const nut = loadNut()
+    // Give the window time to appear + gain focus (cold start is slow; a warm app
+    // just refocuses). Keyboard input goes to whatever is focused, so this wait is
+    // what makes the difference between typing into WhatsApp vs. into thin air.
+    await delay(launchMs)
+
+    // 2) Focus the chat-search box. Escape first clears any open menu/compose
+    //    state so Ctrl+F reliably lands on the top-level "Search" field.
+    await tapKeys(nut, nut.Key.Escape)
+    await delay(200)
+    await tapKeys(nut, nut.Key.LeftControl, nut.Key.F)
+    await delay(searchMs)
+
+    // 3) Clear any residual query, then type the contact name.
+    await tapKeys(nut, nut.Key.LeftControl, nut.Key.A)
+    await tapKeys(nut, nut.Key.Delete)
+    await nut.keyboard.type(contact)
+    await delay(filterMs) // let the results list filter down
+
+    // 4) Open the top match: select the first result, then Enter.
+    await tapKeys(nut, nut.Key.Down)
+    await delay(200)
+    await tapKeys(nut, nut.Key.Enter)
+
+    return {
+      ok: true,
+      output:
+        `Opened WhatsApp and searched for "${contact}", then opened the top matching chat. ` +
+        `If the wrong chat opened or none did, tell me the contact's exact name as it appears in WhatsApp.`
+    }
+  } catch (err) {
+    const stderr = (err as { stderr?: string }).stderr?.trim()
+    const detail = stderr || (err instanceof Error ? err.message : String(err))
+    return { ok: false, error: `open_whatsapp_chat failed for "${contact}": ${detail}` }
   }
 }
 
 /**
  * Search the filesystem and return matching file paths.
- * macOS:   Spotlight mdfind (no shell — query passed as argv element)
+ * macOS:   Spotlight mdfind, scoped to $HOME, filename match only (no shell —
+ *          query passed as argv elements)
  * Windows: PowerShell Get-ChildItem (home dir, depth 5, filter *query*)
  * Linux:   find (home dir, maxdepth 6, case-insensitive name match)
  */
@@ -434,7 +895,13 @@ async function search_files(args: Record<string, unknown>): Promise<ToolResult> 
     if (IS_MAC) {
       // execFile passes `query` as a single argv element to mdfind — no shell
       // is spawned, so shell metacharacters in the query are inert.
-      const { stdout } = await execFileAsync('mdfind', [query], { maxBuffer: 1024 * 1024 })
+      // Scoped to $HOME (parity with the Windows/Linux branches below) and
+    // matched against the filename only (-name), not Spotlight's default
+    // full-content+metadata search — narrower scope AND narrower semantics,
+    // both intentional.
+    const { stdout } = await execFileAsync('mdfind', ['-onlyin', homedir(), '-name', query], {
+      maxBuffer: 1024 * 1024
+    })
       rawOutput = stdout
     } else if (IS_WIN) {
       // The query is passed out-of-band via the environment and referenced as a
@@ -587,15 +1054,17 @@ try {
   $lines = @()
   foreach ($item in $f) { $lines += "$($item.Subject) @ $($item.Start)" }
   if ($lines.Count -eq 0) { 'No events scheduled today.' } else { $lines -join [char]10 }
-} catch { 'Calendar not available (Microsoft Outlook required): ' + $_.Exception.Message }
+} catch { Write-Error ('Calendar not available (Microsoft Outlook required): ' + $_.Exception.Message); exit 1 }
 `
       try {
         const output = await runPowerShellScript(script)
         return { ok: true, output: output || 'No events scheduled today.' }
       } catch (err) {
+        const stderr = (err as { stderr?: string }).stderr?.trim()
+        const detail = stderr || (err instanceof Error ? err.message : String(err))
         return {
           ok: false,
-          error: `Tool execution failed: ${err instanceof Error ? err.message : String(err)}`
+          error: `control_calendar "list" failed: ${detail}`
         }
       }
     }
@@ -626,7 +1095,7 @@ try {
   if ($env:OPENUI_CAL_END) { $appt.End = [DateTime]::Parse($env:OPENUI_CAL_END) } else { $appt.End = $appt.Start.AddHours(1) }
   $appt.Save()
   'Created calendar event: ' + $appt.Subject
-} catch { 'Calendar not available (Microsoft Outlook required): ' + $_.Exception.Message }
+} catch { Write-Error ('Calendar not available (Microsoft Outlook required): ' + $_.Exception.Message); exit 1 }
 `
       try {
         const output = await runPowerShellScript(script, {
@@ -637,9 +1106,11 @@ try {
         })
         return { ok: true, output: output || `Created event "${title}".` }
       } catch (err) {
+        const stderr = (err as { stderr?: string }).stderr?.trim()
+        const detail = stderr || (err instanceof Error ? err.message : String(err))
         return {
           ok: false,
-          error: `Tool execution failed: ${err instanceof Error ? err.message : String(err)}`
+          error: `control_calendar "create" failed: ${detail}`
         }
       }
     }
@@ -798,16 +1269,34 @@ async function read_screen(
   const tier = context?.tier ?? 'free'
 
   // ── 1. Capture the primary display ────────────────────────────────────────
+  // Checked proactively (not just on an empty sources[] result) because on
+  // modern macOS a denied Screen Recording permission often still returns a
+  // source object — just with a blank thumbnail — so the empty-array check
+  // below cannot be relied on alone to catch the denied case.
+  if (IS_MAC && checkScreenRecording() !== 'granted') {
+    return {
+      ok: false,
+      error:
+        'Tool execution failed: Missing OS permissions — Screen Recording access is required. ' +
+        'Please grant access in System Settings → Privacy & Security → Screen Recording.',
+      permissionDenied: 'screenRecording'
+    }
+  }
   let pngBuffer: Buffer
   let base64Image: string
   try {
     ;({ pngBuffer, base64Image } = await captureScreenPng())
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
-    // Preserve the two distinct messages: a missing-source hint vs. a capture error.
+    // Preserve the two distinct messages: a missing-source hint vs. a capture
+    // error. On macOS a missing source almost always means denied Screen
+    // Recording, so carry the permissionDenied signal so the renderer can guide
+    // the user to System Settings.
+    const noSources = msg.startsWith('No screen sources')
     return {
       ok: false,
-      error: msg.startsWith('No screen sources') ? msg : `Screen capture failed: ${msg}`
+      error: noSources ? msg : `Screen capture failed: ${msg}`,
+      ...(IS_MAC && noSources ? { permissionDenied: 'screenRecording' as const } : {})
     }
   }
 
@@ -958,6 +1447,19 @@ async function computer_use(
         'Tool execution failed: Missing OS permissions — Accessibility access is required to control the mouse and keyboard. ' +
         'Please grant access in System Settings → Privacy & Security → Accessibility.',
       permissionDenied: 'accessibility'
+    }
+  }
+
+  // The loop screenshots the display every iteration, so it also needs Screen
+  // Recording on macOS. Check it proactively (a denied permission can still
+  // return a source with a blank thumbnail) before spending a vision call.
+  if (IS_MAC && checkScreenRecording() !== 'granted') {
+    return {
+      ok: false,
+      error:
+        'Tool execution failed: Missing OS permissions — Screen Recording access is required. ' +
+        'Please grant access in System Settings → Privacy & Security → Screen Recording.',
+      permissionDenied: 'screenRecording'
     }
   }
 
@@ -1383,11 +1885,52 @@ export const toolSchemas: ToolSchema[] = [
     description:
       'Launch or focus an application by name. ' +
       'On macOS, use the display name (e.g. "Safari", "Calendar"). ' +
-      'On Windows, use the executable name (e.g. "notepad", "msedge", "code").',
+      'On Windows, use the name as it appears in the Start menu — friendly names ' +
+      'work for Store and desktop apps alike (e.g. "WhatsApp", "Spotify", "Notepad", ' +
+      '"Microsoft Edge"), as do bare executable names on PATH ("notepad", "msedge", "code") ' +
+      'and full paths to an .exe.',
     parameters: {
       type: 'object',
       properties: { appName: { type: 'string', description: 'The application name to open.' } },
       required: ['appName']
+    }
+  },
+  {
+    name: 'open_whatsapp_chat',
+    description:
+      'Open a specific WhatsApp conversation by contact or group name. Use this ' +
+      'INSTEAD of open_app + read_screen/click whenever the user wants to open, ' +
+      'go to, or message a particular WhatsApp chat (e.g. "open my WhatsApp chat ' +
+      'with Ashu", "message Mom on WhatsApp"). It launches WhatsApp, searches for ' +
+      'the name, and opens the top matching chat via the keyboard — no screen ' +
+      'coordinates needed. Do NOT invent a "search_contact" tool; this is the one to use.',
+    parameters: {
+      type: 'object',
+      properties: {
+        contact: {
+          type: 'string',
+          description: 'The contact or group name of the chat to open, as it appears in WhatsApp.'
+        }
+      },
+      required: ['contact']
+    }
+  },
+  {
+    name: 'list_apps',
+    description:
+      'List the applications installed on this computer (Windows and macOS). Use this to ' +
+      'discover the exact name of an app before calling open_app when the user is ' +
+      'vague, or to answer "what apps can you open?". Optionally pass a "filter" ' +
+      'substring to narrow the list (e.g. filter "studio" to find "Visual Studio Code").',
+    parameters: {
+      type: 'object',
+      properties: {
+        filter: {
+          type: 'string',
+          description: 'Optional case-insensitive substring to filter app names by.'
+        }
+      },
+      required: []
     }
   },
   {
@@ -1701,6 +2244,8 @@ async function run_workflow(args: Record<string, unknown>): Promise<ToolResult> 
 
 const registry: Record<string, Executor> = {
   open_app,
+  open_whatsapp_chat,
+  list_apps,
   search_files,
   control_calendar,
   move_mouse,
@@ -1838,6 +2383,10 @@ export function describeToolCall(name: string, args: Record<string, unknown>): s
   switch (name) {
     case 'open_app':
       return `Open ${String(args.appName ?? args.name ?? 'app')}`
+    case 'open_whatsapp_chat':
+      return `Open WhatsApp chat with ${String(args.contact ?? args.name ?? args.query ?? '')}`
+    case 'list_apps':
+      return args.filter ? `List installed apps matching "${String(args.filter)}"` : 'List installed apps'
     case 'search_files':
       return `Search files for "${String(args.query ?? '')}"`
     case 'control_calendar': {
@@ -1871,6 +2420,14 @@ export function describeToolCall(name: string, args: Record<string, unknown>): s
       return `Get diff for PR #${String(args.pr_number ?? '')} in ${String(args.repo ?? '')}`
     case 'post_pr_comment':
       return `Post review on PR #${String(args.pr_number ?? '')} in ${String(args.repo ?? '')}`
+    case 'check_repo_exists':
+      return `Check if repo ${String(args.repo ?? '')} exists`
+    case 'create_repo':
+      return `Create GitHub repo "${String(args.name ?? '')}"${args.private ? ' (private)' : ''}`
+    case 'update_readme':
+      return `Update README in ${String(args.repo ?? '')}`
+    case 'open_pull_request':
+      return `Open pull request in ${String(args.repo ?? '')}`
     case 'get_figma_file':
       return `Get Figma file ${String(args.file_key ?? '')}`
     case 'export_figma_frames':

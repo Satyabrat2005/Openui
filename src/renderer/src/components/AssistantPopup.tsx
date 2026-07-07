@@ -12,6 +12,11 @@ import SettingsModal from './SettingsModal'
 import { useUpdater } from '../hooks/useUpdater'
 import LocalAIStatus from './LocalAIStatus'
 import ConversationList from './ConversationList'
+import PlusMenu, { type AttachedFile } from './PlusMenu'
+import ConnectAppsModal from './ConnectAppsModal'
+import ThinkingStatus from './ThinkingStatus'
+import Timeline from './Timeline'
+import { useTaskActivity } from '../context/TaskActivityContext'
 
 type HistoryMsg = { role: string; content: string | null; created_at: number }
 
@@ -63,10 +68,18 @@ export default function AssistantPopup({
   initialMessage
 }: Props): JSX.Element {
   const { tier } = useAuth()
+  const { beginTask } = useTaskActivity()
   const [voiceState, setVoiceState] = useState<VoiceState>('idle')
   const [inputText, setInputText] = useState('')
   const initialSentRef = useRef(false)
   const [showSettings, setShowSettings] = useState(false)
+  // Connect-apps (MCP) panel, opened from the "+" menu.
+  const [showConnect, setShowConnect] = useState(false)
+  // Files attached via the "+" menu, folded into the next message as context.
+  const [attachments, setAttachments] = useState<AttachedFile[]>([])
+  // Inline "assign a task" composer, opened from the "+" menu.
+  const [assignOpen, setAssignOpen] = useState(false)
+  const [assignText, setAssignText] = useState('')
   const [showHistory, setShowHistory] = useState(false)
   const [activeConvId, setActiveConvId] = useState<string | null>(null)
   // On a wide/maximized window the session sidebar is pinned permanently open
@@ -93,7 +106,7 @@ export default function AssistantPopup({
 
   // Suppress update banners during onboarding (flag set by the onboarding wizard).
   const onboardingComplete = localStorage.getItem('openui:onboarding-complete') !== 'false'
-  const isMac = navigator.platform.toLowerCase().includes('mac')
+  const isMac = window.openui.platform === 'darwin'
 
   // Imperative refs — caption and bars are managed outside React state so
   // GSAP and rAF writes don't conflict with React's reconciler.
@@ -187,6 +200,7 @@ export default function AssistantPopup({
 
     // Fired by main process after Whisper returns, before the agent streams.
     const offTranscript = window.openui.onTranscript((text) => {
+      beginTask(text, 'chat')
       beginTurn(text)
       captionLockedRef.current = true
       setCaption('')
@@ -198,7 +212,7 @@ export default function AssistantPopup({
       offError()
       offTranscript()
     }
-  }, [setCaption, captionLockedRef, appendToLastAssistant, beginTurn])
+  }, [setCaption, captionLockedRef, appendToLastAssistant, beginTurn, beginTask])
 
   // ── Caption text for each voice state (hero state only) ────────────────
   useEffect(() => {
@@ -351,26 +365,52 @@ export default function AssistantPopup({
 
   // ── Text input send ────────────────────────────────────────────────────
   const handleSend = useCallback(
-    async (text: string): Promise<void> => {
+    async (text: string, opts?: { kind?: 'chat' | 'assigned' }): Promise<void> => {
       const trimmed = text.trim()
       if (!trimmed) return
       if (voiceState === 'recording' || voiceState === 'processing' || voiceState === 'transcribing')
         return
 
+      // Fold any attached files into the message the agent sees, while the
+      // thread bubble shows only what the user typed.
+      const attached = attachments
+      const contextBlock = attached
+        .map((f) =>
+          f.text !== null
+            ? `[Attached file: ${f.name}]\n${f.text}`
+            : `[Attached file: ${f.name} — binary/image, not readable as text]`
+        )
+        .join('\n\n')
+      const agentMessage = contextBlock ? `${contextBlock}\n\n${trimmed}` : trimmed
+
       captionLockedRef.current = true
       setInputText('')
+      setAttachments([])
+      // Open a task card for the board/activity panel before the agent emits its
+      // reset/step events, so the card carries the user's request as its title.
+      beginTask(trimmed, opts?.kind ?? 'chat')
       beginTurn(trimmed)
 
       try {
-        await window.openui.chat(trimmed, tier)
+        await window.openui.chat(agentMessage, tier)
       } catch {
         streamingRef.current = false
         setVoiceState('idle')
         captionLockedRef.current = false
       }
     },
-    [voiceState, captionLockedRef, beginTurn, tier]
+    [voiceState, captionLockedRef, beginTurn, beginTask, attachments, tier]
   )
+
+  // Assign a task straight to the board (from the "+" menu). Same agent path as
+  // chat; "assigned" just tags the card so the board surfaces it immediately.
+  const handleAssign = useCallback((): void => {
+    const text = assignText.trim()
+    if (!text) return
+    setAssignOpen(false)
+    setAssignText('')
+    void handleSend(text, { kind: 'assigned' })
+  }, [assignText, handleSend])
 
   // ── Rate the last response (self-improvement loop) ──────────────────────
   const rate = useCallback((kind: 'up' | 'down'): void => {
@@ -394,6 +434,82 @@ export default function AssistantPopup({
   const showHero = messages.length === 0
   // Pin the sidebar when the window is wide enough; otherwise it slides in.
   const sidebarPinned = wide
+
+  // The composer (input + "+" menu + mic). Rendered centered inside the hero on
+  // a blank session, and docked at the bottom of the thread once a chat starts.
+  const renderComposer = (variant: 'hero' | 'docked'): JSX.Element => (
+    <div className={`ou-composer ${variant}`}>
+      {attachments.length > 0 && (
+        <div className="ou-attachments">
+          {attachments.map((f, i) => (
+            <span className="ou-attach-chip" key={`${f.name}-${i}`}>
+              <span className="ou-attach-name">{f.name}</span>
+              <button
+                type="button"
+                className="ou-attach-x"
+                aria-label={`Remove ${f.name}`}
+                onClick={() => setAttachments((a) => a.filter((_, j) => j !== i))}
+              >
+                ×
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
+      <div className="input-strip">
+        <PlusMenu
+          onAttach={(f) => setAttachments((a) => [...a, f])}
+          onConnect={() => setShowConnect(true)}
+          onAssign={() => setAssignOpen(true)}
+          disabled={isBusy || isRecording}
+        />
+        <input
+          type="text"
+          className="ou-composer-input"
+          value={inputText}
+          onChange={(e) => setInputText(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') handleSend(inputText)
+          }}
+          placeholder="Ask OpenUI anything…"
+          disabled={isBusy || isRecording}
+        />
+        {inputText.trim() !== '' && !isBusy && !isRecording && (
+          <button
+            type="button"
+            className="ou-send-btn"
+            aria-label="Send"
+            title="Send"
+            onClick={() => handleSend(inputText)}
+          >
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none">
+              <path d="M12 20V5M5 12l7-7 7 7" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </button>
+        )}
+        <button
+          type="button"
+          aria-label={isRecording ? 'Stop recording' : 'Start voice input'}
+          title={isRecording ? 'Stop recording' : 'Voice input'}
+          onClick={isBusy ? undefined : handleMicClick}
+          disabled={isBusy}
+          className={`ou-input-mic${isRecording ? ' recording' : ''}`}
+        >
+          {isRecording ? (
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
+              <rect x="6" y="6" width="12" height="12" rx="2.5" fill="currentColor" />
+            </svg>
+          ) : (
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none">
+              <rect x="9" y="2" width="6" height="12" rx="3" fill="currentColor" />
+              <path d="M5 10c0 3.866 3.134 7 7 7s7-3.134 7-7" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+              <line x1="12" y1="19" x2="12" y2="22" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+            </svg>
+          )}
+        </button>
+      </div>
+    </div>
+  )
 
   return (
     <div id="openui-popup">
@@ -634,8 +750,8 @@ export default function AssistantPopup({
         />
       )}
 
-      {/* Scrollable middle region: either the live thread or the mic hero */}
-      <div className="ou-chatbody">
+      {/* Scrollable middle region: either the live thread or the centered hero */}
+      <div className={`ou-chatbody${showHero ? ' hero' : ''}`}>
       {/* Live conversation thread — the real, working chat view */}
       {!showHero && (
         <div className="ou-thread">
@@ -653,15 +769,23 @@ export default function AssistantPopup({
               )
             }
             const display = cleanAssistantText(msg.content)
+            // While the turn is executing, show the dynamic status line above the
+            // reply until the first tokens arrive; then the bubble takes over.
+            const showThinking = isStreaming && !display.trim()
             return (
               <div className="ou-msg" key={i}>
                 <span className="ou-msg-role">OpenUI</span>
-                <div className={`ou-bubble ai${isStreaming ? ' ou-caret' : ''}`}>
-                  {display || (isStreaming ? 'Working…' : '')}
-                </div>
+                {showThinking && <ThinkingStatus active />}
+                {(display.trim() || !isStreaming) && (
+                  <div className={`ou-bubble ai${isStreaming ? ' ou-caret' : ''}`}>{display}</div>
+                )}
               </div>
             )
           })}
+
+          {/* Center tool-call timeline (#1/#2) — every tool call + any real
+              parallel sub-agent group for the current turn, inline in the thread. */}
+          <Timeline />
 
           {/* Was-this-helpful rating — feeds the local self-improvement loop. */}
           {voiceState === 'done' && <FeedbackButtons given={feedbackGiven} onRate={rate} />}
@@ -670,7 +794,10 @@ export default function AssistantPopup({
         </div>
       )}
 
-      {/* Mic stage (hero) — shown only on a blank, idle session */}
+      {/* Hero greeting — the centered headline above the composer */}
+      {showHero && <h1 className="ou-hero-greeting">What can I help you with?</h1>}
+
+      {/* Mic stage — kept mounted so GSAP's rings/bars keep running; hidden off-hero */}
       <div className="mic-stage" style={{ display: showHero ? undefined : 'none' }}>
         <div id="ring-1" className="mic-ring" />
         <div id="ring-2" className="mic-ring" />
@@ -727,70 +854,9 @@ export default function AssistantPopup({
           </div>
         </div>
       </div>
-      </div>
-      {/* /ou-chatbody */}
 
-      {/* Input strip */}
-      <div className="input-strip">
-        <svg
-          width="14"
-          height="14"
-          viewBox="0 0 24 24"
-          fill="none"
-          style={{ color: 'var(--ou-text-faint)', flexShrink: 0 }}
-        >
-          <circle cx="11" cy="11" r="8" stroke="currentColor" strokeWidth="2" />
-          <path d="m21 21-4.35-4.35" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-        </svg>
-        <input
-          type="text"
-          value={inputText}
-          onChange={(e) => setInputText(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') handleSend(inputText)
-          }}
-          placeholder="Ask OpenUI anything…"
-          disabled={isBusy || isRecording}
-          style={{
-            fontSize: 13,
-            color: 'var(--ou-text)',
-            flex: 1,
-            fontFamily: '-apple-system, sans-serif',
-            background: 'none',
-            border: 'none',
-            outline: 'none',
-            opacity: isBusy || isRecording ? 0.4 : 1
-          }}
-        />
-        {/* Compact mic — keeps voice reachable once we're in the chat thread */}
-        <button
-          type="button"
-          aria-label={isRecording ? 'Stop recording' : 'Start voice input'}
-          title={isRecording ? 'Stop recording' : 'Voice input'}
-          onClick={isBusy ? undefined : handleMicClick}
-          disabled={isBusy}
-          className={`ou-input-mic${isRecording ? ' recording' : ''}`}
-        >
-          {isRecording ? (
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
-              <rect x="6" y="6" width="12" height="12" rx="2.5" fill="currentColor" />
-            </svg>
-          ) : (
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none">
-              <rect x="9" y="2" width="6" height="12" rx="3" fill="currentColor" />
-              <path
-                d="M5 10c0 3.866 3.134 7 7 7s7-3.134 7-7"
-                stroke="currentColor"
-                strokeWidth="1.8"
-                strokeLinecap="round"
-              />
-              <line x1="12" y1="19" x2="12" y2="22" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-            </svg>
-          )}
-        </button>
-      </div>
-
-      {/* Suggestion chips — only on the empty hero state */}
+      {/* Hero composer + suggestion chips — centered, only on a blank session */}
+      {showHero && renderComposer('hero')}
       {showHero && (
         <div className="chips-row">
           <div className="chip" onClick={() => handleSend('Check my emails')}>
@@ -805,6 +871,11 @@ export default function AssistantPopup({
         </div>
       )}
       </div>
+      {/* /ou-chatbody */}
+
+      {/* Docked composer — pinned to the bottom of the thread mid-conversation */}
+      {!showHero && renderComposer('docked')}
+      </div>
       {/* /ou-chatcol */}
       </div>
       {/* /ou-workspace */}
@@ -816,6 +887,54 @@ export default function AssistantPopup({
           updateStatus={updateState.status}
           onCheckForUpdates={checkForUpdates}
         />
+      )}
+
+      {/* Connect-apps (MCP) panel — opened from the "+" menu */}
+      {showConnect && <ConnectAppsModal onClose={() => setShowConnect(false)} />}
+
+      {/* Assign-a-task composer — opened from the "+" menu */}
+      {assignOpen && (
+        <div
+          className="ou-modal-scrim"
+          onMouseDown={(e) => {
+            e.stopPropagation()
+            setAssignOpen(false)
+          }}
+        >
+          <div className="ou-assign-panel" onMouseDown={(e) => e.stopPropagation()}>
+            <div className="ou-assign-header">
+              <h3 className="ou-assign-title">Assign a task</h3>
+              <button type="button" className="ou-conn-close" aria-label="Close" onClick={() => setAssignOpen(false)}>
+                ×
+              </button>
+            </div>
+            <p className="ou-assign-sub">Describe the job. OpenUI runs it and tracks progress in the task board.</p>
+            <textarea
+              className="ou-assign-input"
+              value={assignText}
+              onChange={(e) => setAssignText(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) handleAssign()
+              }}
+              placeholder="e.g. Open my browser, find the latest OpenUI release, and summarise the changelog."
+              rows={4}
+              autoFocus
+            />
+            <div className="ou-assign-actions">
+              <button type="button" className="ou-assign-cancel" onClick={() => setAssignOpen(false)}>
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="ou-assign-go"
+                onClick={handleAssign}
+                disabled={assignText.trim() === ''}
+              >
+                Assign task
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Local AI status footer */}

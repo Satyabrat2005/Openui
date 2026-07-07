@@ -90,7 +90,16 @@
         },
         "dmg": {
             "title": "${productName} ${version}",
-            "artifactName": "${productName}-${arch}.${ext}"
+            "artifactName": "${productName}-${arch}.${ext}",
+            "background": "resources/dmg-background.png",
+            "window": {
+                "width": 540,
+                "height": 380
+            },
+            "contents": [
+                { "x": 140, "y": 190, "type": "file" },
+                { "x": 400, "y": 190, "type": "link", "path": "/Applications" }
+            ]
         },
         "win": {
             "target": [
@@ -111,6 +120,9 @@
             "installerIcon": "resources/icon.ico",
             "uninstallerIcon": "resources/icon.ico",
             "uninstallDisplayName": "OpenUI",
+            "installerHeader": "resources/installer-header.bmp",
+            "installerSidebar": "resources/installer-sidebar.bmp",
+            "uninstallerSidebar": "resources/installer-sidebar.bmp",
             "license": "LICENSE",
             "createDesktopShortcut": true,
             "createStartMenuShortcut": true,
@@ -130,7 +142,6 @@
         "better-sqlite3": "^12.11.1",
         "electron-updater": "^6.8.9",
         "gsap": "^3.12.5",
-        "node-osascript": "^2.1.0",
         "ollama": "^0.5.0",
         "openai": "^4.0.0",
         "pdf-parse": "^2.4.5",

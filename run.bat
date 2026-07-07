@@ -25,14 +25,44 @@ if not exist "node_modules" (
     )
 )
 
-:: Ollama powers the free tier. Try to start it if it isn't already running.
-echo Checking local Ollama service (free tier)...
+:: Ollama is OPTIONAL — chat/planning/agent runs are cloud-first (Anthropic/
+:: OpenAI via the chat-proxy). Ollama is only used for local RAG embeddings
+:: and the self-improvement job, so its absence should warn, not block launch.
+where ollama >nul 2>nul
+if %errorlevel% neq 0 (
+    echo [INFO] Ollama not found in PATH — local knowledge-base embeddings and the
+    echo        self-improvement job will be unavailable. Chat still works via the
+    echo        cloud. To enable them, install from https://ollama.com/download
+    echo        then run: ollama pull llama3:8b
+    goto launch
+)
+
+echo Checking local Ollama server...
 powershell -Command "try { Invoke-WebRequest -Uri http://localhost:11434/api/tags -UseBasicParsing -TimeoutSec 3 | Out-Null; exit 0 } catch { exit 1 }" >nul 2>nul
 if %errorlevel% neq 0 (
-    echo [WARNING] Ollama is not running. Attempting to start it...
-    start "" "%LocalAppData%\Programs\Ollama\ollama app.exe"
-    timeout /t 5 >nul
+    echo Ollama is not running. Starting "ollama serve" in a new window...
+    start "Ollama Server" cmd /c "ollama serve"
+    :: Wait for the server to accept connections (up to ~20s).
+    for /l %%i in (1,1,10) do (
+        timeout /t 2 >nul
+        powershell -Command "try { Invoke-WebRequest -Uri http://localhost:11434/api/tags -UseBasicParsing -TimeoutSec 2 | Out-Null; exit 0 } catch { exit 1 }" >nul 2>nul
+        if not errorlevel 1 goto ollama_ready
+    )
+    echo [WARNING] Ollama did not respond in time — RAG/self-improvement features
+    echo           will be unavailable this session; chat is unaffected.
+    goto launch
 )
+:ollama_ready
+
+:: Best-effort: ensure the default embeddings model is pulled. Non-fatal if
+:: this fails or Ollama isn't reachable — it only affects RAG/self-improvement.
+echo Ensuring the local model is available (ollama pull llama3:8b)...
+ollama pull llama3:8b
+if %errorlevel% neq 0 (
+    echo [WARNING] Could not pull llama3:8b — RAG/self-improvement features may be unavailable.
+)
+
+:launch
 
 :: Launch OpenUI in development mode (electron-vite watch + Electron window).
 echo Launching OpenUI...

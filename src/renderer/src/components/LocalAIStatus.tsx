@@ -1,20 +1,22 @@
 import { useEffect, useState } from 'react'
-import { useAuth } from '../context/AuthContext'
-import type { Tier } from '../env'
-
-const CLOUD_LIMIT: Record<Tier, string> = {
-  free: '5 messages/day free',
-  pro: '500 messages/day cloud',
-  enterprise: 'Unlimited cloud messages'
-}
+import { labelForModel } from '../lib/modelLabel'
 
 export default function LocalAIStatus(): JSX.Element {
-  const { tier } = useAuth()
-  // Set when a screen read downgraded to local OCR instead of Claude Vision.
+  // Set when a screen read used local OCR to describe the screen.
   const [ocrHint, setOcrHint] = useState(false)
+  // The REAL model id the backend reported for the most recent turn, or null
+  // before any turn has run. We only ever show a model the backend told us it is
+  // using — never a hardcoded name — and we make no claim about liveness or
+  // cloud-call counts we cannot verify from here.
+  const [model, setModel] = useState<string | null>(null)
 
   useEffect(() => {
     const off = window.openui.onScreenOcrFallback(() => setOcrHint(true))
+    return off
+  }, [])
+
+  useEffect(() => {
+    const off = window.openui.onChatModel(({ model }) => setModel(model))
     return off
   }, [])
 
@@ -30,8 +32,7 @@ export default function LocalAIStatus(): JSX.Element {
       {ocrHint && (
         <div style={hintStyle} role="status">
           <span style={{ flex: 1 }}>
-            Screen read used local OCR (a Free-tier limit, not an error). Upgrade to Pro for
-            precise Claude Vision element detection.
+            Screen read used local OCR to describe the screen — running fully on your machine.
           </span>
           <button
             type="button"
@@ -44,8 +45,10 @@ export default function LocalAIStatus(): JSX.Element {
         </div>
       )}
       <div style={rowStyle}>
-        <span style={{ ...dotStyle, background: '#34c759' }} />
-        <span style={labelStyle}>Cloud AI · {CLOUD_LIMIT[tier]}</span>
+        <span style={{ ...dotStyle, background: model ? '#34c759' : '#c7c7cc' }} />
+        <span style={labelStyle}>
+          {model ? `Local AI · ${labelForModel(model)}` : 'Local AI · Ollama'}
+        </span>
       </div>
     </>
   )
