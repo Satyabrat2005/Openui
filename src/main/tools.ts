@@ -36,6 +36,12 @@ import { trackEvent } from './telemetry/posthog'
 import { Events } from './telemetry/events'
 import { findWorkflow } from './workflows'
 import { searchLocalKnowledge } from './rag'
+import {
+  buildVisionSystemPrompt,
+  parseVisionAction,
+  scaleToScreen,
+  type VisionAction
+} from './visionAction'
 
 // execFile (no shell) is used so arguments are passed as an argv array —
 // there is no shell to interpret quotes, pipes, $(...) or `;`.
@@ -98,6 +104,9 @@ export const STATE_CHANGING_TOOLS = new Set<string>([
   'open_app',
   'open_whatsapp_chat',
   'move_mouse',
+  // computer_use hands the loop autonomous mouse/keyboard control; the whole loop
+  // takes ONE approval up front rather than gating each synthesised action.
+  'computer_use',
   'browser_navigate',
   'browser_click',
   'browser_fill_input',
@@ -156,7 +165,10 @@ export interface PendingApprovalResult {
  * on context.tier.
  */
 export const TIER_TOOL_REQUIREMENTS: Partial<Record<string, Tier>> = {
-  read_screen_cloud_vision: 'pro'
+  read_screen_cloud_vision: 'pro',
+  // The visual fallback loop reasons over screenshots with cloud vision (same
+  // path as read_screen's pro branch), so it requires a paid tier.
+  computer_use: 'pro'
 }
 
 const TIER_ORDER: Tier[] = ['free', 'pro', 'enterprise']
@@ -1216,6 +1228,40 @@ function notifyOcrFallback(): void {
   }
 }
 
+/** A captured frame of the primary display, ready for a vision model. */
+interface ScreenCapture {
+  pngBuffer: Buffer
+  base64Image: string
+  /** Actual thumbnail dimensions (Electron preserves aspect ratio, so these
+   *  rarely equal the requested 1920×1080 box). */
+  width: number
+  height: number
+}
+
+/**
+ * Capture the primary display as a PNG thumbnail. Shared by read_screen and the
+ * computer_use loop. Throws on failure (no sources / capture error) so each
+ * caller can wrap it in whatever error shape it needs.
+ */
+async function captureScreenPng(): Promise<ScreenCapture> {
+  const sources = await desktopCapturer.getSources({
+    types: ['screen'],
+    thumbnailSize: { width: 1920, height: 1080 }
+  })
+  if (!sources.length) {
+    throw new Error(
+      'No screen sources found. ' +
+        (IS_MAC
+          ? 'Ensure Screen Recording permission is granted in System Settings → Privacy & Security → Screen Recording.'
+          : 'Ensure the app has permission to capture the screen.')
+    )
+  }
+  const thumbnail = sources[0].thumbnail
+  const { width, height } = thumbnail.getSize()
+  const pngBuffer = thumbnail.toPNG()
+  return { pngBuffer, base64Image: pngBuffer.toString('base64'), width, height }
+}
+
 async function read_screen(
   _args: Record<string, unknown>,
   context?: ExecutorContext
@@ -1237,31 +1283,22 @@ async function read_screen(
     }
   }
   let pngBuffer: Buffer
+  let base64Image: string
   try {
-    const sources = await desktopCapturer.getSources({
-      types: ['screen'],
-      thumbnailSize: { width: 1920, height: 1080 }
-    })
-    if (!sources.length) {
-      return {
-        ok: false,
-        error:
-          'No screen sources found. ' +
-          (IS_MAC
-            ? 'Ensure Screen Recording permission is granted in System Settings → Privacy & Security → Screen Recording.'
-            : 'Ensure the app has permission to capture the screen.'),
-        ...(IS_MAC ? { permissionDenied: 'screenRecording' as const } : {})
-      }
-    }
-    pngBuffer = sources[0].thumbnail.toPNG()
+    ;({ pngBuffer, base64Image } = await captureScreenPng())
   } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    // Preserve the two distinct messages: a missing-source hint vs. a capture
+    // error. On macOS a missing source almost always means denied Screen
+    // Recording, so carry the permissionDenied signal so the renderer can guide
+    // the user to System Settings.
+    const noSources = msg.startsWith('No screen sources')
     return {
       ok: false,
-      error: `Screen capture failed: ${err instanceof Error ? err.message : String(err)}`
+      error: noSources ? msg : `Screen capture failed: ${msg}`,
+      ...(IS_MAC && noSources ? { permissionDenied: 'screenRecording' as const } : {})
     }
   }
-
-  const base64Image = pngBuffer.toString('base64')
 
   // ── 2. Analyse: Vision API (pro/enterprise) or local OCR (free) ───────────
   if (tier === 'pro' || tier === 'enterprise') {
@@ -1320,6 +1357,188 @@ async function read_screen(
       ok: false,
       error: `Tool execution failed: OCR error — ${err instanceof Error ? err.message : String(err)}`
     }
+  }
+}
+
+// ── Generalised screenshot → reason → act loop (computer_use) ─────────────────
+
+/** Hard cap on loop iterations — a runaway or stuck model can never spin forever. */
+const COMPUTER_USE_MAX_ITERATIONS = 12
+/** Pause after each action so the UI can repaint before the next screenshot. */
+const COMPUTER_USE_SETTLE_MS = 600
+/** Bound on the natural-language goal accepted from the model. */
+const MAX_GOAL_LEN = 1024
+
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
+
+/**
+ * Ask the vision model for the single next action given the current screenshot,
+ * the goal, and a compact history of what has already been tried. Routed through
+ * chat-proxy (same path as read_screen's cloud vision) so OUR Anthropic key stays
+ * server-side and the model is clamped to the caller's verified entitlement.
+ * Returns a validated VisionAction; throws on transport/parse failure.
+ */
+async function askVisionAction(opts: {
+  capture: ScreenCapture
+  goal: string
+  priorActions: string[]
+  tier: Tier
+}): Promise<VisionAction> {
+  const { capture, goal, priorActions, tier } = opts
+  const historyText = priorActions.length
+    ? `Actions already taken:\n${priorActions.join('\n')}`
+    : 'No actions taken yet.'
+
+  const reply = await callChatProxyText({
+    system: buildVisionSystemPrompt(capture.width, capture.height),
+    modelKey: tier === 'enterprise' ? 'enterprise-default' : 'pro-default',
+    messages: [
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'image',
+            source: { type: 'base64', media_type: 'image/png', data: capture.base64Image }
+          },
+          {
+            type: 'text',
+            text: `GOAL: ${goal}\n\n${historyText}\n\nReturn the next single action as one JSON object.`
+          }
+        ]
+      }
+    ]
+  })
+
+  const parsed = parseVisionAction(reply)
+  if (!parsed.ok) throw new Error(parsed.error)
+  return parsed.action
+}
+
+/**
+ * Drive a screenshot → reason → act loop until a goal is met, failed, or the
+ * iteration cap is hit. This is the GENERALISED FALLBACK for any app or website
+ * that has no dedicated tool: it captures the screen, sends the frame to a vision
+ * model, and executes the returned click/type via the same move_mouse/left_click/
+ * type_text primitives, then repeats with a fresh screenshot.
+ *
+ * SECURITY: this synthesises mouse/keyboard input from model output that is itself
+ * steered by whatever is on screen (a prompt-injection surface). It is therefore
+ * (a) a STATE_CHANGING tool, so the agent loop takes a single explicit approval
+ * before the loop starts; (b) hard-capped in iterations; and (c) still subject to
+ * the Accessibility permission gate on every synthesised action. Every coordinate
+ * is validated + scaled from screenshot space to real-display pixels before use.
+ */
+async function computer_use(
+  args: Record<string, unknown>,
+  context?: ExecutorContext
+): Promise<ToolResult> {
+  const goal = typeof args.goal === 'string' ? args.goal.trim() : ''
+  if (!goal) return { ok: false, error: 'computer_use requires a string "goal".' }
+  if (goal.length > MAX_GOAL_LEN) return { ok: false, error: 'computer_use "goal" is too long.' }
+  const tier = context?.tier ?? 'free'
+
+  // The loop drives the mouse/keyboard, which needs Accessibility. Fail fast with
+  // the same permission signal the primitives use, so the renderer can guide the
+  // user to System Settings before we burn a vision call.
+  if (!checkAccessibility()) {
+    return {
+      ok: false,
+      error:
+        'Tool execution failed: Missing OS permissions — Accessibility access is required to control the mouse and keyboard. ' +
+        'Please grant access in System Settings → Privacy & Security → Accessibility.',
+      permissionDenied: 'accessibility'
+    }
+  }
+
+  // The loop screenshots the display every iteration, so it also needs Screen
+  // Recording on macOS. Check it proactively (a denied permission can still
+  // return a source with a blank thumbnail) before spending a vision call.
+  if (IS_MAC && checkScreenRecording() !== 'granted') {
+    return {
+      ok: false,
+      error:
+        'Tool execution failed: Missing OS permissions — Screen Recording access is required. ' +
+        'Please grant access in System Settings → Privacy & Security → Screen Recording.',
+      permissionDenied: 'screenRecording'
+    }
+  }
+
+  // Real display size, used to scale image-space coordinates to true pixels. If
+  // nut-js can't report it we fall back to a 1:1 mapping inside scaleToScreen().
+  let screenW = 0
+  let screenH = 0
+  try {
+    const nut = loadNut()
+    screenW = await nut.screen.width()
+    screenH = await nut.screen.height()
+  } catch {
+    /* dimensions unknown — scaleToScreen() degrades to 1:1 */
+  }
+
+  const priorActions: string[] = []
+
+  for (let i = 0; i < COMPUTER_USE_MAX_ITERATIONS; i++) {
+    let capture: ScreenCapture
+    try {
+      capture = await captureScreenPng()
+    } catch (err) {
+      return { ok: false, error: `computer_use: screen capture failed — ${errText(err)}` }
+    }
+
+    let action: VisionAction
+    try {
+      action = await askVisionAction({ capture, goal, priorActions, tier })
+    } catch (err) {
+      return { ok: false, error: `computer_use: vision step failed — ${errText(err)}` }
+    }
+
+    if (action.action === 'done') {
+      const trail = priorActions.length ? `\nSteps:\n${priorActions.join('\n')}` : ''
+      return {
+        ok: true,
+        output: `Completed "${goal}" in ${i + 1} step(s). ${action.summary ?? ''}`.trim() + trail
+      }
+    }
+    if (action.action === 'fail') {
+      return {
+        ok: false,
+        error: `computer_use could not complete "${goal}": ${action.reason ?? 'the model reported it was stuck'}.`
+      }
+    }
+
+    if (action.action === 'click') {
+      const { x, y } = scaleToScreen(
+        action.x ?? 0,
+        action.y ?? 0,
+        capture.width,
+        capture.height,
+        screenW,
+        screenH
+      )
+      const moved = await move_mouse({ x, y })
+      if (!moved.ok) return moved
+      const clicked = await left_click({})
+      if (!clicked.ok) return clicked
+      priorActions.push(
+        `${i + 1}. click (${action.x},${action.y})${action.why ? ` — ${action.why}` : ''}`
+      )
+    } else {
+      // action.action === 'type'
+      const typed = await type_text({ text: action.text ?? '' })
+      if (!typed.ok) return typed
+      priorActions.push(
+        `${i + 1}. type "${(action.text ?? '').slice(0, 60)}"${action.why ? ` — ${action.why}` : ''}`
+      )
+    }
+
+    await sleep(COMPUTER_USE_SETTLE_MS)
+  }
+
+  return {
+    ok: false,
+    error:
+      `computer_use reached the ${COMPUTER_USE_MAX_ITERATIONS}-step limit without completing "${goal}". ` +
+      `Steps taken:\n${priorActions.join('\n')}`
   }
 }
 
@@ -1786,6 +2005,25 @@ export const toolSchemas: ToolSchema[] = [
     parameters: { type: 'object', properties: {}, required: [] }
   },
   {
+    name: 'computer_use',
+    description:
+      'GENERALISED visual fallback: run a screenshot → decide → act loop to accomplish a goal in ANY app or website that has no dedicated tool. ' +
+      'It repeatedly captures the screen, asks a vision model for the next click/type, and executes it — you do NOT hand-drive read_screen/move_mouse/left_click for these. ' +
+      'Use this ONLY when no purpose-built tool fits: prefer open_app, browser_* , control_calendar, and the github/figma tools when they cover the task (they are faster and more reliable). ' +
+      'Requires a Pro or Enterprise subscription (uses cloud vision).',
+    parameters: {
+      type: 'object',
+      properties: {
+        goal: {
+          type: 'string',
+          description:
+            'A single concrete on-screen objective, e.g. "in the Settings window, turn on Dark Mode" or "compose a new note titled Groceries".'
+        }
+      },
+      required: ['goal']
+    }
+  },
+  {
     name: 'browser_navigate',
     description:
       'Open a URL in the headful Chromium browser controlled by Playwright. ' +
@@ -2014,6 +2252,7 @@ const registry: Record<string, Executor> = {
   left_click,
   type_text,
   read_screen,
+  computer_use,
   browser_navigate,
   browser_click,
   browser_extract_text,
@@ -2077,6 +2316,21 @@ export async function executeTool(
   args: Record<string, unknown>,
   context: ExecutorContext = { tier: 'free' }
 ): Promise<ToolResult | PendingApprovalResult> {
+  // Tier gate FIRST: if the tool is out of the caller's tier, deny it up front
+  // rather than prompting the user to approve an action they cannot actually run
+  // (e.g. a free user should be told computer_use needs Pro, not asked to Allow
+  // it and only then be refused). This runs before the HITL gate below.
+  const requiredTier = TIER_TOOL_REQUIREMENTS[name]
+  if (requiredTier && TIER_ORDER.indexOf(context.tier) < TIER_ORDER.indexOf(requiredTier)) {
+    return {
+      ok: false,
+      error:
+        `"${name}" requires a ${requiredTier} subscription or higher ` +
+        `(current tier: ${context.tier}). ` +
+        `Please let the user know they need to upgrade to use this feature.`
+    }
+  }
+
   // Gate: require explicit user approval for any state-changing tool.
   if (STATE_CHANGING_TOOLS.has(name) && !context.bypassHitl) {
     return { status: 'pending_approval', tool: name, args }
@@ -2085,20 +2339,6 @@ export async function executeTool(
   const schema = toolSchemas.find((s) => s.name === name)
   const fn = registry[name]
   if (!schema || !fn) return { ok: false, error: `Unknown tool "${name}".` }
-
-  // Check explicit tier gate for this tool name.
-  const requiredTier = TIER_TOOL_REQUIREMENTS[name]
-  if (requiredTier) {
-    if (TIER_ORDER.indexOf(context.tier) < TIER_ORDER.indexOf(requiredTier)) {
-      return {
-        ok: false,
-        error:
-          `"${name}" requires a ${requiredTier} subscription or higher ` +
-          `(current tier: ${context.tier}). ` +
-          `Please let the user know they need to upgrade to use this feature.`
-      }
-    }
-  }
 
   // Reject anything that is not a plain object before per-field validation.
   if (typeof args !== 'object' || args === null || Array.isArray(args)) {
@@ -2164,6 +2404,8 @@ export function describeToolCall(name: string, args: Record<string, unknown>): s
       return 'Type text'
     case 'read_screen':
       return 'Read screen'
+    case 'computer_use':
+      return `Take screen control to: ${String(args.goal ?? '')}`
     case 'browser_navigate':
       return `Navigate to ${String(args.url ?? '')}`
     case 'browser_click':

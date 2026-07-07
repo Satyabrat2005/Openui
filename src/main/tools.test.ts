@@ -19,7 +19,12 @@ vi.mock('electron', () => ({
 }))
 vi.mock('./telemetry/posthog', () => ({ trackEvent: () => {} }))
 
-import { executeTool, STATE_CHANGING_TOOLS, DESTRUCTIVE_TOOLS } from './tools'
+import {
+  executeTool,
+  STATE_CHANGING_TOOLS,
+  DESTRUCTIVE_TOOLS,
+  TIER_TOOL_REQUIREMENTS
+} from './tools'
 
 const IS_WIN = process.platform === 'win32'
 const IS_MAC = process.platform === 'darwin'
@@ -37,13 +42,31 @@ afterEach(async () => {
 // ── The HITL approval gate (the merge/destructive safety boundary) ────────────
 describe('executeTool — HITL approval gate', () => {
   it('returns pending_approval for EVERY state-changing tool when bypassHitl is unset', async () => {
+    // enterprise tier satisfies every per-tool tier gate, so the HITL gate — not
+    // an insufficient-tier denial — is what each tool hits here. (A tool that is
+    // both state-changing AND tier-gated, e.g. computer_use, is denied by the
+    // tier gate first at a lower tier; that ordering is covered separately below.)
     for (const name of STATE_CHANGING_TOOLS) {
-      const r = await executeTool(name, {}, { tier: 'free' })
+      const r = await executeTool(name, {}, { tier: 'enterprise' })
       expect(r, `${name} must pause for approval`).toMatchObject({
         status: 'pending_approval',
         tool: name
       })
     }
+  })
+
+  it('applies the tier gate BEFORE the HITL gate for a tier-gated state-changing tool', async () => {
+    // computer_use is both state-changing and Pro-gated. At free tier the user
+    // is told they need to upgrade up front, rather than being prompted to
+    // approve an action they could not actually run.
+    expect(STATE_CHANGING_TOOLS.has('computer_use')).toBe(true)
+    expect(TIER_TOOL_REQUIREMENTS.computer_use).toBe('pro')
+    const denied = await executeTool('computer_use', { goal: 'x' }, { tier: 'free' })
+    expect(denied).toMatchObject({ ok: false })
+    expect((denied as { error: string }).error).toMatch(/requires a pro subscription/i)
+    // At a sufficient tier it reaches the HITL gate and pauses for approval.
+    const gated = await executeTool('computer_use', { goal: 'x' }, { tier: 'pro' })
+    expect(gated).toMatchObject({ status: 'pending_approval', tool: 'computer_use' })
   })
 
   it('gates create_folder before it can touch the filesystem', async () => {
