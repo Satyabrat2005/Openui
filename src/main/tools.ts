@@ -110,6 +110,12 @@ export const STATE_CHANGING_TOOLS = new Set<string>([
   'copy_file',
   'delete_file',
   'write_clipboard',
+  // GitHub repo automation — outward-facing writes, gated behind the HITL modal.
+  // check_repo_exists is intentionally absent (read-only). open_pull_request is
+  // additionally listed in DESTRUCTIVE_TOOLS so it ALWAYS confirms.
+  'create_repo',
+  'update_readme',
+  'open_pull_request',
 ])
 
 /**
@@ -123,8 +129,12 @@ export const STATE_CHANGING_TOOLS = new Set<string>([
  * delete_file moves the target to the OS Recycle Bin / Trash (recoverable)
  * rather than hard-unlinking, but it is still listed here so it ALWAYS asks —
  * even under approve-plan / full-auto autonomy a deletion is never silently run.
+ *
+ * open_pull_request is the outward-facing, hard-to-reverse GitHub step (auto-merge
+ * is explicitly out of scope): opening a PR always requires one human approval,
+ * so it lives here rather than only in STATE_CHANGING_TOOLS.
  */
-export const DESTRUCTIVE_TOOLS = new Set<string>(['delete_file'])
+export const DESTRUCTIVE_TOOLS = new Set<string>(['delete_file', 'open_pull_request'])
 
 /**
  * Returned by executeTool when a state-changing tool needs user approval.
@@ -2168,6 +2178,14 @@ export function describeToolCall(name: string, args: Record<string, unknown>): s
       return `Get diff for PR #${String(args.pr_number ?? '')} in ${String(args.repo ?? '')}`
     case 'post_pr_comment':
       return `Post review on PR #${String(args.pr_number ?? '')} in ${String(args.repo ?? '')}`
+    case 'check_repo_exists':
+      return `Check if repo ${String(args.repo ?? '')} exists`
+    case 'create_repo':
+      return `Create GitHub repo "${String(args.name ?? '')}"${args.private ? ' (private)' : ''}`
+    case 'update_readme':
+      return `Update README in ${String(args.repo ?? '')}`
+    case 'open_pull_request':
+      return `Open pull request in ${String(args.repo ?? '')}`
     case 'get_figma_file':
       return `Get Figma file ${String(args.file_key ?? '')}`
     case 'export_figma_frames':
