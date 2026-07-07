@@ -118,9 +118,6 @@ const api = {
   toggleMaximizeWindow: (): void => ipcRenderer.send('openui:window:maximize-toggle'),
   closeWindow: (): void => ipcRenderer.send('openui:window:close'),
   isMaximized: (): Promise<boolean> => ipcRenderer.invoke('openui:window:is-maximized'),
-  // Compact idle footprint ↔ expanded task view (driven by taskViewActive).
-  setWindowMode: (mode: 'compact' | 'expanded'): void =>
-    ipcRenderer.send('openui:window:set-mode', mode),
   onMaximizeChange: (cb: (maximized: boolean) => void): (() => void) => {
     const fn = wrap<boolean>(cb)
     ipcRenderer.on('openui:window:maximized', fn)

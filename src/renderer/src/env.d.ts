@@ -295,8 +295,6 @@ export interface OpenUIApi {
   closeWindow: () => void
   isMaximized: () => Promise<boolean>
   onMaximizeChange: (cb: (maximized: boolean) => void) => () => void
-  /** Compact idle footprint ↔ expanded task view (driven by taskViewActive). */
-  setWindowMode: (mode: 'compact' | 'expanded') => void
 
   // MCP connectors — bridge to the validated 'openui:mcp:connect' handler in main.
   mcpConnect: (config: McpConnectConfig) => Promise<McpConnectResult>
