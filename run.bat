@@ -5,7 +5,7 @@ echo                Starting OpenUI (Electron)
 echo ==========================================================
 echo.
 
-:: Check Node.js installation (Electron app — replaces the old Python launcher)
+:: Check Node.js installation
 where node >nul 2>nul
 if %errorlevel% neq 0 (
     echo [ERROR] Node.js is not installed or not in PATH.

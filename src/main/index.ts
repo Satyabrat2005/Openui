@@ -15,6 +15,7 @@ import { registerDeepLinkProtocol, setupDeepLinkHandlers } from './auth/deeplink
 import { openAuthWindow, isAuthWebContents } from './auth/authWindow'
 import { logout, getCurrentUser, getUserTier, startTokenRefreshLoop, stopTokenRefreshLoop, ensureGuestSession } from './auth/sessionManager'
 import { initTelemetry, enableTelemetryAfterConsent, shutdownTelemetry, setTelemetryOptOut, isTelemetryActive, trackEvent } from './telemetry/posthog'
+import { initSentry, enableSentryAfterConsent, setSentryOptOut } from './telemetry/sentry'
 import { grantConsent, denyConsent, getConsentStatus, recordPendingEvent, ConsentStatus } from './telemetry/consent'
 import { initUpdater, checkForUpdates, downloadUpdate, installUpdateAndRestart, openReleasesPage } from './updater/updater'
 import { Events } from './telemetry/events'
@@ -34,6 +35,7 @@ import {
   type RecorderAction,
 } from './recorder'
 import { installCrashReporter } from './telemetry/crashReporter'
+import { pruneOldRunLogs } from './runLog'
 
 // Capture uncaught main-process errors as early as possible — before any of the
 // setup below can throw — so startup crashes are logged and reported too.
@@ -183,36 +185,6 @@ const DEFAULT_WIDTH = 1120
 const DEFAULT_HEIGHT = 760
 const MIN_WIDTH = 720
 const MIN_HEIGHT = 480
-
-// Compact footprint the window shrinks to when idle. It expands back to
-// DEFAULT_* while a task is actively running (openui:window:set-mode, driven by
-// the renderer's taskViewActive). Kept at/above MIN_WIDTH/MIN_HEIGHT so Electron
-// never clamps the resize to a no-op.
-const COMPACT_WIDTH = 780
-const COMPACT_HEIGHT = 640
-
-// The last mode we applied, so repeated set-mode calls (several tools in one run)
-// don't thrash the window geometry.
-let windowMode: 'compact' | 'expanded' = 'expanded'
-
-/**
- * Resize between the compact idle footprint and the expanded task view. Only
- * acts when the window is neither maximized nor full-screen (respecting a user
- * who has deliberately taken the window big), and re-centers so the resize reads
- * as intentional rather than jumpy.
- */
-function setWindowMode(mode: 'compact' | 'expanded'): void {
-  if (!win || win.isDestroyed()) return
-  if (mode === windowMode) return
-  if (win.isMaximized() || win.isFullScreen()) {
-    windowMode = mode
-    return
-  }
-  windowMode = mode
-  const [w, h] = mode === 'compact' ? [COMPACT_WIDTH, COMPACT_HEIGHT] : [DEFAULT_WIDTH, DEFAULT_HEIGHT]
-  win.setSize(w, h, true)
-  win.center()
-}
 
 function createWindow(): void {
   win = new BrowserWindow({
@@ -373,11 +345,20 @@ app.whenReady().then(async () => {
   } catch (err) {
     console.error('[openui] Telemetry initialisation failed:', err)
   }
+  try {
+    // Same consent as PostHog; a silent no-op when SENTRY_DSN is not configured.
+    await initSentry()
+  } catch (err) {
+    console.error('[openui] Sentry initialisation failed:', err)
+  }
 
   applySecurityHardening()
   trackEvent(Events.APP_STARTED, { platform: process.platform, version: app.getVersion() })
   // Daily-active + time-in-app tracking (active-window heartbeat). See usage.ts.
   startUsageTracking()
+
+  // Structured task-run logs (Task 5): bounded retention, pruned at startup.
+  void pruneOldRunLogs()
 
   createWindow()
   createTray()
@@ -422,12 +403,6 @@ app.whenReady().then(async () => {
   ipcMain.on('openui:window:close', () => hideWindow())
   ipcMain.handle('openui:window:is-maximized', () => win?.isMaximized() ?? false)
 
-  // Compact idle footprint ↔ expanded task view. Driven by the renderer's
-  // taskViewActive so the window only grows while a task is actively running.
-  ipcMain.on('openui:window:set-mode', (_event, mode: unknown) => {
-    if (mode === 'compact' || mode === 'expanded') setWindowMode(mode)
-  })
-
   // Open the OS settings pane for the requested permission so the user can
   // grant it without navigating the Settings UI manually.
   // macOS → System Settings deep-link; Windows → ms-settings: URI.
@@ -458,6 +433,7 @@ app.whenReady().then(async () => {
   // ── Telemetry IPC ────────────────────────────────────────────────────────────
   ipcMain.handle('openui:set-telemetry-opt-out', (_event, optOut: unknown) => {
     setTelemetryOptOut(optOut === true)
+    setSentryOptOut(optOut === true)
   })
   ipcMain.handle('openui:get-telemetry-status', () => isTelemetryActive())
 
@@ -483,6 +459,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('openui:grant-consent', async () => {
     await grantConsent()
     enableTelemetryAfterConsent()
+    enableSentryAfterConsent()
     trackEvent(Events.TELEMETRY_OPT_IN)
     win?.webContents.send('openui:consent-updated', ConsentStatus.GRANTED)
     return ConsentStatus.GRANTED
@@ -496,6 +473,7 @@ app.whenReady().then(async () => {
     }
     await denyConsent()
     shutdownTelemetry()
+    setSentryOptOut(true)
     win?.webContents.send('openui:consent-updated', ConsentStatus.DENIED)
     return ConsentStatus.DENIED
   })

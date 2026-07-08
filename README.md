@@ -56,6 +56,7 @@
 OpenUI currently has **32 signups** from users booking a demo. The infrastructure described below is in place so we can learn from real usage as those sessions happen — no usage-driven product decisions have been made from it yet.
 
 - **Telemetry (built, currently inert):** PostHog (`posthog-node`) is integrated end-to-end and is consent-gated — `ConsentStatus` in `consent.ts` defaults to `UNKNOWN` on first launch, and the PostHog client is never initialised until the user explicitly opts in. The event taxonomy in `events.ts` already covers app lifecycle, auth, chat, model routing, tool execution, voice, checkout/subscription, waitlist, and feedback events. `POSTHOG_API_KEY`/`POSTHOG_HOST` in `.env.example` are present but unset by default, so telemetry collects nothing in this build — it will start capturing real usage once demo sessions begin and a production key is set.
+- **Error tracking (built, inert without a DSN):** Sentry (`@sentry/electron`) is wired through `telemetry/sentry.ts` behind the **same consent** as PostHog — no DSN or no opt-in means it never initialises. Every event is PII-scrubbed before leaving the machine (`beforeSend` drops user/request/extra fields, strips usernames from stack-trace paths, and redacts anything token- or email-shaped), and the local `crash.log` + PostHog crash counter keep working with zero configuration.
 - **Feedback loop (local, working today):** `feedbackRepo.ts` stores a sentiment-derived rating plus an explicit 👍/👎 per assistant message locally in SQLite. `promptRefiner.ts` reads the low-rated turns weekly, clusters them by topic, and rewrites the system prompt to address recurring failure modes — a working self-improvement loop that is local-only today, not yet aggregated across users.
 - **Next phase (plan, not yet done):** as demo sessions begin, the plan is to turn on PostHog in production and use it to see which tools/model tiers get used most, where onboarding drops off, and how the waitlist converts — combined with qualitative feedback from demo users — to decide what to prioritize next.
 
@@ -115,6 +116,9 @@ STRIPE_ENTERPRISE_PRICE_ID=price_...
 # ── Required for PostHog analytics (optional — disables telemetry if unset) ──
 POSTHOG_API_KEY=phc_...
 POSTHOG_HOST=https://us.i.posthog.com   # default
+
+# ── Sentry error tracking (optional — no-op if unset; consent-gated like PostHog) ──
+SENTRY_DSN=https://...@o0.ingest.sentry.io/0
 
 # ── Optional — Ollama, used ONLY by the local knowledge-base (RAG) embeddings
 # ── and the weekly self-improvement job; never used for chat or billing ──────
@@ -200,7 +204,7 @@ API keys, `process.env`, `desktopCapturer`, and all tool execution stay in the m
 
 ## Agent & Model Routing
 
-`agent.ts` implements a cloud-only agentic loop.
+`agent.ts` implements the agentic loop. **Interactive chat is cloud-only** — every chat message goes through the cloud proxy under per-tier limits. Local Ollama models serve a different, narrower job: the autonomous background coding loop (`autonomous.ts`) that runs while you're away, so it never spends your chat quota and works offline.
 
 ### Model routing (per tier)
 
@@ -209,9 +213,22 @@ callModel(tier)
   ├─ free:        cloud proxy → claude-3-5-haiku      (5 msgs/day, 120 voice min/month)
   ├─ pro:         cloud proxy → claude-sonnet-4-6      (500 msgs/day, 600 voice min/month)
   └─ enterprise:  cloud proxy → claude-sonnet-4-6      (unlimited; GLM in local dev only)
+
+autonomous coding (background, optional, requires Ollama)
+  ├─ general:     qwen3.5:9b (local)
+  └─ code:        qwen2.5-coder:7b — or your fine-tuned openui-qwen-coder:vN once promoted
 ```
 
-The **cloud proxy** (`supabase/functions/chat-proxy`) holds our LLM API keys server-side. Every authenticated user can chat immediately — no local setup required, and no local-model routing path exists to bypass the per-tier limit.
+The **cloud proxy** (`supabase/functions/chat-proxy`) holds our LLM API keys server-side. Every authenticated user can chat immediately — no local setup required, and local models cannot be routed into interactive chat, so there is no local path around the per-tier limits.
+
+### Local fine-tuning (opt-in personalisation, not a frontier-model replacement)
+
+When AI Improvement **and** the separate fine-tuning opt-in are both enabled, `finetune/pipeline.ts` periodically (at most every 24 h, only while you're away, only once ≥50 quality-scored trajectories exist) trains a LoRA adapter for the local coding model on **your own** recorded interactions:
+
+- Every checkpoint is **versioned** (`openui-qwen-coder:v1`, `v2`, …) with its dataset and manifest under `userData/finetune/` — previous versions are never deleted or overwritten.
+- A candidate is **promoted only if it does not regress** against the currently active model on a held-out slice of your data; a regressing candidate is auto-rejected and the last-known-good model keeps serving.
+
+Honest framing, because it matters: this adapts a small local model to **your** workflows — your project names, your phrasing, your recurring tasks — with everything staying on your machine. It is **not** competitive with frontier cloud models on general capability, and we don't claim otherwise. Cloud models do the heavy interactive reasoning; the local model gets steadily better at *your* background chores.
 
 ### Agentic tool loop
 

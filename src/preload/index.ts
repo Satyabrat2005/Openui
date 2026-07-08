@@ -118,9 +118,6 @@ const api = {
   toggleMaximizeWindow: (): void => ipcRenderer.send('openui:window:maximize-toggle'),
   closeWindow: (): void => ipcRenderer.send('openui:window:close'),
   isMaximized: (): Promise<boolean> => ipcRenderer.invoke('openui:window:is-maximized'),
-  // Compact idle footprint ↔ expanded task view (driven by taskViewActive).
-  setWindowMode: (mode: 'compact' | 'expanded'): void =>
-    ipcRenderer.send('openui:window:set-mode', mode),
   onMaximizeChange: (cb: (maximized: boolean) => void): (() => void) => {
     const fn = wrap<boolean>(cb)
     ipcRenderer.on('openui:window:maximized', fn)
@@ -484,6 +481,14 @@ const api = {
 
   respondHitl: (id: string, approved: boolean): void => {
     ipcRenderer.send('openui:hitl:response', { id, approved })
+  },
+
+  // Main emits openui:hitl:timeout when its backstop auto-denied a request the
+  // user never answered — the renderer should dismiss a stale modal for it.
+  onHitlTimeout: (cb: (payload: { id: string }) => void): (() => void) => {
+    const fn = wrap<{ id: string }>(cb)
+    ipcRenderer.on('openui:hitl:timeout', fn)
+    return (): void => { ipcRenderer.removeListener('openui:hitl:timeout', fn) }
   },
 
   // ── Plan approval (approve the whole plan once, vs. per-tool HITL) ────────────

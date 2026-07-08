@@ -2,7 +2,7 @@ import { useEffect, type MutableRefObject, type RefObject } from 'react'
 import gsap from 'gsap'
 
 /**
- * Recreates the GSAP behaviour from design.html for the floating popups:
+ * Recreates the GSAP behaviour from docs/design/design.html for the floating popups:
  *   • entrance choreography for #openui-popup and #task-popup
  *   • mic pulse rings (staggered outward wave, looping)
  *   • sound bars (stochastic bounce while "listening", looping)

@@ -7,11 +7,11 @@
  *   1. logged to the console, and
  *   2. appended to a rotating `crash.log` in userData, and
  *   3. forwarded to the PostHog pipe (consent-gated + no-op without a key), so
- *      we get aggregate crash rates in production without any extra service.
- *
- * There is NO external crash service (Sentry etc.) here on purpose: that needs a
- * DSN/secret and is a deliberate follow-up. This module is fully functional with
- * zero configuration.
+ *      we get aggregate crash rates in production without any extra service, and
+ *   4. forwarded to Sentry (sentry.ts) — but ONLY when a SENTRY_DSN is
+ *      configured AND the user granted the telemetry consent. Without either,
+ *      that call is a silent no-op and this module remains fully functional
+ *      with zero configuration.
  *
  * We deliberately do NOT `process.exit()` on an uncaught exception: an Electron
  * app is usually more useful left running (the error is often confined to one
@@ -21,6 +21,7 @@ import { app } from 'electron'
 import { appendFileSync, mkdirSync, statSync, renameSync } from 'node:fs'
 import { join } from 'node:path'
 import { trackEvent } from './posthog'
+import { forwardErrorToSentry } from './sentry'
 import { Events } from './events'
 
 /** Roll the log over at ~512 KB so it can never grow unbounded. */
@@ -67,6 +68,10 @@ function report(kind: 'uncaughtException' | 'unhandledRejection', err: unknown):
     // First stack frame is enough to group crashes without leaking much.
     frame: (error.stack ?? '').split('\n')[1]?.trim().slice(0, 200) ?? 'unknown'
   })
+
+  // Full stack to Sentry when (and only when) DSN + consent allow it; the
+  // event is PII-scrubbed in sentry.ts before leaving the machine.
+  forwardErrorToSentry(error, kind)
 }
 
 let installed = false

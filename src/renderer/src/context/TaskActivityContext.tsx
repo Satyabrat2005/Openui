@@ -226,17 +226,6 @@ export function TaskActivityProvider({ children }: { children: ReactNode }): JSX
 
   const taskViewActive = tasks.some((t) => t.status === 'in_progress')
 
-  // Grow the OS window into the expanded task view while a task is running, and
-  // shrink it back to the compact footprint when idle. Only fires on the edge;
-  // the main process ignores a no-op mode change, so this never thrashes.
-  const lastModeRef = useRef<'compact' | 'expanded' | null>(null)
-  useEffect(() => {
-    const mode = taskViewActive ? 'expanded' : 'compact'
-    if (lastModeRef.current === mode) return
-    lastModeRef.current = mode
-    window.openui.setWindowMode(mode)
-  }, [taskViewActive])
-
   return (
     <TaskActivityContext.Provider
       value={{ tasks, activeApp, activeTool, activeModel, taskViewActive, focusedId, beginTask, focusTask: setFocusedId }}

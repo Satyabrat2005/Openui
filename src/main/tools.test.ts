@@ -189,3 +189,37 @@ describe('executeTool — dispatch guardrails', () => {
     expect((r as { error: string }).error).toMatch(/Unknown tool/)
   })
 })
+
+// ── browser tools — connect-first + fail-closed trust boundary ────────────────
+// The consent/sensitive gates that need a live page are covered by the
+// browser/consent + browser/sanitizer unit tests; here we pin the parts that
+// must hold BEFORE any browser exists: nothing auto-launches, and every
+// browser tool fails closed until connect_browser is approved and run.
+describe('browser tools — require an approved connect_browser first', () => {
+  const needsConnect = [
+    ['browser_navigate', { url: 'https://example.com' }],
+    ['browser_click', { selector: '#pay' }],
+    ['browser_fill_input', { selector: '#q', text: 'hi' }],
+    ['browser_extract_text', {}],
+    ['browser_vision_act', { goal: 'dismiss the cookie banner' }]
+  ] as const
+
+  for (const [name, args] of needsConnect) {
+    it(`${name} refuses to run without a connected session`, async () => {
+      const r = await executeTool(name, { ...args }, { tier: 'enterprise', bypassHitl: true })
+      expect(r).toMatchObject({ ok: false })
+      expect((r as { error: string }).error).toMatch(/connect_browser/)
+    })
+  }
+
+  it('browser_vision_act is tier-gated to pro before anything else', async () => {
+    const r = await executeTool('browser_vision_act', { goal: 'x' }, { tier: 'free', bypassHitl: true })
+    expect(r).toMatchObject({ ok: false })
+    expect((r as { error: string }).error).toMatch(/pro subscription/i)
+  })
+
+  it('connect_browser is state-changing: pending approval without bypassHitl', async () => {
+    const r = await executeTool('connect_browser', {}, { tier: 'free' })
+    expect(r).toMatchObject({ status: 'pending_approval', tool: 'connect_browser' })
+  })
+})

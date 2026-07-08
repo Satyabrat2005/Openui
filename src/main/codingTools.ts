@@ -17,8 +17,12 @@ import {
   listSandboxFiles,
   runTests,
   runInstall,
-  runScript
+  runScript,
+  runPytest,
+  runPythonScript,
+  runCppProgram
 } from './sandbox'
+import { snapshotBeforeWrite } from './snapshots'
 import type { ToolSchema, ToolResult } from './tools'
 
 type CodingExecutor = (args: Record<string, unknown>) => Promise<ToolResult>
@@ -28,6 +32,10 @@ async function write_file(args: Record<string, unknown>): Promise<ToolResult> {
   const content = typeof args.content === 'string' ? args.content : ''
   if (!path) return { ok: false, error: 'write_file requires a string "path".' }
   try {
+    // Rollback safety (Task 5): capture the pre-image before the first write to
+    // each file so a failed task can restore the workspace. No-op outside a
+    // snapshot transaction (interactive writes).
+    await snapshotBeforeWrite(path)
     const written = await writeSandboxFile(path, content)
     return { ok: true, output: `Wrote ${Buffer.byteLength(content, 'utf8')} bytes to ${written}.` }
   } catch (err) {
@@ -89,6 +97,52 @@ async function install_dependencies(): Promise<ToolResult> {
       ok: false,
       error: `install_dependencies failed: ${err instanceof Error ? err.message : String(err)}`
     }
+  }
+}
+
+// The three non-npm verifiers below follow the run_tests convention: always
+// ok:true with a PASSED/FAILED marker prefix, so the model reads the log and
+// iterates instead of treating a normal red run as a retryable tool error.
+
+async function run_pytest(): Promise<ToolResult> {
+  try {
+    const result = await runPytest()
+    return {
+      ok: true,
+      output: `${result.passed ? 'PYTEST PASSED' : 'PYTEST FAILED'}\n${result.output}`
+    }
+  } catch (err) {
+    return { ok: false, error: `run_pytest failed: ${err instanceof Error ? err.message : String(err)}` }
+  }
+}
+
+async function run_python(args: Record<string, unknown>): Promise<ToolResult> {
+  const path = typeof args.path === 'string' ? args.path : ''
+  const smoke = args.smoke !== false // default true — unattended runs must stay fast
+  if (!path) return { ok: false, error: 'run_python requires a string "path" (a workspace .py file).' }
+  try {
+    const result = await runPythonScript(path, smoke)
+    return {
+      ok: true,
+      output: `${result.passed ? 'PYTHON RUN OK' : 'PYTHON RUN FAILED'} [${path}${smoke ? ' --smoke' : ''}]\n${result.output}`
+    }
+  } catch (err) {
+    return { ok: false, error: `run_python failed: ${err instanceof Error ? err.message : String(err)}` }
+  }
+}
+
+async function run_cpp(args: Record<string, unknown>): Promise<ToolResult> {
+  const path = typeof args.path === 'string' ? args.path : ''
+  const input = typeof args.input === 'string' ? args.input : ''
+  if (!path) return { ok: false, error: 'run_cpp requires a string "path" (a workspace .cpp file).' }
+  try {
+    const result = await runCppProgram(path, input)
+    return {
+      ok: true,
+      output: `${result.passed ? 'CPP RUN OK' : 'CPP RUN FAILED'} [${path}]\n${result.output}`
+    }
+  } catch (err) {
+    return { ok: false, error: `run_cpp failed: ${err instanceof Error ? err.message : String(err)}` }
   }
 }
 
@@ -170,6 +224,46 @@ export const codingToolSchemas: ToolSchema[] = [
       },
       required: ['script']
     }
+  },
+  {
+    name: 'run_pytest',
+    description:
+      'Run the workspace Python test suite ("python -m pytest -q") and return whether it passed plus the output. ' +
+      'Use this to verify Python (ML/DL) work the same way run_tests verifies npm work.',
+    parameters: { type: 'object', properties: {}, required: [] }
+  },
+  {
+    name: 'run_python',
+    description:
+      'Run a Python script from the workspace. By default it is run with the "--smoke" flag ' +
+      '(your scripts must support a fast smoke mode: tiny data subset, CPU-only, finishes in seconds). ' +
+      'Set smoke to false only for scripts that are inherently quick. Returns PYTHON RUN OK/FAILED plus the output.',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Workspace-relative .py file, e.g. "train.py".' },
+        smoke: {
+          type: 'boolean',
+          description: 'Pass --smoke to the script (default true). Set false only for quick scripts.'
+        }
+      },
+      required: ['path']
+    }
+  },
+  {
+    name: 'run_cpp',
+    description:
+      'Compile a single C++17 source file from the workspace with g++ and run the binary with the given stdin. ' +
+      'Use this to verify competitive-programming solutions against sample inputs: pass the sample input as "input" ' +
+      'and compare the printed output with the expected sample output yourself.',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Workspace-relative .cpp file, e.g. "main.cpp".' },
+        input: { type: 'string', description: 'Text fed to the program on stdin (e.g. the sample input).' }
+      },
+      required: ['path']
+    }
   }
 ]
 
@@ -179,7 +273,10 @@ const registry: Record<string, CodingExecutor> = {
   list_files,
   run_tests,
   install_dependencies,
-  run_script
+  run_script,
+  run_pytest,
+  run_python,
+  run_cpp
 }
 
 /**
@@ -217,6 +314,12 @@ export function describeCodingToolCall(name: string, args: Record<string, unknow
       return 'Install dependencies (npm install)'
     case 'run_script':
       return `Run npm script "${String(args.script ?? '')}"`
+    case 'run_pytest':
+      return 'Run pytest'
+    case 'run_python':
+      return `Run python ${String(args.path ?? '')}${args.smoke === false ? '' : ' --smoke'}`
+    case 'run_cpp':
+      return `Compile & run ${String(args.path ?? '')}`
     default:
       return name
   }
