@@ -42,6 +42,8 @@ import {
   scaleToScreen,
   type VisionAction
 } from './visionAction'
+import { originOf, isOriginGranted, listGrantedOrigins } from './browser/consent'
+import { sanitizePageText, defangPageText } from './browser/sanitizer'
 
 // execFile (no shell) is used so arguments are passed as an argv array —
 // there is no shell to interpret quotes, pipes, $(...) or `;`.
@@ -71,6 +73,22 @@ export interface ToolResult {
    * can show a modal guiding the user to grant the required OS permission.
    */
   permissionDenied?: PermissionTarget
+  /**
+   * Set when the tool refused to act until the user gives a one-time,
+   * per-action confirmation that NO autonomy mode can bypass: per-site browser
+   * consent, and sensitive actions (payments, refunds, password changes,
+   * account deletion, sending messages/emails). ok is always false alongside
+   * this, so any caller that ignores the field fails CLOSED (subagents and
+   * autonomous runs simply see a denial). The interactive agent loop upgrades
+   * it into a HitlModal prompt and re-runs the tool after the human click.
+   */
+  needsConfirmation?: {
+    kind: 'site-consent' | 'sensitive-action'
+    /** Human-readable question for the confirmation dialog. */
+    label: string
+    /** For site-consent: the origin to persist a grant for on approval. */
+    origin?: string
+  }
 }
 
 /** JSON-Schema-style description used both to prompt the LLM and to validate. */
@@ -92,6 +110,13 @@ export interface ExecutorContext {
   tier: Tier
   /** Set to true after the user has approved a pending HITL request, bypassing the gate. */
   bypassHitl?: boolean
+  /**
+   * Set to true ONLY by the interactive loop after the user approved a
+   * needsConfirmation prompt for THIS exact call. Authorises exactly one
+   * sensitive action inside the re-run — it is never carried across calls and
+   * autonomy modes never set it.
+   */
+  sensitiveApproved?: boolean
 }
 
 /**
@@ -107,9 +132,15 @@ export const STATE_CHANGING_TOOLS = new Set<string>([
   // computer_use hands the loop autonomous mouse/keyboard control; the whole loop
   // takes ONE approval up front rather than gating each synthesised action.
   'computer_use',
+  // connect_browser attaches the agent to the persistent automation profile —
+  // the HITL approval on it IS the user's "yes, use my browser" click. Per-site
+  // consent then gates each new origin separately (see browser/consent.ts).
+  'connect_browser',
   'browser_navigate',
   'browser_click',
   'browser_fill_input',
+  // Same one-approval-per-loop contract as computer_use, scoped to the page.
+  'browser_vision_act',
   'control_calendar',
   // Filesystem + clipboard mutations. Reads (list_directory, read_file,
   // read_clipboard) are intentionally absent — they observe, never change state.
@@ -168,7 +199,9 @@ export const TIER_TOOL_REQUIREMENTS: Partial<Record<string, Tier>> = {
   read_screen_cloud_vision: 'pro',
   // The visual fallback loop reasons over screenshots with cloud vision (same
   // path as read_screen's pro branch), so it requires a paid tier.
-  computer_use: 'pro'
+  computer_use: 'pro',
+  // Same vision loop as computer_use, driven inside the automation browser.
+  browser_vision_act: 'pro'
 }
 
 const TIER_ORDER: Tier[] = ['free', 'pro', 'enterprise']
@@ -607,8 +640,10 @@ const BROWSER_CHANNELS: (string | undefined)[] = IS_WIN
   : ['chrome', 'msedge', undefined]
 
 /**
- * Lazy-load Playwright (must be `npm install`-ed separately) and return the
- * shared Page, launching a headful window if none is already open.
+ * Lazy-load Playwright (must be `npm install`-ed separately) and launch the
+ * headful automation window. Only connect_browser calls this — attaching the
+ * agent to a browser session is an explicit, user-approved step, never a side
+ * effect of another tool.
  *
  * This drives the user's REAL installed browser (Edge/Chrome via a Playwright
  * channel) inside a PERSISTENT profile stored under the app's userData dir — not
@@ -617,9 +652,8 @@ const BROWSER_CHANNELS: (string | undefined)[] = IS_WIN
  * being an empty test browser. The same window persists across tool calls so the
  * user can watch OpenUI work.
  */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function getOrCreatePage(): Promise<any> {
-  if (_pwPage) return _pwPage
+async function launchBrowserContext(preferred: 'edge' | 'chrome' | 'auto'): Promise<void> {
+  if (_pwContext) return
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const pw = requireFirst(['playwright']) as any
 
@@ -628,8 +662,15 @@ async function getOrCreatePage(): Promise<any> {
   // their browser is open), so launching never conflicts with normal browsing.
   const profileDir = joinPath(app.getPath('userData'), 'browser-profile')
 
+  // The user's pick (via connect_browser args) is tried first; the platform
+  // default order is the fallback so a missing pick still connects something.
+  const pickedChannel = preferred === 'edge' ? 'msedge' : preferred === 'chrome' ? 'chrome' : null
+  const channels = pickedChannel
+    ? [pickedChannel, ...BROWSER_CHANNELS.filter((c) => c !== pickedChannel)]
+    : BROWSER_CHANNELS
+
   let lastErr: unknown = null
-  for (const channel of BROWSER_CHANNELS) {
+  for (const channel of channels) {
     try {
       _pwContext = await pw.chromium.launchPersistentContext(profileDir, {
         headless: false,
@@ -652,7 +693,52 @@ async function getOrCreatePage(): Promise<any> {
     _pwContext = null
     _pwPage = null
   })
+}
+
+/**
+ * The shared Page of the connected session, or null when no session exists.
+ * Browser tools must NOT auto-launch: the agent attaches to a browser only
+ * through the user-approved connect_browser step.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function getConnectedPage(): any | null {
   return _pwPage
+}
+
+const NOT_CONNECTED: ToolResult = {
+  ok: false,
+  error:
+    'No browser session is connected. Call connect_browser first — the user must approve ' +
+    'attaching OpenUI to a browser before any page can be opened.'
+}
+
+/**
+ * Explicitly attach the agent to the persistent automation browser. The HITL
+ * approval on this tool is the user's "yes, drive my browser" click; each new
+ * site then needs its own one-time consent (browser/consent.ts). Reports which
+ * origins are already granted so both the user and the model see the scope.
+ */
+async function connect_browser(args: Record<string, unknown>): Promise<ToolResult> {
+  const raw = typeof args.browser === 'string' ? args.browser : 'auto'
+  const preferred = raw === 'edge' || raw === 'chrome' ? raw : 'auto'
+  try {
+    const alreadyOpen = _pwContext !== null
+    await launchBrowserContext(preferred)
+    const granted = listGrantedOrigins()
+    return {
+      ok: true,
+      output:
+        `${alreadyOpen ? 'Browser session already connected' : 'Browser session connected'} ` +
+        `(persistent OpenUI automation profile — logins are kept between sessions, separate from the user's own browser profile). ` +
+        `Sites the user has previously granted: ${granted.length ? granted.join(', ') : 'none yet'}. ` +
+        `Every OTHER site still requires the user’s one-time consent when you first navigate to it.`
+    }
+  } catch (err) {
+    return {
+      ok: false,
+      error: `connect_browser failed: ${err instanceof Error ? err.message : String(err)}`
+    }
+  }
 }
 
 /**
@@ -677,6 +763,16 @@ const ALLOWED_URL_SCHEME = /^https?:\/\//i
 const MAX_URL_LEN = 2048
 // CSS selectors provided by the model are length-bounded as a light sanity check.
 const MAX_SELECTOR_LEN = 512
+
+/**
+ * Click/type targets whose labels indicate an action that moves money, changes
+ * credentials, destroys an account, or sends a message to another person.
+ * These ALWAYS pause for one human click — even in full-auto, even when the
+ * model is mid computer-use loop. There is no bypass mode. Slight
+ * over-matching (an extra confirmation) is the correct failure direction.
+ */
+const SENSITIVE_ACTION_RE =
+  /\b(pay(?:\s+now)?|payment|buy\s+now|purchase|checkout|place\s+order|confirm\s+(?:order|purchase|payment)|complete\s+(?:order|purchase)|subscribe|transfer|send\s+money|refund|withdraw|delete\s+(?:my\s+)?account|close\s+(?:my\s+)?account|deactivate\s+account|change\s+password|reset\s+password|update\s+password|send\s+(?:message|email|mail)|\bsend\b|submit\s+application|post\s+comment|publish|tweet)\b/i
 
 // ── tool implementations ──────────────────────────────────────────────────────
 
@@ -1323,7 +1419,10 @@ async function read_screen(
         ]
       })
       trackEvent(Events.SCREEN_CAPTURED, { tier, method: 'cloud_vision' })
-      return { ok: true, output: description }
+      // On-screen text is untrusted data (a web page or document on screen can
+      // carry injection phrasing) — defang protocol markers before the model
+      // reads it.
+      return { ok: true, output: defangPageText(description) }
     } catch (err) {
       return {
         ok: false,
@@ -1348,7 +1447,7 @@ async function read_screen(
     return {
       ok: true,
       output:
-        `Screen OCR text:\n${data.text}\n\n` +
+        `Screen OCR text:\n${defangPageText(data.text)}\n\n` +
         `Note: For precise UI-element coordinates, screen analysis with Claude Vision ` +
         `requires a Pro subscription. Consider recommending an upgrade if OCR is insufficient.`
     }
@@ -1542,23 +1641,204 @@ async function computer_use(
   }
 }
 
+/** Read a PNG buffer's pixel dimensions from its IHDR chunk (bytes 16–23). */
+function pngDimensions(buf: Buffer): { width: number; height: number } {
+  if (buf.length < 24) return { width: 0, height: 0 }
+  return { width: buf.readUInt32BE(16), height: buf.readUInt32BE(20) }
+}
+
 /**
- * Navigate the shared headful Chromium browser to a URL.
- * Launches Chromium on the first call.  Only http/https URLs are accepted.
+ * Screenshot → reason → act loop INSIDE the connected automation browser — the
+ * messy-DOM fallback for pages where CSS selectors are unreliable (canvas UIs,
+ * heavy SPAs, cookie-wall overlays). Mirrors computer_use but stays scoped to
+ * the Playwright page: it captures page.screenshot() (never the whole desktop),
+ * and clicks/types through page.mouse/page.keyboard (never OS-level input), so
+ * it cannot touch anything outside the browser window.
+ *
+ * SAFETY: (a) STATE_CHANGING — one approval starts the loop; (b) every
+ * iteration re-checks that the CURRENT page origin is user-granted, so a click
+ * that lands on a new site stops for consent; (c) sensitive actions (pay,
+ * password, delete account, send) stop for one human click each — an approval
+ * authorises exactly ONE sensitive action, then the next one stops again.
  */
-async function browser_navigate(args: Record<string, unknown>): Promise<ToolResult> {
+async function browser_vision_act(
+  args: Record<string, unknown>,
+  context?: ExecutorContext
+): Promise<ToolResult> {
+  const goal = typeof args.goal === 'string' ? args.goal.trim() : ''
+  if (!goal) return { ok: false, error: 'browser_vision_act requires a string "goal".' }
+  if (goal.length > MAX_GOAL_LEN) {
+    return { ok: false, error: 'browser_vision_act "goal" is too long.' }
+  }
+  const tier = context?.tier ?? 'free'
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const page: any = getConnectedPage()
+  if (!page) return NOT_CONNECTED
+
+  // One user approval buys exactly one sensitive action inside this loop.
+  let sensitiveBudget = context?.sensitiveApproved ? 1 : 0
+
+  const priorActions: string[] = []
+
+  for (let i = 0; i < COMPUTER_USE_MAX_ITERATIONS; i++) {
+    // The loop can wander (a click may land on a different site): re-verify the
+    // current origin is granted before acting on anything drawn from it.
+    const origin = originOf(String(page.url() ?? ''))
+    if (origin && !isOriginGranted(origin)) {
+      return {
+        ok: false,
+        error:
+          `browser_vision_act stopped: the page moved to ${origin}, which the user has not ` +
+          `granted. Ask them to approve access, then call the tool again.`,
+        needsConfirmation: {
+          kind: 'site-consent',
+          origin,
+          label: `Allow OpenUI to continue on ${origin}? (one-time grant for this site)`
+        }
+      }
+    }
+
+    let capture: ScreenCapture
+    try {
+      const pngBuffer: Buffer = await page.screenshot({ type: 'png', timeout: 15_000 })
+      const { width, height } = pngDimensions(pngBuffer)
+      capture = { pngBuffer, base64Image: pngBuffer.toString('base64'), width, height }
+    } catch (err) {
+      return { ok: false, error: `browser_vision_act: page screenshot failed — ${errText(err)}` }
+    }
+
+    let action: VisionAction
+    try {
+      action = await askVisionAction({ capture, goal, priorActions, tier })
+    } catch (err) {
+      return { ok: false, error: `browser_vision_act: vision step failed — ${errText(err)}` }
+    }
+
+    if (action.action === 'done') {
+      const trail = priorActions.length ? `\nSteps:\n${priorActions.join('\n')}` : ''
+      return {
+        ok: true,
+        output: `Completed "${goal}" in ${i + 1} step(s). ${action.summary ?? ''}`.trim() + trail
+      }
+    }
+    if (action.action === 'fail') {
+      return {
+        ok: false,
+        error: `browser_vision_act could not complete "${goal}": ${action.reason ?? 'the model reported it was stuck'}.`
+      }
+    }
+
+    // Sensitive-action gate on what the model SAYS it is about to do. The
+    // model's own rationale is the best label available in a pixel loop.
+    const intent = `${action.why ?? ''} ${action.action === 'type' ? (action.text ?? '') : ''}`
+    if (SENSITIVE_ACTION_RE.test(intent)) {
+      if (sensitiveBudget > 0) {
+        sensitiveBudget--
+      } else {
+        const desc = (action.why ?? intent).trim().slice(0, 120)
+        return {
+          ok: false,
+          error:
+            `browser_vision_act paused before a sensitive step: ${desc}. Ask the user to ` +
+            `confirm; a re-run after approval performs ONE such step. Progress so far:\n${priorActions.join('\n') || '(none)'}`,
+          needsConfirmation: {
+            kind: 'sensitive-action',
+            label: `Confirm sensitive step on ${origin ?? 'the current page'}: ${desc}?`
+          }
+        }
+      }
+    }
+
+    try {
+      if (action.action === 'click') {
+        // Screenshots come back in device pixels; the mouse works in CSS pixels.
+        // Scale image-space coordinates to the viewport before clicking.
+        const vp = page.viewportSize() ?? { width: capture.width, height: capture.height }
+        const { x, y } = scaleToScreen(
+          action.x ?? 0,
+          action.y ?? 0,
+          capture.width,
+          capture.height,
+          vp.width,
+          vp.height
+        )
+        await page.mouse.click(x, y)
+        priorActions.push(
+          `${i + 1}. click (${action.x},${action.y})${action.why ? ` — ${action.why}` : ''}`
+        )
+      } else {
+        // action.action === 'type'
+        await page.keyboard.type(action.text ?? '')
+        priorActions.push(
+          `${i + 1}. type "${(action.text ?? '').slice(0, 60)}"${action.why ? ` — ${action.why}` : ''}`
+        )
+      }
+    } catch (err) {
+      return { ok: false, error: `browser_vision_act: action failed — ${errText(err)}` }
+    }
+
+    await sleep(COMPUTER_USE_SETTLE_MS)
+  }
+
+  return {
+    ok: false,
+    error:
+      `browser_vision_act reached the ${COMPUTER_USE_MAX_ITERATIONS}-step limit without completing "${goal}". ` +
+      `Steps taken:\n${priorActions.join('\n')}`
+  }
+}
+
+/**
+ * Navigate the connected automation browser to a URL. Requires connect_browser
+ * first, and one-time user consent per site. Only http/https URLs are accepted.
+ */
+async function browser_navigate(
+  args: Record<string, unknown>,
+  context?: ExecutorContext
+): Promise<ToolResult> {
   const url = typeof args.url === 'string' ? args.url.trim() : ''
   if (!url) return { ok: false, error: 'browser_navigate requires a string "url".' }
   if (url.length > MAX_URL_LEN) return { ok: false, error: 'browser_navigate "url" is too long.' }
   if (!ALLOWED_URL_SCHEME.test(url)) {
     return { ok: false, error: 'browser_navigate only accepts http:// and https:// URLs.' }
   }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const page: any = getConnectedPage()
+  if (!page) return NOT_CONNECTED
+
+  // Per-site consent: the FIRST visit to any origin needs one human click,
+  // persisted per-origin — connecting the browser is never a blanket grant.
+  // sensitiveApproved covers the re-run right after the user just approved
+  // this exact navigation (the grant is also persisted, so this is
+  // belt-and-braces against a slow settings write).
+  const origin = originOf(url)
+  if (!origin) return { ok: false, error: `browser_navigate could not parse the URL origin: ${url}` }
+  if (!isOriginGranted(origin) && !context?.sensitiveApproved) {
+    return {
+      ok: false,
+      error:
+        `Navigation blocked: the user has not granted OpenUI access to ${origin}. ` +
+        `Ask them to approve the consent prompt; do not retry until they do.`,
+      needsConfirmation: {
+        kind: 'site-consent',
+        origin,
+        label: `Allow OpenUI to open and interact with ${origin}? (one-time grant for this site)`
+      }
+    }
+  }
+
   try {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const page: any = await getOrCreatePage()
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30_000 })
     const title: string = await page.title()
-    return { ok: true, output: `Navigated to ${url}. Page title: "${title}".` }
+    // A redirect can land on a different origin than the one the user granted —
+    // surface that honestly so the model (and transcript) records where we are.
+    const finalOrigin = originOf(String(page.url() ?? '')) ?? origin
+    const redirectNote =
+      finalOrigin !== origin && !isOriginGranted(finalOrigin)
+        ? ` NOTE: the page redirected to ${finalOrigin}, which the user has NOT separately granted — get consent via browser_navigate before interacting further.`
+        : ''
+    return { ok: true, output: `Navigated to ${url}. Page title: "${title}".${redirectNote}` }
   } catch (err) {
     return {
       ok: false,
@@ -1571,16 +1851,47 @@ async function browser_navigate(args: Record<string, unknown>): Promise<ToolResu
  * Click an element on the current browser page using a CSS selector.
  * browser_navigate must be called first.
  */
-async function browser_click(args: Record<string, unknown>): Promise<ToolResult> {
+async function browser_click(
+  args: Record<string, unknown>,
+  context?: ExecutorContext
+): Promise<ToolResult> {
   const selector = typeof args.selector === 'string' ? args.selector.trim() : ''
   if (!selector) return { ok: false, error: 'browser_click requires a string "selector".' }
   if (selector.length > MAX_SELECTOR_LEN) {
     return { ok: false, error: 'browser_click "selector" is too long.' }
   }
-  if (!_pwPage) {
-    return { ok: false, error: 'No browser page is open. Call browser_navigate first.' }
-  }
+  if (!_pwPage) return NOT_CONNECTED
   try {
+    // Sensitive-action gate: read what the target element SAYS before clicking
+    // it. A "Pay now" / "Delete account" / "Send" click always pauses for one
+    // human click — no autonomy mode bypasses this (sensitiveApproved is set
+    // only for the immediate re-run after the user approved THIS action).
+    if (!context?.sensitiveApproved) {
+      const el = _pwPage.locator(selector).first()
+      const parts = await Promise.all([
+        el.innerText({ timeout: 3_000 }).catch(() => ''),
+        el.getAttribute('aria-label').catch(() => ''),
+        el.getAttribute('value').catch(() => ''),
+        el.getAttribute('title').catch(() => '')
+      ])
+      const targetLabel = parts.filter(Boolean).join(' ').slice(0, 300)
+      const haystack = `${targetLabel} ${selector}`
+      if (SENSITIVE_ACTION_RE.test(haystack)) {
+        const origin = originOf(String(_pwPage.url() ?? '')) ?? 'the current page'
+        const shown = targetLabel.trim().slice(0, 80) || selector.slice(0, 80)
+        return {
+          ok: false,
+          error:
+            `Click blocked pending user confirmation: "${shown}" on ${origin} looks like a ` +
+            `sensitive action (payment, credentials, account change, or sending a message). ` +
+            `Ask the user to confirm; do not retry until they do.`,
+          needsConfirmation: {
+            kind: 'sensitive-action',
+            label: `Confirm sensitive action: click "${shown}" on ${origin}?`
+          }
+        }
+      }
+    }
     await _pwPage.click(selector, { timeout: 10_000 })
     return { ok: true, output: `Clicked element matching "${selector}".` }
   } catch (err) {
@@ -1596,13 +1907,15 @@ async function browser_click(args: Record<string, unknown>): Promise<ToolResult>
  * Returns up to 12 000 characters so the model can reason about the content.
  */
 async function browser_extract_text(_args: Record<string, unknown>): Promise<ToolResult> {
-  if (!_pwPage) {
-    return { ok: false, error: 'No browser page is open. Call browser_navigate first.' }
-  }
+  if (!_pwPage) return NOT_CONNECTED
   try {
     const raw: unknown = await _pwPage.evaluate(() => document.body?.innerText ?? '')
     const text = (typeof raw === 'string' ? raw : String(raw)).slice(0, 12_000)
-    return { ok: true, output: text || '(page has no visible text)' }
+    if (!text) return { ok: true, output: '(page has no visible text)' }
+    // Page text is UNTRUSTED DATA: defang protocol markers / injection phrasing
+    // and wrap it in provenance markers before it reaches the model.
+    const origin = originOf(String(_pwPage.url() ?? '')) ?? 'unknown origin'
+    return { ok: true, output: sanitizePageText(text, origin) }
   } catch (err) {
     return {
       ok: false,
@@ -1615,17 +1928,41 @@ async function browser_extract_text(_args: Record<string, unknown>): Promise<Too
  * Fill a text input or textarea on the current browser page.
  * Clears any existing value before typing.
  */
-async function browser_fill_input(args: Record<string, unknown>): Promise<ToolResult> {
+async function browser_fill_input(
+  args: Record<string, unknown>,
+  context?: ExecutorContext
+): Promise<ToolResult> {
   const selector = typeof args.selector === 'string' ? args.selector.trim() : ''
   const text = typeof args.text === 'string' ? args.text : ''
   if (!selector) return { ok: false, error: 'browser_fill_input requires a string "selector".' }
   if (selector.length > MAX_SELECTOR_LEN) {
     return { ok: false, error: 'browser_fill_input "selector" is too long.' }
   }
-  if (!_pwPage) {
-    return { ok: false, error: 'No browser page is open. Call browser_navigate first.' }
-  }
+  if (!_pwPage) return NOT_CONNECTED
   try {
+    // Typing into a password field is credentials handling — always one human
+    // click first, regardless of autonomy mode.
+    if (!context?.sensitiveApproved) {
+      const inputType: string =
+        (await _pwPage
+          .locator(selector)
+          .first()
+          .getAttribute('type')
+          .catch(() => '')) ?? ''
+      if (inputType.toLowerCase() === 'password') {
+        const origin = originOf(String(_pwPage.url() ?? '')) ?? 'the current page'
+        return {
+          ok: false,
+          error:
+            `Fill blocked pending user confirmation: "${selector}" on ${origin} is a password ` +
+            `field. Ask the user to confirm; do not retry until they do.`,
+          needsConfirmation: {
+            kind: 'sensitive-action',
+            label: `Confirm: let OpenUI type into a password field on ${origin}?`
+          }
+        }
+      }
+    }
     await _pwPage.fill(selector, text, { timeout: 10_000 })
     return { ok: true, output: `Filled "${selector}" with ${text.length} character(s).` }
   } catch (err) {
@@ -2024,10 +2361,29 @@ export const toolSchemas: ToolSchema[] = [
     }
   },
   {
+    name: 'connect_browser',
+    description:
+      'Attach OpenUI to its persistent automation browser (the user’s installed Edge/Chrome in a dedicated ' +
+      'profile where their logins persist between sessions). MUST be called once before any other browser_* tool. ' +
+      'The user approves the connection, and then separately approves EACH new website the first time you navigate ' +
+      'to it — connecting never grants blanket access.',
+    parameters: {
+      type: 'object',
+      properties: {
+        browser: {
+          type: 'string',
+          description: 'Which installed browser to prefer.',
+          enum: ['edge', 'chrome', 'auto']
+        }
+      },
+      required: []
+    }
+  },
+  {
     name: 'browser_navigate',
     description:
-      'Open a URL in the headful Chromium browser controlled by Playwright. ' +
-      'Accepts only http:// and https:// URLs. Launches the browser automatically on the first call. ' +
+      'Open a URL in the connected automation browser (call connect_browser first). ' +
+      'Accepts only http:// and https:// URLs. The FIRST visit to each website pauses for the user’s one-time consent. ' +
       'Prefer this over the visual navigation workflow (read_screen → move_mouse → left_click) ' +
       'for ALL web-based tasks: booking flights, scraping websites, filling web forms, reading prices, ' +
       'searching the web, or any task where the primary surface is a web page.',
@@ -2040,6 +2396,27 @@ export const toolSchemas: ToolSchema[] = [
         }
       },
       required: ['url']
+    }
+  },
+  {
+    name: 'browser_vision_act',
+    description:
+      'Visual fallback INSIDE the connected automation browser: runs a screenshot → decide → click/type loop on the ' +
+      'current page until a goal is met. Use it when CSS selectors are unreliable (canvas editors, messy SPAs, ' +
+      'cookie-wall overlays, complex upload dialogs) — try browser_click/browser_fill_input FIRST; they are faster. ' +
+      'Sensitive steps (payments, passwords, account changes, sending messages) always pause for the user’s confirmation. ' +
+      'Requires a Pro or Enterprise subscription (uses cloud vision).',
+    parameters: {
+      type: 'object',
+      properties: {
+        goal: {
+          type: 'string',
+          description:
+            'A single concrete on-page objective, e.g. "dismiss the cookie banner and open the pricing page" or ' +
+            '"upload main.tex via the project Upload dialog".'
+        }
+      },
+      required: ['goal']
     }
   },
   {
@@ -2253,10 +2630,12 @@ const registry: Record<string, Executor> = {
   type_text,
   read_screen,
   computer_use,
+  connect_browser,
   browser_navigate,
   browser_click,
   browser_extract_text,
   browser_fill_input,
+  browser_vision_act,
   search_local_files,
   run_workflow,
   list_directory,
@@ -2406,6 +2785,10 @@ export function describeToolCall(name: string, args: Record<string, unknown>): s
       return 'Read screen'
     case 'computer_use':
       return `Take screen control to: ${String(args.goal ?? '')}`
+    case 'connect_browser':
+      return 'Connect to your browser (persistent OpenUI profile)'
+    case 'browser_vision_act':
+      return `Visually operate the browser to: ${String(args.goal ?? '')}`
     case 'browser_navigate':
       return `Navigate to ${String(args.url ?? '')}`
     case 'browser_click':

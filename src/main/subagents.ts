@@ -57,7 +57,11 @@ function emit(win: BrowserWindow, channel: string, ...args: unknown[]): void {
 }
 
 /** Tools a subagent may NOT use, on top of everything in DESTRUCTIVE_TOOLS. */
-const SUBAGENT_FORBIDDEN = new Set<string>([SPAWN_SUBAGENTS_TOOL, 'complete_step'])
+// connect_browser is forbidden because subagents run with bypassHitl — attaching
+// the agent to the automation browser must always be a human-approved step in
+// the main loop. Once connected there, subagents may drive already-granted
+// sites; un-granted origins and sensitive actions fail closed inside the tools.
+const SUBAGENT_FORBIDDEN = new Set<string>([SPAWN_SUBAGENTS_TOOL, 'complete_step', 'connect_browser'])
 
 /** Every tool a subagent is allowed to call (built-in + MCP, minus the above). */
 function subagentToolNames(): Set<string> {
