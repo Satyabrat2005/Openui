@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react'
 import type { HitlRequestPayload } from '../env'
 
 interface Props {
@@ -5,6 +6,13 @@ interface Props {
   onAllow: () => void
   onDeny: () => void
 }
+
+/**
+ * Unanswered confirmations auto-deny after this long. Keeps a forgotten prompt
+ * from stalling the whole agent run (deny = the safe default); the main
+ * process has its own slightly-longer backstop in case this UI never renders.
+ */
+const AUTO_DENY_SECONDS = 120
 
 /** Format tool args as a compact, readable list of key: value lines. */
 function formatArgs(args: Record<string, unknown>): string {
@@ -20,6 +28,21 @@ function formatArgs(args: Record<string, unknown>): string {
 }
 
 export default function HitlModal({ request, onAllow, onDeny }: Props): JSX.Element {
+  const [secondsLeft, setSecondsLeft] = useState(AUTO_DENY_SECONDS)
+
+  // Restart the countdown for each new request; deny automatically at zero.
+  useEffect(() => {
+    setSecondsLeft(AUTO_DENY_SECONDS)
+    const timer = setInterval(() => {
+      setSecondsLeft((s) => s - 1)
+    }, 1000)
+    return () => clearInterval(timer)
+  }, [request.id])
+
+  useEffect(() => {
+    if (secondsLeft <= 0) onDeny()
+  }, [secondsLeft, onDeny])
+
   return (
     <div
       style={{
@@ -157,7 +180,16 @@ export default function HitlModal({ request, onAllow, onDeny }: Props): JSX.Elem
           </pre>
         </div>
 
-        <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+        <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+          <span
+            style={{
+              fontSize: 11,
+              color: secondsLeft <= 15 ? '#ff3b30' : '#8e8e93',
+              marginRight: 'auto'
+            }}
+          >
+            Auto-denies in {Math.max(secondsLeft, 0)}s
+          </span>
           <button
             onClick={onDeny}
             style={{

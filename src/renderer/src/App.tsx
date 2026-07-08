@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import AssistantPopup from './components/AssistantPopup'
 import ConnectedRail from './components/ConnectedRail'
 import ActivityPanel from './components/ActivityPanel'
+import ErrorBoundary from './components/ErrorBoundary'
 import PermissionModal from './components/PermissionModal'
 import HitlModal from './components/HitlModal'
 import PlanApprovalModal from './components/PlanApprovalModal'
@@ -137,6 +138,14 @@ function AppShell(): JSX.Element {
     })
   }, [])
 
+  // The main process auto-denies unanswered HITL requests (backstop timeout);
+  // dismiss the now-stale modal so the demo never shows a dead confirmation.
+  useEffect(() => {
+    return window.openui.onHitlTimeout(({ id }) => {
+      setHitlRequest((current) => (current?.id === id ? null : current))
+    })
+  }, [])
+
   useEffect(() => {
     return window.openui.onPlanRequest((payload) => {
       setPlanRequest(payload)
@@ -193,14 +202,22 @@ function AppShell(): JSX.Element {
         <OnboardingWizard onComplete={handleOnboardingComplete} />
       ) : (
         <>
-          <AssistantPopup
-            recordingRef={recordingRef}
-            captionLockedRef={captionLockedRef}
-            onPermissionNeeded={setPermissionNeeded}
-            initialMessage={initialMessage}
-          />
-          {taskViewActive && <ConnectedRail />}
-          <ActivityPanel />
+          <ErrorBoundary label="Chat">
+            <AssistantPopup
+              recordingRef={recordingRef}
+              captionLockedRef={captionLockedRef}
+              onPermissionNeeded={setPermissionNeeded}
+              initialMessage={initialMessage}
+            />
+          </ErrorBoundary>
+          {taskViewActive && (
+            <ErrorBoundary label="Connected apps" compact>
+              <ConnectedRail />
+            </ErrorBoundary>
+          )}
+          <ErrorBoundary label="Activity" compact>
+            <ActivityPanel />
+          </ErrorBoundary>
           {/* Workflows toggle button — bottom-left corner */}
           <button
             onClick={() => setShowWorkflows(true)}
@@ -225,10 +242,12 @@ function AppShell(): JSX.Element {
             Workflows
           </button>
           {showWorkflows && (
-            <WorkflowsUI
-              onClose={() => setShowWorkflows(false)}
-              onRunWorkflow={handleRunWorkflow}
-            />
+            <ErrorBoundary label="Workflows" compact>
+              <WorkflowsUI
+                onClose={() => setShowWorkflows(false)}
+                onRunWorkflow={handleRunWorkflow}
+              />
+            </ErrorBoundary>
           )}
           {permissionNeeded && (
             <PermissionModal
@@ -240,30 +259,34 @@ function AppShell(): JSX.Element {
       )}
       {consentNeeded && <ConsentModal onClose={() => setConsentNeeded(false)} />}
       {hitlRequest && (
-        <HitlModal
-          request={hitlRequest}
-          onAllow={() => {
-            window.openui.respondHitl(hitlRequest.id, true)
-            setHitlRequest(null)
-          }}
-          onDeny={() => {
-            window.openui.respondHitl(hitlRequest.id, false)
-            setHitlRequest(null)
-          }}
-        />
+        <ErrorBoundary label="Confirmation dialog" compact>
+          <HitlModal
+            request={hitlRequest}
+            onAllow={() => {
+              window.openui.respondHitl(hitlRequest.id, true)
+              setHitlRequest(null)
+            }}
+            onDeny={() => {
+              window.openui.respondHitl(hitlRequest.id, false)
+              setHitlRequest(null)
+            }}
+          />
+        </ErrorBoundary>
       )}
       {planRequest && (
-        <PlanApprovalModal
-          request={planRequest}
-          onApprove={() => {
-            window.openui.respondPlan(planRequest.id, true)
-            setPlanRequest(null)
-          }}
-          onCancel={() => {
-            window.openui.respondPlan(planRequest.id, false)
-            setPlanRequest(null)
-          }}
-        />
+        <ErrorBoundary label="Plan approval" compact>
+          <PlanApprovalModal
+            request={planRequest}
+            onApprove={() => {
+              window.openui.respondPlan(planRequest.id, true)
+              setPlanRequest(null)
+            }}
+            onCancel={() => {
+              window.openui.respondPlan(planRequest.id, false)
+              setPlanRequest(null)
+            }}
+          />
+        </ErrorBoundary>
       )}
       </div>
     </div>
@@ -272,10 +295,12 @@ function AppShell(): JSX.Element {
 
 export default function App(): JSX.Element {
   return (
-    <AuthProvider>
-      <TaskActivityProvider>
-        <AppShell />
-      </TaskActivityProvider>
-    </AuthProvider>
+    <ErrorBoundary label="OpenUI">
+      <AuthProvider>
+        <TaskActivityProvider>
+          <AppShell />
+        </TaskActivityProvider>
+      </AuthProvider>
+    </ErrorBoundary>
   )
 }

@@ -483,6 +483,14 @@ const api = {
     ipcRenderer.send('openui:hitl:response', { id, approved })
   },
 
+  // Main emits openui:hitl:timeout when its backstop auto-denied a request the
+  // user never answered — the renderer should dismiss a stale modal for it.
+  onHitlTimeout: (cb: (payload: { id: string }) => void): (() => void) => {
+    const fn = wrap<{ id: string }>(cb)
+    ipcRenderer.on('openui:hitl:timeout', fn)
+    return (): void => { ipcRenderer.removeListener('openui:hitl:timeout', fn) }
+  },
+
   // ── Plan approval (approve the whole plan once, vs. per-tool HITL) ────────────
   // Main emits openui:plan:request with the full checklist before executing a
   // planned task; the renderer shows PlanApprovalModal and calls respondPlan.

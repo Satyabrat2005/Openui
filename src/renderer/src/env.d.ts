@@ -402,6 +402,7 @@ export interface OpenUIApi {
   // HITL (Human-in-the-Loop) confirmation.
   onHitlRequest: (cb: (payload: HitlRequestPayload) => void) => () => void
   respondHitl: (id: string, approved: boolean) => void
+  onHitlTimeout: (cb: (payload: { id: string }) => void) => () => void
   // Plan approval (approve the whole plan once).
   onPlanRequest: (cb: (payload: PlanRequestPayload) => void) => () => void
   respondPlan: (id: string, approved: boolean) => void

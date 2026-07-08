@@ -65,8 +65,18 @@ const pendingHitlRequests = new Map<string, (approved: boolean) => void>()
 let hitlSeq = 0
 
 /**
+ * Main-process backstop: if no answer arrives (renderer crashed, modal never
+ * rendered, prompt forgotten), the request auto-DENIES so the agent loop can
+ * never hang forever on a confirmation. Deny is the only safe default for a
+ * state-changing action. Slightly longer than the modal's own visible 120 s
+ * countdown so the UI path normally wins.
+ */
+const HITL_BACKSTOP_TIMEOUT_MS = 150_000
+
+/**
  * Emit a HITL request to the renderer and return a Promise that resolves once
- * the user clicks Allow (true) or Deny (false) in the HitlModal.
+ * the user clicks Allow (true) or Deny (false) in the HitlModal — or false
+ * after the backstop timeout.
  */
 function waitForHitlApproval(
   win: BrowserWindow,
@@ -76,7 +86,17 @@ function waitForHitlApproval(
 ): Promise<boolean> {
   const id = `hitl${++hitlSeq}`
   return new Promise<boolean>((resolve) => {
-    pendingHitlRequests.set(id, resolve)
+    const timer = setTimeout(() => {
+      if (pendingHitlRequests.delete(id)) {
+        console.warn(`[agent] HITL request ${id} (${tool}) timed out — auto-denied`)
+        emit(win, 'openui:hitl:timeout', { id })
+        resolve(false)
+      }
+    }, HITL_BACKSTOP_TIMEOUT_MS)
+    pendingHitlRequests.set(id, (approved) => {
+      clearTimeout(timer)
+      resolve(approved)
+    })
     emit(win, 'openui:hitl:request', {
       id,
       tool,
