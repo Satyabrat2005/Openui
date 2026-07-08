@@ -27,7 +27,7 @@ import { app } from 'electron'
 import { execFile, spawn } from 'node:child_process'
 import { promisify } from 'node:util'
 import { mkdir, writeFile, readFile, readdir, stat } from 'node:fs/promises'
-import { join, resolve, relative, isAbsolute, dirname } from 'node:path'
+import { join, resolve, relative, isAbsolute, dirname, basename } from 'node:path'
 
 const execFileAsync = promisify(execFile)
 
@@ -377,4 +377,175 @@ export async function runScript(scriptName: unknown): Promise<TestRunResult> {
       `${e.stdout ?? ''}\n${e.stderr ?? ''}`.trim() || e.message || `Script "${name}" failed.`
     return { passed: false, output: output.slice(0, MAX_OUTPUT) }
   }
+}
+
+// ── non-npm verification runners (Task 3: project-type-aware coding) ─────────
+//
+// ML/DL and competitive-programming tasks don't verify with `npm test`. These
+// runners give the coding agent pytest / python / g++ equivalents with the SAME
+// trust model as runTests: the code being run is the workspace's own
+// (agent-written) code — this is containment, not a hostile-code boundary. The
+// commands themselves are fixed argv arrays launched WITHOUT a shell, so there
+// is no injection surface; the only model-supplied pieces are workspace-relative
+// file paths (validated by resolveInSandbox + extension checks) and stdin text
+// (which is just data to the child process).
+
+const PY_TIMEOUT_MS = 180_000
+const CPP_COMPILE_TIMEOUT_MS = 60_000
+const CPP_RUN_TIMEOUT_MS = 20_000
+const MAX_STDIN_CHARS = 64 * 1024
+
+/** The Python launcher for this platform (python.exe on Windows, python3 elsewhere). */
+function pythonCmd(): string {
+  return IS_WIN ? 'python' : 'python3'
+}
+
+/**
+ * Run one bounded child process without a shell: collect stdout+stderr (capped),
+ * optionally feed stdin, kill the whole tree on timeout. Resolves with a
+ * friendly message (never rejects) when the executable is missing.
+ */
+function runBoundedProcess(
+  file: string,
+  argv: string[],
+  cwd: string,
+  timeoutMs: number,
+  stdinText?: string
+): Promise<TestRunResult> {
+  return new Promise((resolvePromise) => {
+    let child: ReturnType<typeof spawn>
+    try {
+      child = spawn(file, argv, { cwd, windowsHide: true, detached: !IS_WIN })
+    } catch (err) {
+      resolvePromise({
+        passed: false,
+        output: `Could not start "${file}": ${err instanceof Error ? err.message : String(err)}`
+      })
+      return
+    }
+
+    let output = ''
+    let settled = false
+    let timedOut = false
+    const append = (chunk: Buffer): void => {
+      if (output.length < MAX_OUTPUT) output += chunk.toString('utf8')
+    }
+    child.stdout?.on('data', append)
+    child.stderr?.on('data', append)
+
+    if (stdinText !== undefined) {
+      child.stdin?.write(stdinText.slice(0, MAX_STDIN_CHARS))
+    }
+    child.stdin?.end()
+
+    const timer = setTimeout(() => {
+      timedOut = true
+      killProcessTree(child.pid)
+    }, timeoutMs)
+
+    const settle = (result: TestRunResult): void => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      resolvePromise(result)
+    }
+
+    child.on('error', (err: NodeJS.ErrnoException) => {
+      const hint =
+        err.code === 'ENOENT'
+          ? `"${file}" is not installed or not on PATH.`
+          : (err.message ?? String(err))
+      settle({ passed: false, output: hint })
+    })
+
+    child.on('exit', (code) => {
+      const capped = output.trim().slice(0, MAX_OUTPUT)
+      if (timedOut) {
+        settle({ passed: false, output: `Timed out after ${timeoutMs / 1000}s.\n${capped}` })
+      } else {
+        settle({ passed: code === 0, output: capped })
+      }
+    })
+  })
+}
+
+/** Run `python -m pytest -q` in the workspace (fixed argv, no model data). */
+export async function runPytest(): Promise<TestRunResult> {
+  const cwd = await ensureWorkspace()
+  const result = await runBoundedProcess(
+    pythonCmd(),
+    ['-m', 'pytest', '-q'],
+    cwd,
+    PY_TIMEOUT_MS
+  )
+  // pytest exits 5 ("no tests collected") with a short message — surface that
+  // clearly so the model writes tests instead of chasing a phantom failure.
+  return result
+}
+
+/**
+ * Run a Python script from the workspace, optionally with the literal `--smoke`
+ * flag (the type-specific prompts tell the agent to support a fast smoke mode
+ * in its training scripts). The path is validated to be an existing .py file
+ * inside the sandbox; the flag is a fixed literal — nothing else is passed.
+ */
+export async function runPythonScript(relPath: string, smoke: boolean): Promise<TestRunResult> {
+  const workspace = await ensureWorkspace()
+  let abs: string
+  try {
+    abs = resolveInSandbox(workspace, relPath)
+  } catch (err) {
+    return { passed: false, output: err instanceof Error ? err.message : String(err) }
+  }
+  if (!/\.py$/i.test(abs)) {
+    return { passed: false, output: `"${relPath}" is not a .py file.` }
+  }
+  try {
+    await stat(abs)
+  } catch {
+    return { passed: false, output: `"${relPath}" does not exist in the workspace. Write it first.` }
+  }
+  const argv = [relative(workspace, abs), ...(smoke ? ['--smoke'] : [])]
+  return runBoundedProcess(pythonCmd(), argv, workspace, PY_TIMEOUT_MS)
+}
+
+/**
+ * Compile a single C++ source file with g++ (-O2, C++17) and, on success, run
+ * the produced binary with the given stdin text. Both steps are bounded; the
+ * binary lands under the workspace's build/ directory. Path is validated to be
+ * an existing .cpp/.cc/.cxx file inside the sandbox.
+ */
+export async function runCppProgram(relPath: string, stdinText: string): Promise<TestRunResult> {
+  const workspace = await ensureWorkspace()
+  let abs: string
+  try {
+    abs = resolveInSandbox(workspace, relPath)
+  } catch (err) {
+    return { passed: false, output: err instanceof Error ? err.message : String(err) }
+  }
+  if (!/\.(cpp|cc|cxx)$/i.test(abs)) {
+    return { passed: false, output: `"${relPath}" is not a C++ source file (.cpp/.cc/.cxx).` }
+  }
+  try {
+    await stat(abs)
+  } catch {
+    return { passed: false, output: `"${relPath}" does not exist in the workspace. Write it first.` }
+  }
+
+  const exeName = basename(abs).replace(/\.(cpp|cc|cxx)$/i, IS_WIN ? '.exe' : '.out')
+  const exeAbs = join(workspace, 'build', exeName)
+  await mkdir(dirname(exeAbs), { recursive: true })
+
+  const compile = await runBoundedProcess(
+    'g++',
+    ['-O2', '-std=c++17', '-o', exeAbs, relative(workspace, abs)],
+    workspace,
+    CPP_COMPILE_TIMEOUT_MS
+  )
+  if (!compile.passed) {
+    return { passed: false, output: `COMPILE ERROR\n${compile.output}` }
+  }
+
+  const run = await runBoundedProcess(exeAbs, [], workspace, CPP_RUN_TIMEOUT_MS, stdinText)
+  return { passed: run.passed, output: run.output || '(program produced no output)' }
 }

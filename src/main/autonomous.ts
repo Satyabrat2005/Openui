@@ -17,6 +17,7 @@ import type { BrowserWindow } from 'electron'
 import { callModel, parseToolCall, emit, StreamGate, type Message } from './agent'
 import { codingToolSchemas, executeCodingTool, describeCodingToolCall } from './codingTools'
 import { getNextTask, recordTaskOutcome, type TaskSource, type AgentTask } from './tasks'
+import { detectProjectType, getProjectProfile, type ProjectProfile } from './projectProfiles'
 import { startRun, type RunLog } from './runLog'
 import {
   beginTaskSnapshot,
@@ -84,20 +85,21 @@ Workflow:
 1. If unsure of the current state, call list_files / read_file to inspect the workspace.
 2. Implement the task with write_file (write complete file contents each time). To scaffold a new project, write the WHOLE file tree — package.json (with the right dependencies and "scripts"), source files, config, and tests.
 3. If the project has dependencies, call install_dependencies once after writing package.json.
-4. Verify your work:
-   - Call run_tests to run the test suite, and/or
+4. Verify your work with the verifier that fits the project (the PROJECT TYPE section below tells you which):
+   - Call run_tests to run an npm test suite, and/or
    - Call run_script to run a build/train/lint script you defined (e.g. {"tool":"run_script","args":{"script":"build"}}). A dev server ("dev"/"start") is run as a boot smoke test — it confirms the app starts without crashing.
+   - For Python work, call run_pytest and/or run_python; for single-file C++, call run_cpp with the sample input.
 5. Read the output carefully. If it starts with "TESTS FAILED" / "SCRIPT FAILED" / "INSTALL FAILED", read the offending file(s) with read_file, fix the code with write_file, and re-run the failing step. Iterate.
 6. When verification passes, reply in plain natural language summarising what you built/changed. Do NOT wrap the final summary in JSON.
 
 If after several honest attempts you cannot make it pass, reply in plain text beginning with "GIVE UP:" followed by a short explanation. Never fake a pass or delete tests to make them pass.`
 
 /** Build the first user message describing the task to work on. */
-function taskPrompt(task: AgentTask): string {
+function taskPrompt(task: AgentTask, profile: ProjectProfile): string {
   const lines = [
     `TASK (${task.source}): ${task.title}`,
     task.description ? `\nDetails:\n${task.description}` : '',
-    '\nComplete this task in the workspace, then run the tests until they pass.'
+    `\n${profile.taskHint}`
   ]
   return lines.filter(Boolean).join('\n')
 }
@@ -121,10 +123,12 @@ async function workOnTask(
   win: BrowserWindow,
   tier: Tier,
   task: AgentTask,
-  runLog: RunLog
+  runLog: RunLog,
+  profile: ProjectProfile
 ): Promise<TaskOutcome> {
-  const messages: Message[] = [{ role: 'user', content: taskPrompt(task) }]
-  let lastTestsPassed = false
+  const messages: Message[] = [{ role: 'user', content: taskPrompt(task, profile) }]
+  const systemPrompt = `${CODING_SYSTEM_PROMPT}\n\n${profile.promptAddendum}`
+  let lastVerificationPassed = false
 
   for (let turn = 0; turn < MAX_CODING_TURNS; turn++) {
     if (stopRequested) {
@@ -135,7 +139,7 @@ async function workOnTask(
     const gate = new StreamGate((delta) => emit(win, 'openui:chat:chunk', delta))
     // Code-heavy loop: run on the code-tuned Ollama model (OLLAMA_CODE_MODEL)
     // rather than the general one.
-    const responseText = await callModel(win, tier, messages, CODING_SYSTEM_PROMPT, gate.push, { coding: true })
+    const responseText = await callModel(win, tier, messages, systemPrompt, gate.push, { coding: true })
     messages.push({ role: 'assistant', content: responseText })
 
     const toolCall = parseToolCall(responseText)
@@ -143,7 +147,7 @@ async function workOnTask(
     if (!toolCall) {
       // Plain-language reply ⇒ the agent considers the task finished (or gave up).
       const gaveUp = /^\s*GIVE UP:/i.test(responseText)
-      return { success: lastTestsPassed && !gaveUp, summary: responseText.trim() }
+      return { success: lastVerificationPassed && !gaveUp, summary: responseText.trim() }
     }
 
     const taskId = `a${++taskSeq}`
@@ -159,8 +163,11 @@ async function workOnTask(
       argsSummary: label,
       error: result.ok ? undefined : result.error?.slice(0, 300)
     })
-    if (toolCall.tool === 'run_tests' && result.ok) {
-      lastTestsPassed = (result.output ?? '').startsWith('TESTS PASSED')
+    // Success signal is project-type-aware: only THIS profile's verification
+    // tool(s) count, and a later failed re-run clears an earlier pass.
+    if (result.ok) {
+      const verdict = profile.verdict(toolCall.tool, result.output ?? '')
+      if (verdict !== null) lastVerificationPassed = verdict === 'pass'
     }
 
     emit(win, 'openui:task:update', {
@@ -173,7 +180,7 @@ async function workOnTask(
     messages.push({ role: 'user', content: formatToolResult(toolCall.tool, result) })
   }
 
-  return { success: false, summary: 'Reached the coding-turn limit before the tests passed.' }
+  return { success: false, summary: 'Reached the coding-turn limit before verification passed.' }
 }
 
 /**
@@ -217,7 +224,16 @@ export async function runAutonomousCoding(
       }
 
       emit(win, 'openui:task:reset')
-      emitAutonomousStatus(win, { active: true, state: 'working', currentTask: task.title })
+
+      // Task 3: classify the task so prompts and the verification signal match
+      // the kind of project (website / node / ML / DL / competitive programming).
+      const profile = getProjectProfile(detectProjectType(task.title, task.description))
+      emitAutonomousStatus(win, {
+        active: true,
+        state: 'working',
+        currentTask: task.title,
+        detail: `Project type: ${profile.label}`
+      })
 
       // Transactional task run (Task 5): snapshot pre-images of every file the
       // task writes, and journal the whole run as structured JSONL.
@@ -225,6 +241,7 @@ export async function runAutonomousCoding(
         taskId: task.id,
         title: task.title,
         source: task.source,
+        projectType: profile.type,
         tier
       })
       try {
@@ -235,7 +252,7 @@ export async function runAutonomousCoding(
 
       let outcome: TaskOutcome
       try {
-        outcome = await workOnTask(win, tier, task, runLog)
+        outcome = await workOnTask(win, tier, task, runLog, profile)
       } catch (err) {
         outcome = { success: false, summary: err instanceof Error ? err.message : String(err) }
       }
