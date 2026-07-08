@@ -97,8 +97,17 @@
                 "height": 380
             },
             "contents": [
-                { "x": 140, "y": 190, "type": "file" },
-                { "x": 400, "y": 190, "type": "link", "path": "/Applications" }
+                {
+                    "x": 140,
+                    "y": 190,
+                    "type": "file"
+                },
+                {
+                    "x": 400,
+                    "y": 190,
+                    "type": "link",
+                    "path": "/Applications"
+                }
             ]
         },
         "win": {
@@ -137,6 +146,7 @@
         "@modelcontextprotocol/sdk": "^1.29.0",
         "@nut-tree-fork/nut-js": "^4.2.0",
         "@octokit/rest": "^20.0.0",
+        "@sentry/electron": "^7.15.0",
         "@supabase/supabase-js": "^2.108.2",
         "@types/better-sqlite3": "^7.6.13",
         "better-sqlite3": "^12.11.1",

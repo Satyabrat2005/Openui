@@ -15,6 +15,7 @@ import { registerDeepLinkProtocol, setupDeepLinkHandlers } from './auth/deeplink
 import { openAuthWindow, isAuthWebContents } from './auth/authWindow'
 import { logout, getCurrentUser, getUserTier, startTokenRefreshLoop, stopTokenRefreshLoop, ensureGuestSession } from './auth/sessionManager'
 import { initTelemetry, enableTelemetryAfterConsent, shutdownTelemetry, setTelemetryOptOut, isTelemetryActive, trackEvent } from './telemetry/posthog'
+import { initSentry, enableSentryAfterConsent, setSentryOptOut } from './telemetry/sentry'
 import { grantConsent, denyConsent, getConsentStatus, recordPendingEvent, ConsentStatus } from './telemetry/consent'
 import { initUpdater, checkForUpdates, downloadUpdate, installUpdateAndRestart, openReleasesPage } from './updater/updater'
 import { Events } from './telemetry/events'
@@ -344,6 +345,12 @@ app.whenReady().then(async () => {
   } catch (err) {
     console.error('[openui] Telemetry initialisation failed:', err)
   }
+  try {
+    // Same consent as PostHog; a silent no-op when SENTRY_DSN is not configured.
+    await initSentry()
+  } catch (err) {
+    console.error('[openui] Sentry initialisation failed:', err)
+  }
 
   applySecurityHardening()
   trackEvent(Events.APP_STARTED, { platform: process.platform, version: app.getVersion() })
@@ -426,6 +433,7 @@ app.whenReady().then(async () => {
   // ── Telemetry IPC ────────────────────────────────────────────────────────────
   ipcMain.handle('openui:set-telemetry-opt-out', (_event, optOut: unknown) => {
     setTelemetryOptOut(optOut === true)
+    setSentryOptOut(optOut === true)
   })
   ipcMain.handle('openui:get-telemetry-status', () => isTelemetryActive())
 
@@ -451,6 +459,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('openui:grant-consent', async () => {
     await grantConsent()
     enableTelemetryAfterConsent()
+    enableSentryAfterConsent()
     trackEvent(Events.TELEMETRY_OPT_IN)
     win?.webContents.send('openui:consent-updated', ConsentStatus.GRANTED)
     return ConsentStatus.GRANTED
@@ -464,6 +473,7 @@ app.whenReady().then(async () => {
     }
     await denyConsent()
     shutdownTelemetry()
+    setSentryOptOut(true)
     win?.webContents.send('openui:consent-updated', ConsentStatus.DENIED)
     return ConsentStatus.DENIED
   })

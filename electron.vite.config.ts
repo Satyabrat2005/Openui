@@ -43,6 +43,9 @@ export default defineConfig(({ mode }) => {
   )
   bake('POSTHOG_API_KEY', env.POSTHOG_API_KEY)
   bake('POSTHOG_HOST', env.POSTHOG_HOST)
+  // A Sentry DSN is an ingest endpoint, not a secret — safe to inline. Without
+  // it, telemetry/sentry.ts stays a silent no-op (see initSentry).
+  bake('SENTRY_DSN', env.SENTRY_DSN)
   bake('VITE_SERVER_URL', env.VITE_SERVER_URL)
   // Bake whether THIS build was code-signed (CSC_LINK) and notarizable
   // (APPLE_TEAM_ID) so the packaged main process can tell, at runtime, whether
