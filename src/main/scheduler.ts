@@ -24,6 +24,7 @@ import {
 import type { TaskSource } from './tasks'
 import { coerceTier } from './agent'
 import { enqueue } from './taskQueue'
+import { maybeRunFineTune } from './finetune/pipeline'
 import type { Tier } from './tools'
 
 // How often we sample idle time. 15 s is responsive enough for a 5-minute
@@ -103,6 +104,12 @@ function tick(): void {
       .finally(() => {
         sweepQueued = false
       })
+
+    // Task 4: user-away windows are also when the periodic local LoRA
+    // fine-tune may run. All gating (opt-in setting, 24 h interval, dataset
+    // size, Ollama up) lives inside — this call is a cheap no-op when not due,
+    // and the 'finetune' queue lane keeps it from fighting the coding sweep.
+    maybeRunFineTune()
   } else if (!away && isAutonomousRunning() && idle <= ACTIVE_IDLE_SEC && !state.manualBusy) {
     // The user came back — yield the machine.
     requestAutonomousStop()

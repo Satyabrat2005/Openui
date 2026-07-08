@@ -200,7 +200,7 @@ API keys, `process.env`, `desktopCapturer`, and all tool execution stay in the m
 
 ## Agent & Model Routing
 
-`agent.ts` implements a cloud-only agentic loop.
+`agent.ts` implements the agentic loop. **Interactive chat is cloud-only** — every chat message goes through the cloud proxy under per-tier limits. Local Ollama models serve a different, narrower job: the autonomous background coding loop (`autonomous.ts`) that runs while you're away, so it never spends your chat quota and works offline.
 
 ### Model routing (per tier)
 
@@ -209,9 +209,22 @@ callModel(tier)
   ├─ free:        cloud proxy → claude-3-5-haiku      (5 msgs/day, 120 voice min/month)
   ├─ pro:         cloud proxy → claude-sonnet-4-6      (500 msgs/day, 600 voice min/month)
   └─ enterprise:  cloud proxy → claude-sonnet-4-6      (unlimited; GLM in local dev only)
+
+autonomous coding (background, optional, requires Ollama)
+  ├─ general:     qwen3.5:9b (local)
+  └─ code:        qwen2.5-coder:7b — or your fine-tuned openui-qwen-coder:vN once promoted
 ```
 
-The **cloud proxy** (`supabase/functions/chat-proxy`) holds our LLM API keys server-side. Every authenticated user can chat immediately — no local setup required, and no local-model routing path exists to bypass the per-tier limit.
+The **cloud proxy** (`supabase/functions/chat-proxy`) holds our LLM API keys server-side. Every authenticated user can chat immediately — no local setup required, and local models cannot be routed into interactive chat, so there is no local path around the per-tier limits.
+
+### Local fine-tuning (opt-in personalisation, not a frontier-model replacement)
+
+When AI Improvement **and** the separate fine-tuning opt-in are both enabled, `finetune/pipeline.ts` periodically (at most every 24 h, only while you're away, only once ≥50 quality-scored trajectories exist) trains a LoRA adapter for the local coding model on **your own** recorded interactions:
+
+- Every checkpoint is **versioned** (`openui-qwen-coder:v1`, `v2`, …) with its dataset and manifest under `userData/finetune/` — previous versions are never deleted or overwritten.
+- A candidate is **promoted only if it does not regress** against the currently active model on a held-out slice of your data; a regressing candidate is auto-rejected and the last-known-good model keeps serving.
+
+Honest framing, because it matters: this adapts a small local model to **your** workflows — your project names, your phrasing, your recurring tasks — with everything staying on your machine. It is **not** competitive with frontier cloud models on general capability, and we don't claim otherwise. Cloud models do the heavy interactive reasoning; the local model gets steadily better at *your* background chores.
 
 ### Agentic tool loop
 

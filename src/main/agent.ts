@@ -354,11 +354,21 @@ function localGeneralModel(): string {
 
 /**
  * Local Ollama model for CODE-heavy work — used by the autonomous coding agent
- * (autonomous.ts). Overridable via OLLAMA_CODE_MODEL; defaults to a code-tuned
- * model that fits the 8 GB VRAM budget.
+ * (autonomous.ts). Resolution order:
+ *   1. OLLAMA_CODE_MODEL env (explicit override wins),
+ *   2. the active fine-tuned checkpoint (finetune/pipeline.ts promotes a
+ *      "openui-qwen-coder:vN" tag here only after it passed held-out eval),
+ *   3. the stock code-tuned model that fits the 8 GB VRAM budget.
  */
 function localCodeModel(): string {
-  return process.env.OLLAMA_CODE_MODEL ?? 'qwen2.5-coder:7b'
+  if (process.env.OLLAMA_CODE_MODEL) return process.env.OLLAMA_CODE_MODEL
+  try {
+    const tuned: unknown = database.settings.getSetting('active_finetuned_model')
+    if (typeof tuned === 'string' && tuned.trim()) return tuned.trim()
+  } catch {
+    // settings unavailable (tests, early boot) — fall through to the default
+  }
+  return 'qwen2.5-coder:7b'
 }
 
 // ── Builder mode (interactive project scaffolding in the sandbox) ─────────────
