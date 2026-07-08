@@ -34,6 +34,10 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
   // (persisted to the local settings store, read by the main-process Figma tool).
   const [figmaToken, setFigmaToken] = useState('')
   const [figmaSaved, setFigmaSaved] = useState(false)
+  // GitHub personal access token — read by the main-process GitHub tools when
+  // the GITHUB_TOKEN env var is absent (the normal case for end users).
+  const [githubToken, setGithubToken] = useState('')
+  const [githubSaved, setGithubSaved] = useState(false)
 
   useEffect(() => {
     let cancelled = false
@@ -67,6 +71,13 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
       })
       .catch(() => {})
 
+    window.openui
+      .getSetting('github_token')
+      .then((value) => {
+        if (!cancelled && typeof value === 'string') setGithubToken(value)
+      })
+      .catch(() => {})
+
     const off = window.openui.onConsentUpdated((status: ConsentStatus) => {
       setEnabled(status === 'granted')
     })
@@ -97,6 +108,16 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
       .then(() => {
         setFigmaSaved(true)
         window.setTimeout(() => setFigmaSaved(false), 1500)
+      })
+      .catch(() => {})
+  }
+
+  const saveGithubToken = (): void => {
+    void window.openui
+      .setSetting('github_token', githubToken.trim())
+      .then(() => {
+        setGithubSaved(true)
+        window.setTimeout(() => setGithubSaved(false), 1500)
       })
       .catch(() => {})
   }
@@ -285,6 +306,49 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
             onBlur={saveFigmaToken}
             placeholder="figd_…"
             aria-label="Figma personal access token"
+            autoComplete="off"
+            spellCheck={false}
+            style={{
+              width: '100%',
+              boxSizing: 'border-box',
+              border: '1px solid rgba(0,0,0,0.12)',
+              borderRadius: 8,
+              padding: '8px 10px',
+              fontSize: 12.5,
+              fontFamily: 'inherit',
+              color: '#1c1c1e',
+              background: '#fff',
+              outline: 'none'
+            }}
+          />
+        </div>
+
+        {/* Integrations: GitHub personal access token */}
+        <div
+          style={{
+            borderTop: '1px solid rgba(0,0,0,0.06)',
+            paddingTop: 14,
+            marginTop: 14
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <div style={{ fontSize: 13.5, fontWeight: 600, color: '#1c1c1e' }}>GitHub</div>
+            {githubSaved && (
+              <span style={{ fontSize: 11, color: '#34c759', fontWeight: 500 }}>Saved</span>
+            )}
+          </div>
+          <div style={{ fontSize: 12, color: '#8e8e93', lineHeight: 1.5, marginTop: 3, marginBottom: 8 }}>
+            Paste a personal access token with &quot;repo&quot; scope to let OpenUI create repos,
+            push code, and open pull requests for you. Create one at github.com → Settings →
+            Developer settings → Personal access tokens. Stored locally on this device.
+          </div>
+          <input
+            type="password"
+            value={githubToken}
+            onChange={(e) => setGithubToken(e.target.value)}
+            onBlur={saveGithubToken}
+            placeholder="ghp_…"
+            aria-label="GitHub personal access token"
             autoComplete="off"
             spellCheck={false}
             style={{

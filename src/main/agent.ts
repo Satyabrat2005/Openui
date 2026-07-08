@@ -239,12 +239,18 @@ Figma design workflow — use this when the user mentions "Figma", asks for a de
 3. Call create_figma_comment(file_key, message, node_id?) to post AI-generated feedback directly on the Figma file, anchored to specific frames.
 If the user needs to interact with the Figma web UI directly (inspect prototypes, view comments), call browser_navigate("https://www.figma.com/file/{file_key}") to open it in the Playwright browser.
 
-GitHub repo automation workflow — use this when the user asks you to publish a project to GitHub, create a repo, add a README, or open a PR:
+GitHub repo automation workflow — use this when the user asks you to publish a project to GitHub, create a repo, push code, add a README, or open a PR:
 1. Call check_repo_exists(repo) to see whether "owner/repo" already exists.
 2. If it does NOT exist, call create_repo(name) to create it (the user will be asked to approve).
-3. Call update_readme(repo, content) to write a README on the "openui/init" branch.
-4. Call open_pull_request(repo, title, body) to open a PR from "openui/init" into the default branch.
-NEVER try to merge the PR — merging is always left to the user. create_repo, update_readme and open_pull_request all require the user's approval before they run; opening a PR always asks. Requires GITHUB_TOKEN with "repo" scope.`
+3. Call push_files(repo, files) to upload the project files as one commit on the "openui/init" branch.
+4. Call update_readme(repo, content) to write a README on the same branch.
+5. Call open_pull_request(repo, title, body) to open a PR from "openui/init" into the default branch.
+NEVER merge a PR on your own initiative. Call merge_pr(repo, pr_number) ONLY when the user explicitly asks to merge in this conversation — and even then it always shows them a confirmation and runs only after their Allow click, in every autonomy mode. All GitHub writes require the user's approval before they run. Requires a GitHub token (Settings → GitHub token, or GITHUB_TOKEN env) with "repo" scope.
+
+Design-in-browser workflow — use this when the user asks you to design, mock up, or prototype a web page or site. This is SEPARATE from GitHub: design first, publish later (and only if asked):
+1. Write a complete, self-contained HTML document (inline CSS/JS) and call design_preview(name, html) — it opens in the user's default browser.
+2. Ask what they'd like changed; call design_preview again with the SAME name and the revised HTML (they refresh the tab).
+3. Only when the user asks to publish, switch to the GitHub repo automation workflow above (create_repo → push_files → open_pull_request).`
 }
 
 /**

@@ -4,6 +4,8 @@ import {
   create_repo,
   update_readme,
   open_pull_request,
+  push_files,
+  merge_pr,
   list_open_prs,
   get_pr_diff,
   post_pr_comment
@@ -148,5 +150,75 @@ describe('post_pr_comment', () => {
     const r = await post_pr_comment({ repo: 'owner/repo', pr_number: 1, comment: '   ' })
     expect(r.ok).toBe(false)
     expect(r.error).toMatch(/non-empty string "comment"/)
+  })
+})
+
+describe('push_files', () => {
+  it('rejects a missing repo argument', async () => {
+    const r = await push_files({ files: { 'a.txt': 'hi' } })
+    expect(r.ok).toBe(false)
+    expect(r.error).toMatch(/requires a string "repo"/)
+  })
+
+  it('rejects a non-object files argument', async () => {
+    const r = await push_files({ repo: 'owner/repo', files: 'nope' })
+    expect(r.ok).toBe(false)
+    expect(r.error).toMatch(/object mapping/)
+  })
+
+  it('rejects an empty files object', async () => {
+    const r = await push_files({ repo: 'owner/repo', files: {} })
+    expect(r.ok).toBe(false)
+    expect(r.error).toMatch(/empty/)
+  })
+
+  it('rejects path traversal and absolute paths', async () => {
+    for (const bad of ['../evil.txt', '/etc/passwd', 'a\b.txt', 'dir/']) {
+      const r = await push_files({ repo: 'owner/repo', files: { [bad]: 'x' } })
+      expect(r.ok).toBe(false)
+      expect(r.error).toMatch(/invalid file path/)
+    }
+  })
+
+  it('rejects more than 25 files', async () => {
+    const files: Record<string, string> = {}
+    for (let i = 0; i < 26; i++) files[`f${i}.txt`] = 'x'
+    const r = await push_files({ repo: 'owner/repo', files })
+    expect(r.ok).toBe(false)
+    expect(r.error).toMatch(/at most 25/)
+  })
+
+  it('requires a token before any network call', async () => {
+    const r = await push_files({ repo: 'owner/repo', files: { 'a.txt': 'hi' } })
+    expect(r.ok).toBe(false)
+    expect(r.error).toMatch(/GitHub token/)
+  })
+})
+
+describe('merge_pr', () => {
+  it('rejects a missing repo argument', async () => {
+    const r = await merge_pr({ pr_number: 1 })
+    expect(r.ok).toBe(false)
+    expect(r.error).toMatch(/requires a string "repo"/)
+  })
+
+  it('rejects a non-integer pr_number', async () => {
+    for (const bad of [undefined, 0, -1, 1.5, 'one' as unknown as number]) {
+      const r = await merge_pr({ repo: 'owner/repo', pr_number: bad })
+      expect(r.ok).toBe(false)
+      expect(r.error).toMatch(/positive integer/)
+    }
+  })
+
+  it('rejects an unknown merge method', async () => {
+    const r = await merge_pr({ repo: 'owner/repo', pr_number: 1, method: 'yolo' })
+    expect(r.ok).toBe(false)
+    expect(r.error).toMatch(/merge, squash, rebase/)
+  })
+
+  it('requires a token before any network call', async () => {
+    const r = await merge_pr({ repo: 'owner/repo', pr_number: 1 })
+    expect(r.ok).toBe(false)
+    expect(r.error).toMatch(/GitHub token/)
   })
 })

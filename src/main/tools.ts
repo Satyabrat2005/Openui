@@ -31,6 +31,7 @@ import { checkAccessibility, checkScreenRecording, type PermissionTarget } from 
 import { resolveApp, type InstalledApp } from './appResolver'
 import { githubToolSchemas, githubRegistry } from './github'
 import { figmaToolSchemas, figmaRegistry } from './figma'
+import { designToolSchemas, designRegistry } from './designFlow'
 import { callChatProxyText } from './edgeFunctions'
 import { trackEvent } from './telemetry/posthog'
 import { Events } from './telemetry/events'
@@ -151,11 +152,15 @@ export const STATE_CHANGING_TOOLS = new Set<string>([
   'delete_file',
   'write_clipboard',
   // GitHub repo automation — outward-facing writes, gated behind the HITL modal.
-  // check_repo_exists is intentionally absent (read-only). open_pull_request is
-  // additionally listed in DESTRUCTIVE_TOOLS so it ALWAYS confirms.
+  // check_repo_exists is intentionally absent (read-only). open_pull_request and
+  // merge_pr are additionally listed in DESTRUCTIVE_TOOLS so they ALWAYS confirm.
   'create_repo',
   'update_readme',
+  'push_files',
   'open_pull_request',
+  'merge_pr',
+  // Design-in-browser: writes an HTML file into the workspace and opens it.
+  'design_preview',
 ])
 
 /**
@@ -170,11 +175,13 @@ export const STATE_CHANGING_TOOLS = new Set<string>([
  * rather than hard-unlinking, but it is still listed here so it ALWAYS asks —
  * even under approve-plan / full-auto autonomy a deletion is never silently run.
  *
- * open_pull_request is the outward-facing, hard-to-reverse GitHub step (auto-merge
- * is explicitly out of scope): opening a PR always requires one human approval,
- * so it lives here rather than only in STATE_CHANGING_TOOLS.
+ * open_pull_request and merge_pr are the outward-facing, hard-to-reverse GitHub
+ * steps: each always requires one human approval per call, so they live here
+ * rather than only in STATE_CHANGING_TOOLS. merge_pr in particular can NEVER
+ * run automatically — there is no autonomy mode that merges without the user's
+ * explicit Allow click.
  */
-export const DESTRUCTIVE_TOOLS = new Set<string>(['delete_file', 'open_pull_request'])
+export const DESTRUCTIVE_TOOLS = new Set<string>(['delete_file', 'open_pull_request', 'merge_pr'])
 
 /**
  * Returned by executeTool when a state-changing tool needs user approval.
@@ -2217,6 +2224,7 @@ async function write_clipboard(args: Record<string, unknown>): Promise<ToolResul
 export const toolSchemas: ToolSchema[] = [
   ...githubToolSchemas,
   ...figmaToolSchemas,
+  ...designToolSchemas,
   {
     name: 'open_app',
     description:
@@ -2648,7 +2656,8 @@ const registry: Record<string, Executor> = {
   read_clipboard,
   write_clipboard,
   ...githubRegistry,
-  ...figmaRegistry
+  ...figmaRegistry,
+  ...designRegistry
 }
 
 /**
@@ -2791,6 +2800,17 @@ export function describeToolCall(name: string, args: Record<string, unknown>): s
       return `Visually operate the browser to: ${String(args.goal ?? '')}`
     case 'browser_navigate':
       return `Navigate to ${String(args.url ?? '')}`
+    case 'push_files': {
+      const fileCount =
+        typeof args.files === 'object' && args.files !== null && !Array.isArray(args.files)
+          ? Object.keys(args.files as Record<string, unknown>).length
+          : 0
+      return `Push ${fileCount} file(s) to ${String(args.repo ?? '')}@${String(args.branch ?? 'openui/init')}`
+    }
+    case 'merge_pr':
+      return `Merge PR #${Number(args.pr_number)} in ${String(args.repo ?? '')}`
+    case 'design_preview':
+      return `Preview design "${String(args.name ?? '')}" in your browser`
     case 'browser_click':
       return `Click "${String(args.selector ?? '')}"`
     case 'browser_extract_text':
