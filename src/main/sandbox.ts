@@ -509,6 +509,71 @@ export async function runPythonScript(relPath: string, smoke: boolean): Promise<
   return runBoundedProcess(pythonCmd(), argv, workspace, PY_TIMEOUT_MS)
 }
 
+/** Cap on how many extra CLI args the interactive run_python tool will forward. */
+const MAX_PY_ARGS = 32
+
+/**
+ * Build the tiny `python -c` bootstrap that caps address space via RLIMIT_AS
+ * before running the target script as __main__. POSIX-only: the `resource`
+ * module does not exist on Windows, so the try/except degrades to a no-op there
+ * (which is why Windows uses the plain direct launch below). The target path and
+ * its args are passed as argv[1:] — never interpolated into this code — so the
+ * only injected value is the integer byte cap we compute ourselves.
+ */
+export function memCapBootstrap(bytes: number): string {
+  return [
+    'import sys, runpy',
+    'try:',
+    '    import resource',
+    `    resource.setrlimit(resource.RLIMIT_AS, (${bytes}, ${bytes}))`,
+    'except Exception:',
+    '    pass',
+    't = sys.argv[1]',
+    'sys.argv = [t] + sys.argv[2:]',
+    "runpy.run_path(t, run_name='__main__')"
+  ].join('\n')
+}
+
+/**
+ * Interactive, HITL-gated variant of runPythonScript: run a workspace .py file
+ * with caller-supplied CLI args plus a best-effort memory ceiling on top of the
+ * usual wall-clock + output caps. On POSIX the script is launched through a
+ * RLIMIT_AS bootstrap; on Windows (no RLIMIT_AS) it is launched directly and the
+ * memory cap is not enforced. Path is validated to be an existing in-sandbox .py.
+ */
+export async function runInteractivePython(
+  relPath: string,
+  extraArgs: string[] = [],
+  opts: { memMb?: number; timeoutMs?: number } = {}
+): Promise<TestRunResult> {
+  const workspace = await ensureWorkspace()
+  let abs: string
+  try {
+    abs = resolveInSandbox(workspace, relPath)
+  } catch (err) {
+    return { passed: false, output: err instanceof Error ? err.message : String(err) }
+  }
+  if (!/\.py$/i.test(abs)) {
+    return { passed: false, output: `"${relPath}" is not a .py file.` }
+  }
+  try {
+    await stat(abs)
+  } catch {
+    return { passed: false, output: `"${relPath}" does not exist in the workspace. Write it first.` }
+  }
+
+  const rel = relative(workspace, abs)
+  const safeArgs = extraArgs.filter((a) => typeof a === 'string').slice(0, MAX_PY_ARGS)
+  const timeout = opts.timeoutMs && opts.timeoutMs > 0 ? opts.timeoutMs : PY_TIMEOUT_MS
+  const memMb = opts.memMb && opts.memMb > 0 ? Math.floor(opts.memMb) : 0
+
+  if (!IS_WIN && memMb > 0) {
+    const bootstrap = memCapBootstrap(memMb * 1024 * 1024)
+    return runBoundedProcess(pythonCmd(), ['-c', bootstrap, rel, ...safeArgs], workspace, timeout)
+  }
+  return runBoundedProcess(pythonCmd(), [rel, ...safeArgs], workspace, timeout)
+}
+
 /**
  * Compile a single C++ source file with g++ (-O2, C++17) and, on success, run
  * the produced binary with the given stdin text. Both steps are bounded; the

@@ -456,6 +456,12 @@ const api = {
   setSetting: (key: string, value: unknown): Promise<void> =>
     ipcRenderer.invoke('openui:set-setting', { key, value }),
 
+  // ── Google Calendar (dedicated OAuth connect + status) ──────────────────────
+  googleCalendarStatus: (): Promise<{ connected: boolean }> =>
+    ipcRenderer.invoke('openui:google-calendar-status'),
+  connectGoogleCalendar: (): Promise<{ ok: boolean; output?: string; error?: string }> =>
+    ipcRenderer.invoke('openui:connect-google-calendar'),
+
   // ── Team / Shared Workflows ───────────────────────────────────────────────────
   listWorkflows: (): Promise<Workflow[]> =>
     ipcRenderer.invoke('openui:workflow:list'),

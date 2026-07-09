@@ -32,6 +32,15 @@ import { resolveApp, type InstalledApp } from './appResolver'
 import { githubToolSchemas, githubRegistry } from './github'
 import { figmaToolSchemas, figmaRegistry } from './figma'
 import { designToolSchemas, designRegistry } from './designFlow'
+import { spreadsheetToolSchemas, spreadsheetRegistry } from './spreadsheet'
+import { runInteractivePython, writeSandboxFile } from './sandbox'
+import {
+  isGoogleCalendarConnected,
+  googleCreateEvent,
+  googleListToday,
+  normalizeAttendees
+} from './googleCalendar'
+import { createHash } from 'node:crypto'
 import { callChatProxyText } from './edgeFunctions'
 import { trackEvent } from './telemetry/posthog'
 import { Events } from './telemetry/events'
@@ -161,6 +170,12 @@ export const STATE_CHANGING_TOOLS = new Set<string>([
   'merge_pr',
   // Design-in-browser: writes an HTML file into the workspace and opens it.
   'design_preview',
+  // Spreadsheet writes (read_spreadsheet/list_sheets are read-only, omitted).
+  'write_spreadsheet',
+  'update_cells',
+  'add_formula',
+  // Running arbitrary Python is sensitive — always confirm (also in DESTRUCTIVE_TOOLS).
+  'run_python',
 ])
 
 /**
@@ -181,7 +196,13 @@ export const STATE_CHANGING_TOOLS = new Set<string>([
  * run automatically — there is no autonomy mode that merges without the user's
  * explicit Allow click.
  */
-export const DESTRUCTIVE_TOOLS = new Set<string>(['delete_file', 'open_pull_request', 'merge_pr'])
+export const DESTRUCTIVE_TOOLS = new Set<string>([
+  'delete_file',
+  'open_pull_request',
+  'merge_pr',
+  // Executes code — must be confirmed even under autopilot.
+  'run_python'
+])
 
 /**
  * Returned by executeTool when a state-changing tool needs user approval.
@@ -1053,7 +1074,10 @@ async function search_files(args: Record<string, unknown>): Promise<ToolResult> 
  * Windows: PowerShell Outlook COM (requires Microsoft Outlook to be installed)
  * Linux:   not supported
  */
-async function control_calendar(args: Record<string, unknown>): Promise<ToolResult> {
+async function control_calendar(
+  args: Record<string, unknown>,
+  context?: ExecutorContext
+): Promise<ToolResult> {
   const action = (typeof args.action === 'string' ? args.action : '').trim().toLowerCase()
   const rawDetails = args.eventDetails
   const details =
@@ -1061,6 +1085,68 @@ async function control_calendar(args: Record<string, unknown>): Promise<ToolResu
       ? (rawDetails as Record<string, unknown>)
       : {}
   const str = (v: unknown): string => (typeof v === 'string' ? v.trim() : '')
+
+  const attendees = normalizeAttendees(details.attendees)
+  const addMeetLink = details.addMeetLink === true
+  const backend = str(args.backend).toLowerCase() || 'auto'
+
+  // Invites can only be emailed through Google. If the user asked to invite
+  // people but Google isn't the target, say so rather than silently creating a
+  // local event and dropping the invites.
+  if (action === 'create' && attendees.length > 0 && backend !== 'system' && !isGoogleCalendarConnected()) {
+    return {
+      ok: false,
+      error:
+        'Emailing calendar invites requires Google Calendar. Connect it in Settings → Google Calendar, ' +
+        'or pass backend:"system" to create a local event without sending invites.'
+    }
+  }
+
+  // Sending an invite reaches other people's inboxes — always confirm, even
+  // under autopilot. control_calendar's STATE_CHANGING gate is bypassed in
+  // autonomy, but this sensitive-action gate is not (agent.ts re-runs once the
+  // user approves, with sensitiveApproved set).
+  if (action === 'create' && attendees.length > 0 && !context?.sensitiveApproved) {
+    return {
+      ok: false,
+      error: 'Awaiting confirmation to send calendar invites.',
+      needsConfirmation: {
+        kind: 'sensitive-action',
+        label: `Send calendar invite to ${attendees.length} attendee(s): ${attendees.join(', ')}`
+      }
+    }
+  }
+
+  // Google Calendar backend: the only path that can email real invites + attach
+  // a Meet link. Used when explicitly requested (backend:"google"), or — unless
+  // "system" is forced — automatically when Google is connected and the request
+  // needs a feature the local backends lack (attendees / Meet link) or the OS
+  // has no local calendar backend (neither macOS nor Windows, e.g. Linux).
+  const wantGoogle =
+    backend === 'google' ||
+    (backend !== 'system' &&
+      isGoogleCalendarConnected() &&
+      (attendees.length > 0 || addMeetLink || (!IS_MAC && !IS_WIN)))
+  if (wantGoogle) {
+    if (!isGoogleCalendarConnected()) {
+      return {
+        ok: false,
+        error: 'Google Calendar is not connected. Open Settings → Google Calendar and click Connect.'
+      }
+    }
+    if (action === 'create') {
+      return googleCreateEvent({
+        title: str(details.title) || str(details.summary),
+        start: str(details.start),
+        end: str(details.end),
+        notes: str(details.notes),
+        attendees,
+        addMeetLink
+      })
+    }
+    if (action === 'list') return googleListToday()
+    return { ok: false, error: `control_calendar: unknown action "${action}". Use "create" or "list".` }
+  }
 
   // ── macOS path (AppleScript / Calendar.app) ─────────────────────────────────
   if (IS_MAC) {
@@ -2220,11 +2306,71 @@ async function write_clipboard(args: Record<string, unknown>): Promise<ToolResul
 
 // ── schemas + dispatch (the LLM-facing surface) ──────────────────────────────
 
+// Best-effort address-space ceiling for interactive run_python (POSIX-only —
+// see runInteractivePython). 1 GiB is enough for small models/data work while
+// bounding a runaway allocation.
+const PY_MEM_LIMIT_MB = 1024
+
+/**
+ * run_python — interactive, HITL-gated Python execution inside the coding
+ * sandbox. Accepts either inline `code` (written to a content-addressed .py in
+ * the workspace) or a workspace-relative `path`, plus optional CLI `args`. It
+ * reuses the sandbox's bounded runner (wall-clock + output caps) and adds a
+ * best-effort memory ceiling. Gated in STATE_CHANGING_TOOLS + DESTRUCTIVE_TOOLS
+ * so every run is confirmed by the user, even under autopilot. Following the
+ * coding-tool convention, a non-zero exit is ok:true with a PYTHON RUN FAILED
+ * marker (so the model reads the log and iterates) rather than a tool error.
+ */
+async function run_python(args: Record<string, unknown>): Promise<ToolResult> {
+  const code = typeof args.code === 'string' ? args.code : ''
+  const pathArg = typeof args.path === 'string' ? args.path.trim() : ''
+  const smoke = args.smoke === true // interactive default: run as-is unless asked
+  const extraArgs = Array.isArray(args.args) ? args.args.map((a) => String(a)) : []
+  if (!code && !pathArg) {
+    return { ok: false, error: 'run_python requires "code" (inline Python) or "path" (a workspace .py file).' }
+  }
+  try {
+    let rel = pathArg
+    if (code) {
+      const digest = createHash('sha1').update(code).digest('hex').slice(0, 12)
+      rel = await writeSandboxFile(`interactive_${digest}.py`, code)
+    }
+    const finalArgs = [...extraArgs, ...(smoke ? ['--smoke'] : [])]
+    const result = await runInteractivePython(rel, finalArgs, { memMb: PY_MEM_LIMIT_MB })
+    return {
+      ok: true,
+      output: `${result.passed ? 'PYTHON RUN OK' : 'PYTHON RUN FAILED'} [${rel}${smoke ? ' --smoke' : ''}]\n${result.output}`
+    }
+  } catch (err) {
+    return { ok: false, error: `run_python failed: ${errText(err)}` }
+  }
+}
+
 /** JSON schemas the agent injects into the system prompt so the LLM can call. */
 export const toolSchemas: ToolSchema[] = [
   ...githubToolSchemas,
   ...figmaToolSchemas,
   ...designToolSchemas,
+  ...spreadsheetToolSchemas,
+  {
+    name: 'run_python',
+    description:
+      'Run Python inside the sandboxed workspace and return its output. Provide either ' +
+      '"code" (inline Python, written to a workspace file and executed) or "path" (an existing ' +
+      'workspace-relative .py file), plus optional "args". Use this to actually run data/ML ' +
+      'scripts — write the script, then run it — instead of computer_use. Wall-clock, output, ' +
+      'and (on macOS/Linux) memory limits are enforced; every run asks for your confirmation.',
+    parameters: {
+      type: 'object',
+      properties: {
+        code: { type: 'string', description: 'Inline Python source to run. Omit if using "path".' },
+        path: { type: 'string', description: 'Workspace-relative .py file to run, e.g. "train.py". Omit if using "code".' },
+        args: { type: 'object', description: 'Optional array of string CLI args passed to the script.' },
+        smoke: { type: 'boolean', description: 'Append --smoke (fast/tiny mode) for scripts that support it. Default false.' }
+      },
+      required: []
+    }
+  },
   {
     name: 'open_app',
     description:
@@ -2292,8 +2438,11 @@ export const toolSchemas: ToolSchema[] = [
   {
     name: 'control_calendar',
     description:
-      "Create an event in, or list today's events from, the system calendar. " +
-      'Uses Calendar.app on macOS and Microsoft Outlook (via COM) on Windows.',
+      "Create an event in, or list today's events from, a calendar. " +
+      'Uses Calendar.app on macOS and Microsoft Outlook (via COM) on Windows. ' +
+      'To email invites to other people or attach a video-call (Meet) link, connect ' +
+      'Google Calendar in Settings and pass eventDetails.attendees — that routes ' +
+      'through the Google Calendar API automatically. Sending invites asks the user to confirm.',
     parameters: {
       type: 'object',
       properties: {
@@ -2305,8 +2454,18 @@ export const toolSchemas: ToolSchema[] = [
         eventDetails: {
           type: 'object',
           description:
-            'For "create": {title, start, end, calendar, notes}. ' +
-            'Dates are natural strings, e.g. "June 24, 2026 11:00 AM".'
+            'For "create": {title, start, end, calendar, notes, attendees, addMeetLink}. ' +
+            'Dates are natural strings, e.g. "June 24, 2026 11:00 AM". ' +
+            'attendees is a list of email addresses to invite (requires Google Calendar). ' +
+            'addMeetLink:true attaches a Google Meet link.'
+        },
+        backend: {
+          type: 'string',
+          description:
+            'Optional. "auto" (default) picks Google when connected and invites/Meet are needed, ' +
+            'else the local OS calendar. "google" forces the Google Calendar API; "system" forces ' +
+            'the local calendar (Calendar.app / Outlook).',
+          enum: ['auto', 'google', 'system']
         }
       },
       required: ['action']
@@ -2655,9 +2814,11 @@ const registry: Record<string, Executor> = {
   delete_file,
   read_clipboard,
   write_clipboard,
+  run_python,
   ...githubRegistry,
   ...figmaRegistry,
-  ...designRegistry
+  ...designRegistry,
+  ...spreadsheetRegistry
 }
 
 /**
@@ -2859,6 +3020,18 @@ export function describeToolCall(name: string, args: Record<string, unknown>): s
       return 'Read clipboard'
     case 'write_clipboard':
       return 'Write to clipboard'
+    case 'read_spreadsheet':
+      return `Read spreadsheet ${String(args.path ?? '')}`
+    case 'write_spreadsheet':
+      return `Write spreadsheet ${String(args.path ?? '')}`
+    case 'update_cells':
+      return `Update cells in ${String(args.path ?? '')}`
+    case 'add_formula':
+      return `Add formula ${String(args.cell ?? '')} in ${String(args.path ?? '')}`
+    case 'list_sheets':
+      return `List sheets in ${String(args.path ?? '')}`
+    case 'run_python':
+      return `Run Python ${String(args.path ?? '(inline code)')}`
     default:
       return name
   }
