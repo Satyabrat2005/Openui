@@ -6,15 +6,17 @@
  *      Shape: { tasks: [{ id, title, description?, status }] }.
  *      The agent reads pending tasks and writes back "done"/"failed" status so
  *      progress survives restarts and the user can see what was attempted.
- *   2. GitHub Issues — READ-ONLY. With GITHUB_TOKEN + GITHUB_REPO set, open
- *      issues are pulled as tasks. We deliberately never close, comment on, or
- *      otherwise mutate GitHub from an unattended loop: that is an outward-facing,
- *      hard-to-reverse action that must stay under explicit user control. The
+ *   2. GitHub Issues — READ-ONLY. With a GitHub token (Settings → GitHub) +
+ *      GITHUB_REPO set, open issues are pulled as tasks. We deliberately never
+ *      close, comment on, or otherwise mutate GitHub from an unattended loop:
+ *      that is an outward-facing, hard-to-reverse action that must stay under
+ *      explicit user control. The
  *      result of working an issue is recorded only in the local todo.json mirror.
  */
 import { writeFile, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { ensureWorkspace } from './sandbox'
+import { getGithubToken } from './github'
 
 export type TaskStatus = 'pending' | 'done' | 'failed'
 
@@ -68,14 +70,16 @@ async function saveTodoFile(file: TodoFile): Promise<void> {
 /**
  * Fetch open issues from GitHub as tasks (read-only). Requires:
  *   GITHUB_REPO  — "owner/name"
- *   GITHUB_TOKEN — a token with repo read scope (optional for public repos but
- *                  recommended to avoid the low unauthenticated rate limit).
+ *   GitHub token — set in Settings → GitHub (or the GITHUB_TOKEN env var as a
+ *                  local-dev fallback); a token with repo read scope. Optional
+ *                  for public repos but recommended to avoid the low
+ *                  unauthenticated rate limit.
  * Returns [] (not an error) when unconfigured, so the caller can silently fall
  * back to the local todo.json.
  */
 async function fetchGitHubIssues(): Promise<AgentTask[]> {
   const repo = process.env.GITHUB_REPO?.trim()
-  const token = process.env.GITHUB_TOKEN?.trim()
+  const token = getGithubToken()
   if (!repo || !/^[\w.-]+\/[\w.-]+$/.test(repo)) return []
 
   const headers: Record<string, string> = {

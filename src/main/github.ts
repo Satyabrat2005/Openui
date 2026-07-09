@@ -7,8 +7,12 @@
  *   post_pr_comment(repo, pr_number, comment)    — leave a review comment
  *
  * Uses @octokit/rest (lazy-loaded — absent package surfaces as a tool error,
- * not a crash). Authentication is via GITHUB_TOKEN env var; unauthenticated
- * requests work for public repos but hit a very low rate limit.
+ * not a crash). Authentication uses a per-user GitHub personal access token the
+ * user supplies in Settings → GitHub (see getGithubToken; the GITHUB_TOKEN env
+ * var remains a local-dev fallback). A GitHub PAT is an inherently user-owned
+ * credential — unlike OUR shared LLM keys — so the right fix is a Settings
+ * field, not a server-side proxy. Unauthenticated requests work for public
+ * repos but hit a very low rate limit.
  *
  * SECURITY:
  *   - repo names are validated against REPO_RE before reaching the API.
@@ -16,9 +20,27 @@
  *   - comment bodies are length-validated against GitHub's API limit.
  *   - no env var or secret is interpolated into any URL or API field;
  *     all untrusted data is passed as typed API method parameters.
+ *   - the token stays in the main process — never crosses the contextBridge.
  */
 
 import type { ToolResult, ToolSchema } from './tools'
+import { database } from './database'
+
+// Settings key under which the user's GitHub personal access token is stored
+// (via Settings → GitHub). Keep in sync with the renderer's SettingsModal.
+export const GITHUB_TOKEN_SETTING_KEY = 'github_token'
+
+/**
+ * Resolve the GitHub personal access token. A GitHub PAT is a per-user
+ * credential (unlike OUR shared, server-side LLM keys), so the user supplies
+ * their OWN in Settings → GitHub; the GITHUB_TOKEN env var remains a local-dev
+ * fallback. Returns '' when neither is set (anonymous, public-repo-only access).
+ */
+export function getGithubToken(): string {
+  const stored = database.settings.getSetting(GITHUB_TOKEN_SETTING_KEY)
+  if (typeof stored === 'string' && stored.trim()) return stored.trim()
+  return process.env.GITHUB_TOKEN?.trim() ?? ''
+}
 
 // "owner/repo" — alphanumeric, dots, hyphens, underscores only.
 const REPO_RE = /^[\w.-]+\/[\w.-]+$/
@@ -49,13 +71,13 @@ function getOctokitClass(): any {
   }
 }
 
-/** Build an authenticated (or anonymous) Octokit instance from env. */
+/** Build an authenticated (or anonymous) Octokit instance from the user token. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function buildClient(): any {
   const Octokit = getOctokitClass()
-  const token = process.env.GITHUB_TOKEN?.trim()
+  const token = getGithubToken()
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return new Octokit({ auth: token ?? undefined }) as any
+  return new Octokit({ auth: token || undefined }) as any
 }
 
 /** Validate and split an "owner/repo" string into Octokit parameters. */
@@ -223,7 +245,7 @@ export const githubToolSchemas: ToolSchema[] = [
     description:
       'List all open pull requests in a GitHub repository, sorted by most recently updated. ' +
       'Returns PR number, title, author, and creation date. ' +
-      'Requires GITHUB_TOKEN env var (repo read scope) for private repos; ' +
+      'Requires a GitHub token (repo read scope), set in Settings → GitHub, for private repos; ' +
       'works without a token for public repos at a lower rate limit.',
     parameters: {
       type: 'object',
@@ -262,7 +284,7 @@ export const githubToolSchemas: ToolSchema[] = [
     description:
       'Post a markdown comment on a GitHub pull request — used to leave an automated code review ' +
       'after analysing the PR diff with get_pr_diff. ' +
-      'Requires GITHUB_TOKEN env var with repo write scope.',
+      'Requires a GitHub token with repo write scope, set in Settings → GitHub.',
     parameters: {
       type: 'object',
       properties: {

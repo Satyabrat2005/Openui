@@ -90,11 +90,14 @@ ANTHROPIC_API_KEY=sk-ant-...
 # ── Required for Whisper voice transcription (pro/enterprise tiers) ──────────
 OPENAI_API_KEY=sk-...
 
-# ── Required for GitHub PR review + task source ──────────────────────────────
-GITHUB_TOKEN=ghp_...          # repo read + write:discussion scopes
+# ── GitHub PR review + task source (per-user: set in Settings → GitHub) ──────
+# The shipped app reads the token from Settings → GitHub. This env var is a
+# local-dev fallback only. GITHUB_REPO points the autonomous issue source at a repo.
+GITHUB_TOKEN=ghp_...          # local-dev fallback; repo read + write:discussion scopes
 GITHUB_REPO=owner/repo        # optional default repo
 
-# ── Required for Figma design tools ─────────────────────────────────────────
+# ── Figma design tools (per-user: set in Settings → Figma) ───────────────────
+# The shipped app reads the token from Settings → Figma. Env var is a dev fallback.
 FIGMA_TOKEN=figd_...           # Figma personal access token
 
 # ── Required for Stripe checkout ─────────────────────────────────────────────
@@ -306,13 +309,13 @@ Say **"Review my PRs"** or **"Review pull requests"** and OpenUI triggers a dedi
 ### Verdict
 ```
 
-**Setup:**
+**Setup:** paste a GitHub personal access token in **Settings → GitHub** (a per-user credential, stored locally on the device). For local development you may instead set it via env:
 ```env
-GITHUB_TOKEN=ghp_...      # repo read + write:discussion scopes
+GITHUB_TOKEN=ghp_...      # local-dev fallback; repo read + write:discussion scopes
 GITHUB_REPO=owner/repo    # optional default; can also be supplied in the chat prompt
 ```
 
-**Security:** repo names validated against `^[\w.-]+\/[\w.-]+$`; diff capped; comment capped at 65 536 chars (GitHub limit); never merges or closes PRs.
+**Security:** the token stays in the main process and never crosses the contextBridge; repo names validated against `^[\w.-]+\/[\w.-]+$`; diff capped; comment capped at 65 536 chars (GitHub limit); never merges or closes PRs.
 
 ---
 
