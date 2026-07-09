@@ -5,8 +5,46 @@ the newest work lands under **Unreleased** until the next version bump.
 
 ## [Unreleased]
 
+## v7.1.0 — 2026-07-09
+
 Production-readiness hardening ahead of the first cross-platform (Windows +
-macOS) public release.
+macOS) public release, plus a major expansion of autonomous agent capability:
+safer browser automation, GitHub write access, project-aware coding, local
+fine-tuning, and consent-gated crash reporting.
+
+### Added — Agent capability
+
+- **Per-site browser consent + content sanitization + in-page vision
+  fallback.** The agent now asks before automating a new site, sanitizes
+  page content pulled into context, and falls back to an in-page vision pass
+  when structured extraction fails.
+- **GitHub write access, always human-confirmed.** New `push_files` and
+  `merge_pr` tools (with a token fallback) plus a design-in-browser flow, so
+  the agent can propose and land changes with an explicit approval gate.
+- **Project-type branching in the autonomous coding loop.** The coding loop
+  now detects project type and adapts its sandboxing/tooling accordingly
+  instead of using one generic path for every repo.
+- **Local LoRA fine-tuning** with versioned checkpoints and an eval-gated
+  promotion pipeline, so the local model can improve from collected
+  trajectories without a manual review step.
+- **Structured run logs, lane-based task queue, and workspace rollback** for
+  clearer visibility into and recovery from autonomous runs.
+- **Generalized screenshot → reason → act loop** (`computer_use`) and real
+  parallel sub-agents with a live screen preview in a three-zone task view.
+- **Local model routing** to Ollama qwen models with a single-flight VRAM
+  lock to prevent concurrent local-model contention.
+- **App-resolution engine + `list_apps` tool**, and a WhatsApp chat tool with
+  surfaced `open_app` errors.
+- macOS brought to QoL/security parity with Windows (window resize with task
+  activity, OS automation).
+
+### Added — Reliability & trust
+
+- **Consent-gated Sentry error tracking with PII scrubbing.**
+- **Demo reliability hardening**: renderer error boundaries, a HITL
+  auto-deny timeout so an unattended prompt can't hang a demo, and a new
+  demo runbook (`docs/DEMO_RUNBOOK.md`).
+- Repo hygiene pass for technical diligence.
 
 ### Fixed
 
