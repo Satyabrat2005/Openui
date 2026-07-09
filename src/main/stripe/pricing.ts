@@ -2,11 +2,17 @@
  * pricing.ts — the single source of truth for OpenUI's subscription tiers, the
  * models each tier may use, and the helpers that gate model routing.
  *
- * CLOUD-ONLY MODEL: every tier — including Free — is served exclusively through
- * OUR cloud backend (the `chat-proxy` Supabase Edge Function, which holds our API
- * keys server-side). There is no local-model / Ollama routing path anywhere in
- * the app: every chat and voice turn is metered against the limits below, with no
- * way for a user to self-host a model to escape the cap.
+ * MODEL ROUTING: cloud turns are served through OUR backend (the `chat-proxy`
+ * Supabase Edge Function, which holds our API keys server-side) and are metered
+ * against the per-tier limits below. This build ALSO routes turns to a local
+ * Ollama model when one is available (see `models.ts` / `agent.ts`); those turns
+ * run on the user's own machine. Either way the UI model tag is derived from the
+ * model that actually served the turn — never a fabricated name.
+ *
+ * ENTITLEMENT is the source of truth for which cloud models a tier may reach:
+ * `clampTierToEntitlement` clamps the (untrusted) renderer-supplied tier down to
+ * what the signed-in user is verified to hold, so the cloud `models` map below
+ * can never be escalated by a compromised renderer.
  *
  * Each tier declares a `dailyMessageLimit` (cloud messages/day) and a
  * `monthlyVoiceMinutes` cap (voice/interview minutes per calendar month), both

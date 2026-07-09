@@ -14,6 +14,7 @@ import { readFile, readdir, writeFile } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { join, extname } from 'node:path'
 import { app } from 'electron'
+import { withOllamaLock } from './ollamaLock'
 
 const EMBED_MODEL = 'nomic-embed-text'
 const VECTOR_DIM = 768          // nomic-embed-text output dimension
@@ -71,7 +72,12 @@ async function embedText(text: string): Promise<number[]> {
   const mod = require('ollama')
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const client: any = mod.default ?? mod
-  const res = await client.embeddings({ model: EMBED_MODEL, prompt: text })
+  // Embeddings share the GPU with chat/coding generation, so run them through the
+  // same single-flight lock — one local inference on the 8 GB card at a time (see
+  // ollamaLock.ts). The model itself is unchanged: nomic-embed-text stays the
+  // embedder; only concurrency is gated here.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const res: any = await withOllamaLock(() => client.embeddings({ model: EMBED_MODEL, prompt: text }))
   const vec: number[] = res.embedding
   if (!Array.isArray(vec) || vec.length !== VECTOR_DIM) {
     throw new Error(

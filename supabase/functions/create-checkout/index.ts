@@ -13,12 +13,23 @@
 //   • Stamps `supabaseUserId` on BOTH the session metadata AND the subscription
 //     (via subscription_data.metadata) so later customer.subscription.* webhook
 //     events can be mapped back to the user.
+//   • Authenticates the caller's bearer token (supabase.auth.getUser) and uses
+//     the verified id — a body-supplied `userId` is only ever accepted if it
+//     matches that verified id, closing an object-level-authorization hole
+//     where any caller could open a checkout session tagged as another user.
 import { serve } from 'https://deno.land/std@0.177.0/http/server.ts'
 import Stripe from 'https://esm.sh/stripe@14.0.0?target=deno'
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+import { requireVerifiedUser } from '../_shared/auth.ts'
 
 const stripe = new Stripe(Deno.env.get('STRIPE_SECRET_KEY') ?? '', {
   apiVersion: '2024-06-20'
 })
+
+const supabase = createClient(
+  Deno.env.get('SUPABASE_URL') ?? '',
+  Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
+)
 
 const SUCCESS_URL =
   Deno.env.get('APP_SUCCESS_URL') ?? 'openui://payment-success?session_id={CHECKOUT_SESSION_ID}'
@@ -46,6 +57,10 @@ serve(async (req) => {
       return json({ error: 'userId and priceId are required.' }, 400)
     }
 
+    const auth = await requireVerifiedUser(req, supabase, userId)
+    if (!auth.ok) return json({ error: auth.error }, auth.status)
+    const verifiedUserId = auth.user.id
+
     // Create or retrieve the Stripe customer for this user.
     let customerId: string | undefined
     if (email) {
@@ -55,7 +70,7 @@ serve(async (req) => {
     if (!customerId) {
       const customer = await stripe.customers.create({
         email,
-        metadata: { supabaseUserId: userId }
+        metadata: { supabaseUserId: verifiedUserId }
       })
       customerId = customer.id
     }
@@ -66,10 +81,10 @@ serve(async (req) => {
       line_items: [{ price: priceId, quantity: 1 }],
       success_url: SUCCESS_URL,
       cancel_url: CANCEL_URL,
-      metadata: { supabaseUserId: userId },
+      metadata: { supabaseUserId: verifiedUserId },
       // Propagate the user id onto the subscription so subscription.* webhooks
       // can resolve the user without a session lookup.
-      subscription_data: { metadata: { supabaseUserId: userId } }
+      subscription_data: { metadata: { supabaseUserId: verifiedUserId } }
     })
 
     return json({ url: session.url })

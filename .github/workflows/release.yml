@@ -83,6 +83,8 @@ on:
 jobs:
   release:
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
     strategy:
       fail-fast: false
       matrix:
@@ -161,6 +163,15 @@ jobs:
         # blip can't fail a release; already-downloaded binaries are cached, so a
         # retry is cheap. A genuine error still fails all 3 attempts and surfaces.
         run: |
+          # electron-builder's chooseNotNull() (platformPackager.js) only
+          # falls back to "no signing" when CSC_LINK is null/undefined, not
+          # when it's "" — and GitHub Actions exports an unconfigured secret
+          # as CSC_LINK="" (set, just empty), not unset. That empty string
+          # sails through to importCertificate("") and crashes with
+          # "<cwd> not a file" instead of skipping to an ad-hoc-signed build.
+          # Unset here so an absent secret actually means absent.
+          [ -z "$CSC_LINK" ] && unset CSC_LINK
+          [ -z "$CSC_KEY_PASSWORD" ] && unset CSC_KEY_PASSWORD
           for attempt in 1 2 3; do
             echo "::group::build:mac attempt $attempt"
             if npm run build:mac; then echo "::endgroup::"; exit 0; fi
@@ -238,68 +249,42 @@ jobs:
       # downloads the update from the .zip (latest-mac.yml points at it), NOT the
       # .dmg — the .dmg is only for first-install. Omitting the zip makes every
       # macOS auto-update 404 on the file the feed references. Upload all four.
-      - name: Upload macOS artifacts
+      #
+      # Attach directly to the Release rather than staging through
+      # actions/upload-artifact + a separate publish job: the intermediate
+      # artifact store has its own (separate, low) storage quota that filled
+      # up from old runs and silently blocked a past release's assets —
+      # Release assets live in different storage and don't share that limit.
+      # softprops/action-gh-release appends to the existing release for this
+      # tag, so each OS job can publish independently.
+      - name: Publish macOS release assets
         if: matrix.os == 'macos-latest'
-        uses: actions/upload-artifact@v4
+        uses: softprops/action-gh-release@v2
         with:
-          name: macos-build
-          path: |
+          tag_name: ${{ github.ref_name }}
+          files: |
             dist/*.dmg
             dist/*.zip
             dist/latest*.yml
             dist/*.blockmap
-          if-no-files-found: warn
+          draft: false
+          prerelease: ${{ contains(github.ref, 'alpha') || contains(github.ref, 'beta') }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       # Upload the installer, the channel file (latest.yml) and the *.exe
-      # blockmaps that drive Windows delta updates.
-      - name: Upload Windows artifacts
+      # blockmaps that drive Windows delta updates. See the mac step above
+      # for why this attaches directly to the Release instead of going
+      # through actions/upload-artifact + a separate publish job.
+      - name: Publish Windows release assets
         if: matrix.os == 'windows-latest'
-        uses: actions/upload-artifact@v4
+        uses: softprops/action-gh-release@v2
         with:
-          name: windows-build
-          path: |
+          tag_name: ${{ github.ref_name }}
+          files: |
             dist/*.exe
             dist/latest*.yml
             dist/*.blockmap
-          if-no-files-found: warn
-
-  publish:
-    needs: release
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Download macOS artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: macos-build
-          path: ./artifacts/mac
-
-      - name: Download Windows artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: windows-build
-          path: ./artifacts/win
-
-      # Attach EVERY file (installers + .yml feeds + .blockmap deltas) to the
-      # Release. The .yml files are what electron-updater polls; omitting them
-      # breaks auto-update entirely.
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            ./artifacts/mac/*.dmg
-            ./artifacts/mac/*.zip
-            ./artifacts/mac/latest*.yml
-            ./artifacts/mac/*.blockmap
-            ./artifacts/win/*.exe
-            ./artifacts/win/latest*.yml
-            ./artifacts/win/*.blockmap
-          generate_release_notes: true
           draft: false
           prerelease: ${{ contains(github.ref, 'alpha') || contains(github.ref, 'beta') }}
         env:

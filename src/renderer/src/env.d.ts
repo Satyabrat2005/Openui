@@ -1,7 +1,9 @@
 /// <reference types="vite/client" />
 
+import type { AppKind } from './lib/appKind'
+
 /** Which OS permission needs to be granted before the tool can proceed. */
-export type PermissionTarget = 'accessibility' | 'microphone'
+export type PermissionTarget = 'accessibility' | 'microphone' | 'screenRecording'
 
 /** Privacy consent state for anonymous usage analytics. */
 export type ConsentStatus = 'unknown' | 'granted' | 'denied'
@@ -167,6 +169,120 @@ export interface Workflow {
 export type WorkflowResult = { ok: boolean; error?: string }
 export type WorkflowImportResult = { ok: boolean; workflow?: Workflow; error?: string }
 
+// ── MCP connectors ─────────────────────────────────────────────────────────────
+
+/** Config the renderer sends to `mcpConnect`; every field is re-validated in main. */
+export interface McpConnectConfig {
+  name: string
+  type: 'stdio' | 'sse'
+  command?: string
+  args?: string[]
+  env?: Record<string, string>
+  url?: string
+}
+
+/** Result of an `mcpConnect` call. */
+export interface McpConnectResult {
+  ok: boolean
+  error?: string
+  toolCount?: number
+}
+
+// ── Parallel sub-agent event payloads (main → renderer) ──────────────────────
+
+/** The real model the backend is using for the current turn. */
+export interface ChatModelPayload {
+  model: string
+  tier: Tier
+}
+/** One sub-agent as announced when a parallel group spawns. */
+export interface SubagentInfo {
+  subId: string
+  title: string
+  app?: string
+  /** Exact model id the sub-agent runs on (e.g. "llama3:8b"). */
+  model: string
+  /** Human label for the UI tag (e.g. "Llama 3 8B"). */
+  modelLabel: string
+}
+export interface SubagentGroupPayload {
+  groupId: string
+  count: number
+  subs: SubagentInfo[]
+}
+export interface SubagentToolPayload {
+  groupId: string
+  subId: string
+  tool: string
+  args: Record<string, unknown>
+}
+export interface SubagentStatusPayload {
+  groupId: string
+  subId: string
+  status: string
+}
+export interface SubagentDonePayload {
+  groupId: string
+  subId: string
+  status: string
+  summary: string
+}
+/** Result of a live screen-thumbnail capture (read-only, main-side). */
+export interface ScreenThumbnail {
+  ok: boolean
+  dataUrl?: string
+  error?: string
+}
+
+// ── Task board / activity (renderer-only, derived from IPC task+tool events) ───
+
+/** Live connection state of a connectable source in the Connect-apps panel. */
+export type ConnectionState = 'disconnected' | 'connecting' | 'connected' | 'error'
+
+/** Status of a single timeline row or sub-agent. */
+export type StepStatus = 'pending' | 'working' | 'done' | 'error'
+
+/** A single sub-agent row inside a parallel group, tracked live in the UI. */
+export interface SubagentRow {
+  subId: string
+  title: string
+  app?: AppKind
+  model: string
+  modelLabel: string
+  status: StepStatus
+  /** The tool the sub-agent is currently running, for the row's live detail. */
+  currentTool?: string
+  summary?: string
+}
+
+/** A "Running N in parallel" group inside a task card's timeline. */
+export interface ParallelGroup {
+  groupId: string
+  status: StepStatus
+  subs: SubagentRow[]
+}
+
+/**
+ * One user request grouped as a card in the task board. Steps are the individual
+ * tool calls / plan rows the agent ran, keyed by their task-update id.
+ */
+export interface TaskCard {
+  id: string
+  title: string
+  status: 'in_progress' | 'done' | 'failed'
+  kind: 'chat' | 'assigned'
+  steps: TaskUpdatePayload[]
+  /** Parallel sub-agent groups spawned during this card's run (real concurrency). */
+  groups: ParallelGroup[]
+  /** The real model the backend used for this card's turn (tag in the UI). */
+  model?: string
+  modelLabel?: string
+  /** App the agent is currently driving (browser, whatsapp…), for the activity tile. */
+  currentApp?: AppKind
+  startedAt: number
+  endedAt?: number
+}
+
 export interface OpenUIApi {
   // Window
   hide: () => void
@@ -180,6 +296,9 @@ export interface OpenUIApi {
   isMaximized: () => Promise<boolean>
   onMaximizeChange: (cb: (maximized: boolean) => void) => () => void
 
+  // MCP connectors — bridge to the validated 'openui:mcp:connect' handler in main.
+  mcpConnect: (config: McpConnectConfig) => Promise<McpConnectResult>
+
   // Chat
   chat: (message: string, tier: Tier) => Promise<void>
   clearHistory: () => void
@@ -191,6 +310,18 @@ export interface OpenUIApi {
   onError: (cb: (error: string) => void) => () => void
   onTask: (cb: (task: TaskUpdatePayload) => void) => () => void
   onTaskReset: (cb: () => void) => () => void
+  /** Real model the backend is using this turn (never a model it isn't running). */
+  onChatModel: (cb: (info: ChatModelPayload) => void) => () => void
+
+  // Parallel sub-agents — real concurrent execution surfaced to the timeline.
+  onSubagentGroup: (cb: (g: SubagentGroupPayload) => void) => () => void
+  onSubagentTool: (cb: (t: SubagentToolPayload) => void) => () => void
+  onSubagentStatus: (cb: (s: SubagentStatusPayload) => void) => () => void
+  onSubagentDone: (cb: (d: SubagentDonePayload) => void) => () => void
+  onSubagentGroupDone: (cb: (d: { groupId: string; status: string }) => void) => () => void
+
+  /** Live screen thumbnail for the activity panel (read-only capture in main). */
+  captureScreenThumbnail: () => Promise<ScreenThumbnail>
 
   // Voice
   transcribeAndChat: (audio: ArrayBuffer, mimeType: string, tier: Tier) => Promise<void>
@@ -263,6 +394,9 @@ export interface OpenUIApi {
   // App settings (key/value persisted in SQLite).
   getSetting: (key: string) => Promise<unknown>
   setSetting: (key: string, value: unknown) => Promise<void>
+  // Google Calendar (dedicated OAuth connect + status).
+  googleCalendarStatus: () => Promise<{ connected: boolean }>
+  connectGoogleCalendar: () => Promise<{ ok: boolean; output?: string; error?: string }>
   // Team / Shared Workflows.
   listWorkflows: () => Promise<Workflow[]>
   exportWorkflow: (workflow: Workflow) => Promise<WorkflowResult>
@@ -271,6 +405,7 @@ export interface OpenUIApi {
   // HITL (Human-in-the-Loop) confirmation.
   onHitlRequest: (cb: (payload: HitlRequestPayload) => void) => () => void
   respondHitl: (id: string, approved: boolean) => void
+  onHitlTimeout: (cb: (payload: { id: string }) => void) => () => void
   // Plan approval (approve the whole plan once).
   onPlanRequest: (cb: (payload: PlanRequestPayload) => void) => () => void
   respondPlan: (id: string, approved: boolean) => void

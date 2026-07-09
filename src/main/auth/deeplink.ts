@@ -31,6 +31,16 @@ import {
 
 const PROTOCOL = 'openui'
 
+// macOS delivers a deep link as an `open-url` event that can fire before
+// setupDeepLinkHandlers() has a target window to route to — e.g. a cold
+// start via a deep link, well before app.whenReady()'s async chain reaches
+// its setupDeepLinkHandlers(win) call. The listener is therefore attached
+// synchronously in registerDeepLinkProtocol() (called pre-ready) rather than
+// inside setupDeepLinkHandlers(); any URL that arrives before a window
+// exists is buffered here and flushed once setupDeepLinkHandlers() runs.
+let pendingMacDeepLink: string | undefined
+let deliverMacDeepLink: ((url: string) => void) | null = null
+
 /**
  * Register `openui://` as this app's protocol and claim the single-instance
  * lock. MUST be called before `app.whenReady()`:
@@ -38,7 +48,9 @@ const PROTOCOL = 'openui'
  *     (e.g. the OS launching us to deliver a deep link) exits immediately and
  *     hands its argv to the primary instance via `second-instance`;
  *   - protocol registration on Windows in dev needs the Electron exec path and
- *     the script path, which are only correct this early.
+ *     the script path, which are only correct this early;
+ *   - macOS can fire `open-url` before whenReady() resolves, so the listener
+ *     must already be attached (see pendingMacDeepLink above).
  */
 export function registerDeepLinkProtocol(): void {
   // Single-instance lock: if we are the second instance, quit now. The primary
@@ -66,6 +78,15 @@ export function registerDeepLinkProtocol(): void {
   } catch (err) {
     console.warn(`[openui] setAsDefaultProtocolClient threw (non-fatal):`, err)
   }
+
+  // macOS: app already running (or launching cold via the deep link), OS
+  // delivers the URL as an event. Attached here (pre-ready) rather than in
+  // setupDeepLinkHandlers() — see pendingMacDeepLink comment above.
+  app.on('open-url', (event, url) => {
+    event.preventDefault()
+    if (deliverMacDeepLink) deliverMacDeepLink(url)
+    else pendingMacDeepLink = url
+  })
 }
 
 /**
@@ -85,11 +106,14 @@ export function setupDeepLinkHandlers(mainWindow: BrowserWindow | null): void {
     if (url) void handleDeepLink(url, targetWindow())
   }
 
-  // macOS: app already running, OS delivers the URL as an event.
-  app.on('open-url', (event, url) => {
-    event.preventDefault()
-    void handleDeepLink(url, targetWindow())
-  })
+  // macOS: route future `open-url` events, and flush one if it arrived
+  // before this function ran (see pendingMacDeepLink comment above).
+  deliverMacDeepLink = (url: string): void => void handleDeepLink(url, targetWindow())
+  if (pendingMacDeepLink) {
+    const url = pendingMacDeepLink
+    pendingMacDeepLink = undefined
+    deliverMacDeepLink(url)
+  }
 
   // WINDOWS already running: a second launch forwards its argv here. Also focus
   // the existing window so the user is brought back to the app.

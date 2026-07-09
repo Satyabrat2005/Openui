@@ -23,6 +23,8 @@ import {
 } from './autonomous'
 import type { TaskSource } from './tasks'
 import { coerceTier } from './agent'
+import { enqueue } from './taskQueue'
+import { maybeRunFineTune } from './finetune/pipeline'
 import type { Tier } from './tools'
 
 // How often we sample idle time. 15 s is responsive enough for a 5-minute
@@ -62,6 +64,9 @@ const state: SchedulerState = {
 
 let timer: ReturnType<typeof setInterval> | null = null
 let targetWin: BrowserWindow | null = null
+// True from enqueue until the sweep settles — prevents the 15 s tick from
+// stacking duplicate sweeps behind a long-running coding job.
+let sweepQueued = false
 
 /** Compute the status the UI should show right now (when not actively working). */
 function currentStatus(): AutonomousStatus {
@@ -86,9 +91,25 @@ function tick(): void {
   const idle = powerMonitor.getSystemIdleTime()
   const away = state.manualBusy || idle >= idleThresholdSec()
 
-  if (away && !isAutonomousRunning()) {
-    // Fire and forget; runAutonomousCoding guards against re-entry itself.
-    void runAutonomousCoding(targetWin, state.tier, state.source)
+  if (away && !isAutonomousRunning() && !sweepQueued) {
+    // Route through the coding lane (Task 5): the queue serialises the sandbox
+    // workspace against any other coding work; runAutonomousCoding still guards
+    // against re-entry itself as a second line of defence.
+    sweepQueued = true
+    const win = targetWin
+    enqueue('coding', 'autonomous coding sweep', () =>
+      runAutonomousCoding(win, state.tier, state.source)
+    )
+      .catch((err) => console.error('[scheduler] autonomous sweep failed:', err))
+      .finally(() => {
+        sweepQueued = false
+      })
+
+    // Task 4: user-away windows are also when the periodic local LoRA
+    // fine-tune may run. All gating (opt-in setting, 24 h interval, dataset
+    // size, Ollama up) lives inside — this call is a cheap no-op when not due,
+    // and the 'finetune' queue lane keeps it from fighting the coding sweep.
+    maybeRunFineTune()
   } else if (!away && isAutonomousRunning() && idle <= ACTIVE_IDLE_SEC && !state.manualBusy) {
     // The user came back — yield the machine.
     requestAutonomousStop()
