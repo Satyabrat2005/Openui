@@ -108,9 +108,11 @@ user. The file is treated as untrusted input and normalised on load.
 
 ### GitHub Issues (read-only)
 
-Set `GITHUB_REPO="owner/name"` and (recommended) `GITHUB_TOKEN`. Open issues are
-fetched via the GitHub REST API (`fetch` is global in Electron's main process),
-PRs are filtered out, and each becomes a task `gh-<number>`.
+Set `GITHUB_REPO="owner/name"` and (recommended) a GitHub token. Paste the token
+in **Settings → GitHub** (per-user credential, stored locally); the `GITHUB_TOKEN`
+env var still works as a local-dev fallback. Open issues are fetched via the
+GitHub REST API (`fetch` is global in Electron's main process), PRs are filtered
+out, and each becomes a task `gh-<number>`.
 
 **The loop never writes to GitHub** — no closing, commenting, or labelling.
 Outward-facing, hard-to-reverse actions stay under explicit user control.
@@ -139,7 +141,7 @@ Select the source with `OPENUI_TASK_SOURCE=github` (default `todo`) or via the
 | `OPENUI_WORKSPACE` | `userData/autonomous-workspace` | Sandbox root |
 | `OPENUI_TASK_SOURCE` | `todo` | `todo` or `github` |
 | `GITHUB_REPO` | *(unset)* | `owner/name` for the GitHub source |
-| `GITHUB_TOKEN` | *(unset)* | Token with repo read scope |
+| `GITHUB_TOKEN` | *(unset)* | Token with repo read scope — **local-dev fallback only**; the shipped app reads the token from Settings → GitHub |
 
 The chat tier (`free`/`pro`/`enterprise`) used for autonomous runs defaults to
 `free` (local Ollama — no cloud calls) and can be overridden per the `tier`

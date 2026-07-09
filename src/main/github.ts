@@ -65,6 +65,16 @@ function hasToken(): boolean {
   return getToken() !== null
 }
 
+/**
+ * Public string accessor for the resolved GitHub token ('' when none is set),
+ * used by other main-process modules (e.g. the autonomous GitHub-issue task
+ * source in tasks.ts). Wraps getToken() so token-resolution precedence stays in
+ * one place.
+ */
+export function getGithubToken(): string {
+  return getToken() ?? ''
+}
+
 /** Uniform "you need a token" error for the write tools. */
 function tokenRequiredError(tool: string): ToolResult {
   return {
