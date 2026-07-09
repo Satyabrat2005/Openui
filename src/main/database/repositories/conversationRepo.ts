@@ -7,6 +7,8 @@ export interface ConversationRow {
   title: string
   model_used: string | null
   tier_at_time: string | null
+  // Added by migration 001_conversations_add_archived. 0 = active, 1 = archived.
+  archived: number
   created_at: number
   updated_at: number
 }
@@ -37,6 +39,14 @@ export function updateConversationTitle(id: string, title: string): void {
   getDb()
     .prepare(`UPDATE conversations SET title = ?, updated_at = strftime('%s','now') WHERE id = ?`)
     .run(title, id)
+}
+
+export function setConversationArchived(id: string, archived: boolean): void {
+  getDb()
+    .prepare(
+      `UPDATE conversations SET archived = ?, updated_at = strftime('%s','now') WHERE id = ?`
+    )
+    .run(archived ? 1 : 0, id)
 }
 
 export function deleteConversation(id: string): void {
