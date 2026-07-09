@@ -9,9 +9,17 @@
 // NOTE vs a bare snippet: the Electron app doesn't know the Stripe customer id,
 // so this resolves it from the user's `app_metadata.stripeCustomerId` (written
 // by stripe-webhook). The app may pass a cached `customerId` as a hint.
+//
+// Authenticates the caller's bearer token (supabase.auth.getUser) before
+// trusting either the body's `userId` or `customerId` — a body-supplied
+// userId is accepted only if it matches the verified id, and a body-supplied
+// customerId must belong to that same verified user. Otherwise any caller
+// could mint a Billing Portal session for another user's Stripe customer by
+// passing their id/customerId in the request body.
 import { serve } from 'https://deno.land/std@0.177.0/http/server.ts'
 import Stripe from 'https://esm.sh/stripe@14.0.0?target=deno'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+import { requireVerifiedUser } from '../_shared/auth.ts'
 
 const stripe = new Stripe(Deno.env.get('STRIPE_SECRET_KEY') ?? '', {
   apiVersion: '2024-06-20'
@@ -43,10 +51,22 @@ serve(async (req) => {
   try {
     const { userId, customerId } = await req.json()
 
-    let resolvedCustomerId: string | undefined = customerId
-    if (!resolvedCustomerId && userId) {
-      const { data } = await supabase.auth.admin.getUserById(userId)
-      resolvedCustomerId = data.user?.app_metadata?.stripeCustomerId as string | undefined
+    const auth = await requireVerifiedUser(req, supabase, userId)
+    if (!auth.ok) return json({ error: auth.error }, auth.status)
+    const verifiedUserId = auth.user.id
+
+    // Resolve the customer id server-side from the verified user's own
+    // metadata; a client-supplied `customerId` is only ever used if it matches
+    // that resolved value, never trusted on its own.
+    const { data } = await supabase.auth.admin.getUserById(verifiedUserId)
+    const ownCustomerId = data.user?.app_metadata?.stripeCustomerId as string | undefined
+
+    let resolvedCustomerId: string | undefined
+    if (customerId) {
+      if (customerId !== ownCustomerId) return json({ error: 'user_mismatch' }, 403)
+      resolvedCustomerId = customerId
+    } else {
+      resolvedCustomerId = ownCustomerId
     }
     if (!resolvedCustomerId) {
       return json({ error: 'No Stripe customer found for this user.' }, 404)
