@@ -161,6 +161,15 @@ jobs:
         # blip can't fail a release; already-downloaded binaries are cached, so a
         # retry is cheap. A genuine error still fails all 3 attempts and surfaces.
         run: |
+          # electron-builder's chooseNotNull() (platformPackager.js) only
+          # falls back to "no signing" when CSC_LINK is null/undefined, not
+          # when it's "" — and GitHub Actions exports an unconfigured secret
+          # as CSC_LINK="" (set, just empty), not unset. That empty string
+          # sails through to importCertificate("") and crashes with
+          # "<cwd> not a file" instead of skipping to an ad-hoc-signed build.
+          # Unset here so an absent secret actually means absent.
+          [ -z "$CSC_LINK" ] && unset CSC_LINK
+          [ -z "$CSC_KEY_PASSWORD" ] && unset CSC_KEY_PASSWORD
           for attempt in 1 2 3; do
             echo "::group::build:mac attempt $attempt"
             if npm run build:mac; then echo "::endgroup::"; exit 0; fi
@@ -238,6 +247,11 @@ jobs:
       # downloads the update from the .zip (latest-mac.yml points at it), NOT the
       # .dmg — the .dmg is only for first-install. Omitting the zip makes every
       # macOS auto-update 404 on the file the feed references. Upload all four.
+      # retention-days is short: these are only consumed by the publish job
+      # later in this same run, and the actual distributable already lands
+      # permanently as a Release asset. Leaving the default (90 day) retention
+      # let old runs' artifacts pile up and exhaust the account's Actions
+      # storage quota, which silently blocked this upload on a later release.
       - name: Upload macOS artifacts
         if: matrix.os == 'macos-latest'
         uses: actions/upload-artifact@v4
@@ -249,6 +263,7 @@ jobs:
             dist/latest*.yml
             dist/*.blockmap
           if-no-files-found: warn
+          retention-days: 1
 
       # Upload the installer, the channel file (latest.yml) and the *.exe
       # blockmaps that drive Windows delta updates.
@@ -262,6 +277,7 @@ jobs:
             dist/latest*.yml
             dist/*.blockmap
           if-no-files-found: warn
+          retention-days: 1
 
   publish:
     needs: release
