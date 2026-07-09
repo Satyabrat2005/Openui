@@ -53,7 +53,10 @@ interface FakeStatement {
 export interface FakeDb {
   prepare(sql: string): FakeStatement
   exec(sql: string): void
-  pragma(source: string): void
+  // Mirrors better-sqlite3's pragma(): read pragmas (e.g. table_info(x)) return
+  // an array of result rows; setter pragmas return an empty array. The migration
+  // runner relies on the array return value (columnExists → table_info).
+  pragma(source: string): unknown
   transaction<Args extends unknown[], R>(fn: (...args: Args) => R): (...args: Args) => R
 }
 
@@ -76,7 +79,16 @@ function wrap(raw: RawDatabase): FakeDb {
       }
     },
     exec: (sql: string) => raw.exec(sql),
-    pragma: (source: string) => raw.exec(`PRAGMA ${source}`),
+    pragma: (source: string): unknown => {
+      // Read pragmas return rows (prepare().all()); setter pragmas can't be
+      // prepared, so fall back to exec() and report no rows.
+      try {
+        return raw.prepare(`PRAGMA ${source}`).all()
+      } catch {
+        raw.exec(`PRAGMA ${source}`)
+        return []
+      }
+    },
     // better-sqlite3's transaction() returns a function that runs fn inside a
     // BEGIN/COMMIT, rolling back (and re-throwing) on any error.
     transaction<Args extends unknown[], R>(fn: (...args: Args) => R): (...args: Args) => R {

@@ -12,12 +12,13 @@
  *   • the plan-approval state machine cannot execute any step before the user
  *     approves the plan, and cancelling it runs nothing.
  *
- * The model transport is mocked at the cloud-proxy boundary (callCloudProxy), so
- * nothing hits the network or a real LLM SDK. Every other main-process
- * dependency (Electron, tools, database, planner, telemetry, training store) is
- * stubbed so the loop logic runs deterministically under plain Node.
+ * The model transport is mocked at the Ollama boundary (the `ollama` SDK plus
+ * the isOllamaRunning fetch probe), so nothing hits the network or a real LLM.
+ * Every other main-process dependency (Electron, tools, database, planner,
+ * telemetry, training store) is stubbed so the loop logic runs deterministically
+ * under plain Node.
  */
-import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 
 const h = vi.hoisted(() => {
   const state = { responses: [] as string[] }
@@ -25,22 +26,16 @@ const h = vi.hoisted(() => {
     state,
     sends: [] as Array<{ channel: string; args: unknown[] }>,
     ipc: new Map<string, (...a: unknown[]) => unknown>(),
-    // Model transport: emits the next scripted response through the gate and
-    // returns it (mirroring a streamed provider call).
-    callCloudProxy: vi.fn(
-      async (
-        _win: unknown,
-        _tier: unknown,
-        _messages: unknown,
-        _sys: unknown,
-        _key: unknown,
-        onDelta: (d: string) => void
-      ) => {
-        const text = state.responses.shift() ?? 'All done.'
-        onDelta(text)
-        return text
+    // Model transport: OpenUI streams from a local Ollama server. We stand in for
+    // the `ollama` SDK — each ollama.chat() call yields the next scripted response
+    // as a single streamed chunk, which callOllama forwards through the gate.
+    ollamaChat: vi.fn(async () => {
+      const text = state.responses.shift() ?? 'All done.'
+      async function* stream(): AsyncGenerator<{ message: { content: string } }> {
+        yield { message: { content: text } }
       }
-    ),
+      return stream()
+    }),
     executeTool: vi.fn(async (..._args: unknown[]) => ({ ok: true, output: 'done' }) as unknown),
     looksLikeTask: vi.fn(() => false),
     generatePlan: vi.fn(async () => null as unknown)
@@ -55,6 +50,12 @@ vi.mock('electron', () => ({
   BrowserWindow: class {}
 }))
 
+vi.mock('ollama', () => ({
+  Ollama: class {
+    chat = h.ollamaChat
+  }
+}))
+
 vi.mock('./tools', () => ({
   executeTool: h.executeTool,
   toolSchemas: [
@@ -67,6 +68,22 @@ vi.mock('./tools', () => ({
   describeToolCall: (tool: string) => `Run ${tool}`,
   DESTRUCTIVE_TOOLS: new Set(['delete_file'])
 }))
+
+vi.mock('./subagents', () => ({
+  SPAWN_SUBAGENTS_TOOL: 'spawn_subagents',
+  runParallelSubagents: vi.fn(async () => 'sub-agents done'),
+  parseSubTaskSpecs: vi.fn(() => [])
+}))
+vi.mock('./codingTools', () => ({
+  codingToolSchemas: [],
+  executeCodingTool: vi.fn(async () => ({ ok: true, output: 'done' })),
+  describeCodingToolCall: (tool: string) => `Coding ${tool}`
+}))
+vi.mock('./ollamaLock', () => ({ withOllamaLock: (fn: () => unknown) => fn() }))
+vi.mock('./runLog', () => ({
+  startRun: vi.fn(() => ({ end: vi.fn(), toolCall: vi.fn(), step: vi.fn() }))
+}))
+vi.mock('./browser/consent', () => ({ grantOrigin: vi.fn() }))
 
 vi.mock('./planner', () => ({
   generatePlan: h.generatePlan,
@@ -95,15 +112,7 @@ vi.mock('./database', () => ({
 vi.mock('./stripe/pricing', () => ({ clampTierToEntitlement: (t: string) => t }))
 vi.mock('./stripe/subscriptionSync', () => ({ getCurrentUserId: () => null }))
 vi.mock('./telemetry/posthog', () => ({ trackEvent: vi.fn() }))
-vi.mock('./cloudFreeTier', () => ({
-  isCloudProxyConfigured: () => true,
-  callCloudProxy: h.callCloudProxy,
-  emitLocalUsage: vi.fn(),
-  CloudProxyError: class CloudProxyError extends Error {
-    status = 500
-    code?: string
-  }
-}))
+vi.mock('./cloudFreeTier', () => ({ emitLocalUsage: vi.fn() }))
 vi.mock('./improvement', () => ({
   classifyFeedbackSignal: () => null,
   getCustomSystemPrompt: () => null
@@ -141,10 +150,21 @@ beforeEach(() => {
   clearHistory()
   h.sends.length = 0
   h.state.responses = []
-  h.callCloudProxy.mockClear()
+  h.ollamaChat.mockClear()
   h.executeTool.mockClear().mockResolvedValue({ ok: true, output: 'done' })
   h.looksLikeTask.mockReset().mockReturnValue(false)
   h.generatePlan.mockReset().mockResolvedValue(null)
+  // isOllamaRunning() probes GET /api/tags — report the local engine as up so
+  // the loop streams from our mocked Ollama transport instead of the "start
+  // ollama" fallback message.
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async () => ({ ok: true }) as unknown as Response)
+  )
+})
+
+afterEach(() => {
+  vi.unstubAllGlobals()
 })
 
 // ── Tool call extraction + StreamGate integration ─────────────────────────────
@@ -247,7 +267,7 @@ describe('handleChat — plan approval gate', () => {
 
     expect(h.executeTool).not.toHaveBeenCalled()
     // The model transport is never even consulted once the plan is cancelled.
-    expect(h.callCloudProxy).not.toHaveBeenCalled()
+    expect(h.ollamaChat).not.toHaveBeenCalled()
     expect(chunks().toLowerCase()).toContain('cancelled')
     expect(sent('openui:chat:done')).toBe(true)
   })
