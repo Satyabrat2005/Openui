@@ -1,5 +1,9 @@
 import { getDb } from './init'
 
+// v0 baseline schema, applied with CREATE TABLE IF NOT EXISTS on every start.
+// Treat this file as a frozen snapshot: do NOT add columns or tables here for
+// schema changes made after the migration mechanism landed — those belong in
+// migrations.ts so existing installs get upgraded, not just fresh ones.
 export function applySchema(): void {
   getDb().exec(`
     CREATE TABLE IF NOT EXISTS users (
