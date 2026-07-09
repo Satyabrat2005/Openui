@@ -223,3 +223,22 @@ describe('browser tools — require an approved connect_browser first', () => {
     expect(r).toMatchObject({ status: 'pending_approval', tool: 'connect_browser' })
   })
 })
+
+// ── run_python — interactive execution guardrails ─────────────────────────────
+describe('run_python — HITL gating and arg validation', () => {
+  it('is gated as both state-changing and destructive (confirm even under autopilot)', () => {
+    expect(STATE_CHANGING_TOOLS.has('run_python')).toBe(true)
+    expect(DESTRUCTIVE_TOOLS.has('run_python')).toBe(true)
+  })
+
+  it('returns pending approval without bypassHitl', async () => {
+    const r = await executeTool('run_python', { code: 'print(1)' }, { tier: 'enterprise' })
+    expect(r).toMatchObject({ status: 'pending_approval', tool: 'run_python' })
+  })
+
+  it('requires either "code" or "path"', async () => {
+    const r = await executeTool('run_python', {}, { tier: 'enterprise', bypassHitl: true })
+    expect(r).toMatchObject({ ok: false })
+    expect((r as { error: string }).error).toMatch(/requires "code"|path/)
+  })
+})
