@@ -12,10 +12,13 @@ import { homedir } from 'node:os'
  * Paths under these segments are always off-limits. They sit INSIDE the user's
  * home folder (so confining to $HOME does not exclude them) yet hold
  * credentials, tokens and browser profiles — AppData\Roaming on Windows, ~/.ssh,
- * ~/.aws and friends elsewhere.
+ * ~/.aws and friends elsewhere. On macOS this also covers Library/Application
+ * Support (where Chrome/Slack/Discord/VS Code etc. keep tokens), Library/Cookies
+ * and Library/Saved Application State, matching the breadth of the Windows
+ * AppData exclusion rather than just Keychains.
  */
 export const SENSITIVE_PATH_RE =
-  /(^|[\\/])(AppData|\.ssh|\.aws|\.gnupg|\.azure|\.kube|\.docker|Library[\\/]Keychains)([\\/]|$)/i
+  /(^|[\\/])(AppData|\.ssh|\.aws|\.gnupg|\.azure|\.kube|\.docker|Library[\\/](Keychains|Application Support|Cookies|Saved Application State))([\\/]|$)/i
 
 /**
  * Resolve an LLM-supplied path to an absolute path and enforce the filesystem

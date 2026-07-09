@@ -10,8 +10,8 @@
  *      GITHUB_REPO set, open issues are pulled as tasks. We deliberately never
  *      close, comment on, or otherwise mutate GitHub from an unattended loop:
  *      that is an outward-facing, hard-to-reverse action that must stay under
- *      explicit user control. The
- *      result of working an issue is recorded only in the local todo.json mirror.
+ *      explicit user control. The result of working an issue is recorded only in
+ *      the local todo.json mirror.
  */
 import { writeFile, readFile } from 'node:fs/promises'
 import { join } from 'node:path'

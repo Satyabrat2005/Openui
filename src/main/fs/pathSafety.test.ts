@@ -38,6 +38,26 @@ describe('resolveSafePath — credential blocklist', () => {
     expect(SENSITIVE_PATH_RE.test(`${sep}home${sep}u${sep}.ssh${sep}key`)).toBe(true)
     expect(SENSITIVE_PATH_RE.test(`${sep}home${sep}u${sep}projects${sep}app.ts`)).toBe(false)
   })
+
+  it('blocks macOS credential/token stores under Library, not just Keychains', () => {
+    expect(
+      SENSITIVE_PATH_RE.test(`${sep}Users${sep}u${sep}Library${sep}Keychains${sep}login.keychain`)
+    ).toBe(true)
+    expect(
+      SENSITIVE_PATH_RE.test(
+        `${sep}Users${sep}u${sep}Library${sep}Application Support${sep}Google${sep}Chrome${sep}Default${sep}Login Data`
+      )
+    ).toBe(true)
+    expect(SENSITIVE_PATH_RE.test(`${sep}Users${sep}u${sep}Library${sep}Cookies${sep}Cookies.binarycookies`)).toBe(
+      true
+    )
+    expect(
+      SENSITIVE_PATH_RE.test(`${sep}Users${sep}u${sep}Library${sep}Saved Application State${sep}com.apple.Terminal`)
+    ).toBe(true)
+    expect(SENSITIVE_PATH_RE.test(`${sep}Users${sep}u${sep}Library${sep}Preferences${sep}com.apple.finder.plist`)).toBe(
+      false
+    )
+  })
 })
 
 describe('resolveSafePath — home confinement for mutations', () => {

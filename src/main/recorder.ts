@@ -1,7 +1,11 @@
 import { mouse, keyboard, Button } from '@nut-tree-fork/nut-js'
 import { app } from 'electron'
+import { execFile } from 'child_process'
+import { promisify } from 'util'
 import fs from 'fs'
 import path from 'path'
+
+const execFileAsync = promisify(execFile)
 
 // libnut provides synchronous native helpers for window title lookup
 let libnut: { getActiveWindow: () => number; getWindowTitle: (h: number) => string } | null = null
@@ -10,6 +14,27 @@ try {
 } catch {
   // non-Windows platforms ship different libnut variants; window title is omitted
 }
+
+// macOS has no libnut binding here, so window-title lookup goes through
+// AppleScript instead — consistent with this codebase's mac → AppleScript,
+// Windows → native-binding split. Bounded timeout/buffer since this runs on
+// every recorder poll tick and must never hang the interval.
+const MAC_ACTIVE_WINDOW_SCRIPT = `
+tell application "System Events"
+  set frontApp to first application process whose frontmost is true
+  set appName to name of frontApp
+  try
+    set winName to name of front window of frontApp
+  on error
+    set winName to ""
+  end try
+end tell
+if winName is "" then
+  return appName
+else
+  return appName & " - " & winName
+end if
+`
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -102,7 +127,18 @@ export function deleteMacro(name: string): boolean {
 
 // ── Recording ──────────────────────────────────────────────────────────────────
 
-function activeWindowTitle(): string {
+async function activeWindowTitle(): Promise<string> {
+  if (process.platform === 'darwin') {
+    try {
+      const { stdout } = await execFileAsync('osascript', ['-e', MAC_ACTIVE_WINDOW_SCRIPT], {
+        timeout: 2000,
+        maxBuffer: 64 * 1024,
+      })
+      return stdout.trim()
+    } catch {
+      return ''
+    }
+  }
   try {
     if (!libnut) return ''
     const handle = libnut.getActiveWindow()
@@ -136,7 +172,7 @@ export async function startRecording(): Promise<void> {
             type: 'mousemove',
             x: Math.round(pos.x),
             y: Math.round(pos.y),
-            window: activeWindowTitle(),
+            window: await activeWindowTitle(),
             timestamp: Date.now() - _startTime,
           })
           _lastX = pos.x

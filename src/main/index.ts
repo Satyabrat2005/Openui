@@ -1,4 +1,4 @@
-import { app, BrowserWindow, Tray, Menu, ipcMain, nativeImage, session, shell } from 'electron'
+import { app, BrowserWindow, Tray, Menu, ipcMain, nativeImage, session, shell, desktopCapturer } from 'electron'
 import { join } from 'path'
 import { registerAgentIPC, registerConversationIPC } from './agent'
 import { startPromptRefiner, stopPromptRefiner } from './promptRefiner'
@@ -15,6 +15,7 @@ import { registerDeepLinkProtocol, setupDeepLinkHandlers } from './auth/deeplink
 import { openAuthWindow, isAuthWebContents } from './auth/authWindow'
 import { logout, getCurrentUser, getUserTier, startTokenRefreshLoop, stopTokenRefreshLoop, ensureGuestSession } from './auth/sessionManager'
 import { initTelemetry, enableTelemetryAfterConsent, shutdownTelemetry, setTelemetryOptOut, isTelemetryActive, trackEvent } from './telemetry/posthog'
+import { initSentry, enableSentryAfterConsent, setSentryOptOut } from './telemetry/sentry'
 import { grantConsent, denyConsent, getConsentStatus, recordPendingEvent, ConsentStatus } from './telemetry/consent'
 import { initUpdater, checkForUpdates, downloadUpdate, installUpdateAndRestart, openReleasesPage } from './updater/updater'
 import { Events } from './telemetry/events'
@@ -34,10 +35,36 @@ import {
   type RecorderAction,
 } from './recorder'
 import { installCrashReporter } from './telemetry/crashReporter'
+import { pruneOldRunLogs } from './runLog'
 
 // Capture uncaught main-process errors as early as possible — before any of the
 // setup below can throw — so startup crashes are logged and reported too.
 installCrashReporter()
+
+// GUI-launched macOS .app bundles inherit a minimal PATH (typically just
+// /usr/bin:/bin:/usr/sbin:/sbin) that omits Homebrew/nvm/Volta install
+// locations, so subprocess helpers (e.g. `ollama`, `open_app`'s tools) can
+// silently fail to resolve binaries that work fine from a Terminal shell.
+// Append a fixed list of known-safe install locations — do NOT shell out to
+// the user's login shell to read its real PATH (e.g. `$SHELL -lic 'echo
+// $PATH'`), since that would execute arbitrary shell-profile content as a
+// side effect of merely launching the app.
+if (process.platform === 'darwin') {
+  const KNOWN_MAC_BIN_DIRS = [
+    '/opt/homebrew/bin', // Homebrew on Apple Silicon
+    '/opt/homebrew/sbin',
+    '/usr/local/bin', // Homebrew on Intel
+    '/usr/local/sbin',
+    `${process.env.HOME}/.nvm/current/bin`,
+    `${process.env.HOME}/.volta/bin`
+  ]
+  const currentPath = process.env.PATH ?? ''
+  const existingDirs = new Set(currentPath.split(':').filter(Boolean))
+  const additions = KNOWN_MAC_BIN_DIRS.filter((dir) => !existingDirs.has(dir))
+  if (additions.length) {
+    process.env.PATH = [currentPath, ...additions].filter(Boolean).join(':')
+  }
+}
 
 let tray: Tray | null = null
 let win: BrowserWindow | null = null
@@ -56,7 +83,7 @@ let launchRevealedAt = 0
 
 const isDev = !app.isPackaged
 
-const PERMISSION_TARGETS: readonly PermissionTarget[] = ['accessibility', 'microphone']
+const PERMISSION_TARGETS: readonly PermissionTarget[] = ['accessibility', 'microphone', 'screenRecording']
 
 /**
  * Content-Security-Policy applied to every renderer response.
@@ -288,6 +315,13 @@ function createTray(): void {
   // Left click toggles the popup; right click opens the context menu.
   tray.on('click', () => toggleWindow())
   tray.on('right-click', () => tray?.popUpContextMenu(contextMenu))
+
+  // macOS: the same menu, right-click/Ctrl-click on the Dock icon — Dock
+  // right-clicks are handled natively by the OS once a menu is set, no event
+  // wiring needed the way the Tray above requires.
+  if (process.platform === 'darwin') {
+    app.dock?.setMenu(contextMenu)
+  }
 }
 
 // Claim the single-instance lock and register the openui:// protocol BEFORE the
@@ -311,11 +345,20 @@ app.whenReady().then(async () => {
   } catch (err) {
     console.error('[openui] Telemetry initialisation failed:', err)
   }
+  try {
+    // Same consent as PostHog; a silent no-op when SENTRY_DSN is not configured.
+    await initSentry()
+  } catch (err) {
+    console.error('[openui] Sentry initialisation failed:', err)
+  }
 
   applySecurityHardening()
   trackEvent(Events.APP_STARTED, { platform: process.platform, version: app.getVersion() })
   // Daily-active + time-in-app tracking (active-window heartbeat). See usage.ts.
   startUsageTracking()
+
+  // Structured task-run logs (Task 5): bounded retention, pruned at startup.
+  void pruneOldRunLogs()
 
   createWindow()
   createTray()
@@ -390,6 +433,7 @@ app.whenReady().then(async () => {
   // ── Telemetry IPC ────────────────────────────────────────────────────────────
   ipcMain.handle('openui:set-telemetry-opt-out', (_event, optOut: unknown) => {
     setTelemetryOptOut(optOut === true)
+    setSentryOptOut(optOut === true)
   })
   ipcMain.handle('openui:get-telemetry-status', () => isTelemetryActive())
 
@@ -415,6 +459,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('openui:grant-consent', async () => {
     await grantConsent()
     enableTelemetryAfterConsent()
+    enableSentryAfterConsent()
     trackEvent(Events.TELEMETRY_OPT_IN)
     win?.webContents.send('openui:consent-updated', ConsentStatus.GRANTED)
     return ConsentStatus.GRANTED
@@ -428,6 +473,7 @@ app.whenReady().then(async () => {
     }
     await denyConsent()
     shutdownTelemetry()
+    setSentryOptOut(true)
     win?.webContents.send('openui:consent-updated', ConsentStatus.DENIED)
     return ConsentStatus.DENIED
   })
@@ -555,6 +601,7 @@ app.whenReady().then(async () => {
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
+    else showWindow()
   })
 })
 
@@ -657,6 +704,26 @@ ipcMain.handle('openui:mcp:connect', async (_event, config: unknown) => {
     return { ok: false, error: validated.error }
   }
   return connectMcpServer(validated.config)
+})
+
+// Live-preview thumbnail for the activity panel. Read-only: captures the primary
+// display at a SMALL, main-controlled size and returns a data URL. The renderer
+// supplies no parameters (dimensions are hardcoded here), so there is no
+// injection surface — this is the same desktopCapturer path read_screen() uses,
+// narrowed to a cheap thumbnail the UI can poll while a screen/app tool runs.
+const THUMB_WIDTH = 480
+const THUMB_HEIGHT = 270
+ipcMain.handle('openui:screen:thumbnail', async () => {
+  try {
+    const sources = await desktopCapturer.getSources({
+      types: ['screen'],
+      thumbnailSize: { width: THUMB_WIDTH, height: THUMB_HEIGHT }
+    })
+    if (!sources.length) return { ok: false as const, error: 'No screen source available.' }
+    return { ok: true as const, dataUrl: sources[0].thumbnail.toDataURL() }
+  } catch (err) {
+    return { ok: false as const, error: err instanceof Error ? err.message : String(err) }
+  }
 })
 
 app.on('before-quit', () => {

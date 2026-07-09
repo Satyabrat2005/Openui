@@ -13,6 +13,10 @@ const CONTENT: Record<PermissionTarget, { title: string; body: string }> = {
   microphone: {
     title: 'Microphone Access Required',
     body: 'OpenUI needs Microphone access to record your voice. Please grant access in System Settings → Privacy & Security → Microphone.'
+  },
+  screenRecording: {
+    title: 'Screen Recording Access Required',
+    body: 'OpenUI needs Screen Recording access to see and describe your screen. Please grant access in System Settings → Privacy & Security → Screen Recording.'
   }
 }
 

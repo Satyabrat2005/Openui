@@ -79,9 +79,9 @@ export function openAuthWindow(parent?: BrowserWindow | null): BrowserWindow | n
 
   // ── Waiting overlay (shown while user signs in on system browser) ───────────
   const isMac = process.platform === 'darwin'
-  const chrome = isMac
-    ? ({ titleBarStyle: 'hiddenInset', frame: false } as const)
-    : ({ frame: true } as const)
+  // frame: false previously suppressed hiddenInset's traffic lights, leaving
+  // this waiting window with no close button on macOS.
+  const chrome = isMac ? ({ titleBarStyle: 'hiddenInset' } as const) : ({ frame: true } as const)
 
   authWindow = new BrowserWindow({
     width: 400,

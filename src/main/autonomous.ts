@@ -17,9 +17,17 @@ import type { BrowserWindow } from 'electron'
 import { callModel, parseToolCall, emit, StreamGate, type Message } from './agent'
 import { codingToolSchemas, executeCodingTool, describeCodingToolCall } from './codingTools'
 import { getNextTask, recordTaskOutcome, type TaskSource, type AgentTask } from './tasks'
+import { detectProjectType, getProjectProfile, type ProjectProfile } from './projectProfiles'
+import { startRun, type RunLog } from './runLog'
+import {
+  beginTaskSnapshot,
+  discardActiveSnapshot,
+  pruneSnapshots,
+  restoreActiveSnapshot
+} from './snapshots'
 import type { Tier, ToolResult, ToolSchema } from './tools'
 
-/** Status the renderer reflects in the TaskListPopup "Background Agent" banner. */
+/** Status the renderer reflects in the left rail's "Background Agent" banner. */
 export interface AutonomousStatus {
   active: boolean
   state: 'disabled' | 'monitoring' | 'working' | 'paused'
@@ -75,19 +83,23 @@ ${codingToolSchemas.map(renderSchema).join('\n')}
 
 Workflow:
 1. If unsure of the current state, call list_files / read_file to inspect the workspace.
-2. Implement the task with write_file (write complete file contents each time).
-3. Call run_tests to verify. Read the output carefully.
-4. If the output starts with "TESTS FAILED", fix the code and run_tests again. Iterate.
-5. When the output starts with "TESTS PASSED", reply in plain natural language summarising what you changed. Do NOT wrap the final summary in JSON.
+2. Implement the task with write_file (write complete file contents each time). To scaffold a new project, write the WHOLE file tree — package.json (with the right dependencies and "scripts"), source files, config, and tests.
+3. If the project has dependencies, call install_dependencies once after writing package.json.
+4. Verify your work with the verifier that fits the project (the PROJECT TYPE section below tells you which):
+   - Call run_tests to run an npm test suite, and/or
+   - Call run_script to run a build/train/lint script you defined (e.g. {"tool":"run_script","args":{"script":"build"}}). A dev server ("dev"/"start") is run as a boot smoke test — it confirms the app starts without crashing.
+   - For Python work, call run_pytest and/or run_python; for single-file C++, call run_cpp with the sample input.
+5. Read the output carefully. If it starts with "TESTS FAILED" / "SCRIPT FAILED" / "INSTALL FAILED", read the offending file(s) with read_file, fix the code with write_file, and re-run the failing step. Iterate.
+6. When verification passes, reply in plain natural language summarising what you built/changed. Do NOT wrap the final summary in JSON.
 
-If after several honest attempts you cannot make the tests pass, reply in plain text beginning with "GIVE UP:" followed by a short explanation. Never fake a pass or delete tests to make them pass.`
+If after several honest attempts you cannot make it pass, reply in plain text beginning with "GIVE UP:" followed by a short explanation. Never fake a pass or delete tests to make them pass.`
 
 /** Build the first user message describing the task to work on. */
-function taskPrompt(task: AgentTask): string {
+function taskPrompt(task: AgentTask, profile: ProjectProfile): string {
   const lines = [
     `TASK (${task.source}): ${task.title}`,
     task.description ? `\nDetails:\n${task.description}` : '',
-    '\nComplete this task in the workspace, then run the tests until they pass.'
+    `\n${profile.taskHint}`
   ]
   return lines.filter(Boolean).join('\n')
 }
@@ -107,9 +119,16 @@ interface TaskOutcome {
  * with passing tests. Each tool call is surfaced as a task-list row so the user
  * can watch what the background agent did.
  */
-async function workOnTask(win: BrowserWindow, tier: Tier, task: AgentTask): Promise<TaskOutcome> {
-  const messages: Message[] = [{ role: 'user', content: taskPrompt(task) }]
-  let lastTestsPassed = false
+async function workOnTask(
+  win: BrowserWindow,
+  tier: Tier,
+  task: AgentTask,
+  runLog: RunLog,
+  profile: ProjectProfile
+): Promise<TaskOutcome> {
+  const messages: Message[] = [{ role: 'user', content: taskPrompt(task, profile) }]
+  const systemPrompt = `${CODING_SYSTEM_PROMPT}\n\n${profile.promptAddendum}`
+  let lastVerificationPassed = false
 
   for (let turn = 0; turn < MAX_CODING_TURNS; turn++) {
     if (stopRequested) {
@@ -118,7 +137,9 @@ async function workOnTask(win: BrowserWindow, tier: Tier, task: AgentTask): Prom
 
     // Withhold tool-call JSON from the UI, same as the interactive loop.
     const gate = new StreamGate((delta) => emit(win, 'openui:chat:chunk', delta))
-    const responseText = await callModel(win, tier, messages, CODING_SYSTEM_PROMPT, gate.push)
+    // Code-heavy loop: run on the code-tuned Ollama model (OLLAMA_CODE_MODEL)
+    // rather than the general one.
+    const responseText = await callModel(win, tier, messages, systemPrompt, gate.push, { coding: true })
     messages.push({ role: 'assistant', content: responseText })
 
     const toolCall = parseToolCall(responseText)
@@ -126,16 +147,27 @@ async function workOnTask(win: BrowserWindow, tier: Tier, task: AgentTask): Prom
     if (!toolCall) {
       // Plain-language reply ⇒ the agent considers the task finished (or gave up).
       const gaveUp = /^\s*GIVE UP:/i.test(responseText)
-      return { success: lastTestsPassed && !gaveUp, summary: responseText.trim() }
+      return { success: lastVerificationPassed && !gaveUp, summary: responseText.trim() }
     }
 
     const taskId = `a${++taskSeq}`
     const label = describeCodingToolCall(toolCall.tool, toolCall.args)
     emit(win, 'openui:task:update', { id: taskId, label, status: 'working', detail: 'Coding…' })
 
+    const toolT0 = Date.now()
     const result = await executeCodingTool(toolCall.tool, toolCall.args)
-    if (toolCall.tool === 'run_tests' && result.ok) {
-      lastTestsPassed = (result.output ?? '').startsWith('TESTS PASSED')
+    runLog.toolCall({
+      tool: toolCall.tool,
+      ok: result.ok,
+      ms: Date.now() - toolT0,
+      argsSummary: label,
+      error: result.ok ? undefined : result.error?.slice(0, 300)
+    })
+    // Success signal is project-type-aware: only THIS profile's verification
+    // tool(s) count, and a later failed re-run clears an earlier pass.
+    if (result.ok) {
+      const verdict = profile.verdict(toolCall.tool, result.output ?? '')
+      if (verdict !== null) lastVerificationPassed = verdict === 'pass'
     }
 
     emit(win, 'openui:task:update', {
@@ -148,7 +180,7 @@ async function workOnTask(win: BrowserWindow, tier: Tier, task: AgentTask): Prom
     messages.push({ role: 'user', content: formatToolResult(toolCall.tool, result) })
   }
 
-  return { success: false, summary: 'Reached the coding-turn limit before the tests passed.' }
+  return { success: false, summary: 'Reached the coding-turn limit before verification passed.' }
 }
 
 /**
@@ -167,6 +199,8 @@ export async function runAutonomousCoding(
 
   try {
     let worked = 0
+    void pruneSnapshots()
+
     while (!stopRequested && worked < MAX_TASKS_PER_RUN) {
       let task: AgentTask | null
       try {
@@ -190,20 +224,58 @@ export async function runAutonomousCoding(
       }
 
       emit(win, 'openui:task:reset')
-      emitAutonomousStatus(win, { active: true, state: 'working', currentTask: task.title })
+
+      // Task 3: classify the task so prompts and the verification signal match
+      // the kind of project (website / node / ML / DL / competitive programming).
+      const profile = getProjectProfile(detectProjectType(task.title, task.description))
+      emitAutonomousStatus(win, {
+        active: true,
+        state: 'working',
+        currentTask: task.title,
+        detail: `Project type: ${profile.label}`
+      })
+
+      // Transactional task run (Task 5): snapshot pre-images of every file the
+      // task writes, and journal the whole run as structured JSONL.
+      const runLog = startRun('autonomous-task', {
+        taskId: task.id,
+        title: task.title,
+        source: task.source,
+        projectType: profile.type,
+        tier
+      })
+      try {
+        await beginTaskSnapshot(task.id)
+      } catch (err) {
+        console.warn('[autonomous] snapshot unavailable for this task:', err)
+      }
 
       let outcome: TaskOutcome
       try {
-        outcome = await workOnTask(win, tier, task)
+        outcome = await workOnTask(win, tier, task, runLog, profile)
       } catch (err) {
         outcome = { success: false, summary: err instanceof Error ? err.message : String(err) }
       }
 
       // If we stopped because the user returned, leave the task pending so it is
-      // retried next idle window rather than being marked failed.
+      // retried next idle window rather than being marked failed. Partial
+      // progress is kept (the retry opens a fresh snapshot from that state).
       if (stopRequested && !outcome.success) {
+        discardActiveSnapshot()
+        runLog.end('cancelled', 'paused — user became active')
         emitAutonomousStatus(win, { active: true, state: 'paused', currentTask: task.title })
         break
+      }
+
+      if (outcome.success) {
+        discardActiveSnapshot()
+        runLog.end('success', outcome.summary.slice(0, 300))
+      } else {
+        // Definitive failure (GIVE UP / turn limit / crash): roll the workspace
+        // back so the next task never starts on top of half-broken edits.
+        const rollback = await restoreActiveSnapshot()
+        runLog.event('rollback', { detail: rollback })
+        runLog.end('failure', outcome.summary.slice(0, 300))
       }
 
       await recordTaskOutcome(task, outcome.success ? 'done' : 'failed')

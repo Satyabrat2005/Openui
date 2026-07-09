@@ -55,4 +55,26 @@ exports.default = async function afterSign(context) {
     teamId: APPLE_TEAM_ID,
   });
   console.log('notarize: done');
+
+  // ── Staple + verify ──────────────────────────────────────────────────────
+  // Notarizing alone isn't enough for a fully offline Gatekeeper check — the
+  // ticket must be stapled to the bundle so the first launch works without
+  // phoning home to Apple. Both steps are warn-not-fail: a failure here means
+  // the app is still correctly notarized (Apple's servers have the ticket),
+  // just not staple/locally-verified — it should not block the release build.
+  try {
+    execFileSync('xcrun', ['stapler', 'staple', appPath], { stdio: 'inherit' });
+    console.log(`notarize: stapled ticket to ${appPath}`);
+  } catch (err) {
+    console.warn('notarize: stapling failed (non-fatal):', err.message);
+  }
+
+  try {
+    execFileSync('spctl', ['--assess', '--type', 'execute', '-vv', appPath], {
+      stdio: 'inherit',
+    });
+    console.log('notarize: spctl verification passed — Gatekeeper accepts this build.');
+  } catch (err) {
+    console.warn('notarize: spctl verification failed (non-fatal):', err.message);
+  }
 };

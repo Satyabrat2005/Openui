@@ -7,11 +7,14 @@
   Electron itself needs the four `com.apple.security.cs.*` exceptions below —
   without them the hardened-runtime binary crashes on launch (V8 JIT requires
   writable+executable pages, which the runtime blocks by default). The two
-  `device.*` entitlements gate the OS permission prompts OpenUI actually uses:
-  microphone (push-to-talk voice input, Whisper) and screen recording
-  (`read_screen()` via desktopCapturer). Nothing else is requested — no camera,
-  no Apple Events/AppleScript entitlement is needed since `osascript` is
-  invoked as a subprocess, not via the Scripting Bridge.
+  `device.*` entitlements gate the microphone permission prompt (push-to-talk
+  voice input, Whisper). Screen Recording (`read_screen()` via desktopCapturer)
+  has no entitlement key of its own — macOS gates it purely through TCC
+  (System Settings → Privacy & Security → Screen Recording), checked at
+  runtime via systemPreferences.getMediaAccessStatus('screen'); nothing to
+  declare here. Nothing else is requested — no camera, no Apple Events/
+  AppleScript entitlement is needed since `osascript` is invoked as a
+  subprocess, not via the Scripting Bridge.
 -->
 <plist version="1.0">
 <dict>

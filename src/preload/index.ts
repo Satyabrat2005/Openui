@@ -1,7 +1,7 @@
 import { contextBridge, ipcRenderer } from 'electron'
 
 type Tier = 'free' | 'pro' | 'enterprise'
-type PermissionTarget = 'accessibility' | 'microphone'
+type PermissionTarget = 'accessibility' | 'microphone' | 'screenRecording'
 type ConsentStatus = 'unknown' | 'granted' | 'denied'
 type TaskSource = 'todo' | 'github'
 type InterviewState = 'idle' | 'asking' | 'listening' | 'evaluating' | 'complete'
@@ -14,6 +14,25 @@ type RecorderAction =
   | { type: 'delay'; ms: number; timestamp: number }
 
 type RecorderMacro = { name: string; actions: RecorderAction[]; createdAt: string }
+
+/** Config the renderer sends to connect an MCP server. Re-validated in main. */
+type McpConnectConfig = {
+  name: string
+  type: 'stdio' | 'sse'
+  command?: string
+  args?: string[]
+  env?: Record<string, string>
+  url?: string
+}
+type McpConnectResult = { ok: boolean; error?: string; toolCount?: number }
+
+// ── Parallel sub-agent event payloads (main → renderer) ──────────────────────
+type SubagentInfo = { subId: string; title: string; app?: string; model: string; modelLabel: string }
+type SubagentGroupPayload = { groupId: string; count: number; subs: SubagentInfo[] }
+type SubagentToolPayload = { groupId: string; subId: string; tool: string; args: Record<string, unknown> }
+type SubagentStatusPayload = { groupId: string; subId: string; status: string }
+type SubagentDonePayload = { groupId: string; subId: string; status: string; summary: string }
+type ScreenThumbnail = { ok: boolean; dataUrl?: string; error?: string }
 
 /** Signed-in user profile pushed/returned by the main auth layer. */
 type AuthUser = {
@@ -108,6 +127,13 @@ const api = {
   chat: (message: string, tier: Tier): Promise<void> =>
     ipcRenderer.invoke('openui:chat', { message, tier }),
 
+  // ── MCP connectors ──────────────────────────────────────────────────────────
+  // Bridge to the (already validated) 'openui:mcp:connect' handler in main.
+  // The main process re-validates every field (validateMcpConfig + stdio command
+  // allowlist), so nothing here is trusted — this only makes the handler reachable.
+  mcpConnect: (config: McpConnectConfig): Promise<McpConnectResult> =>
+    ipcRenderer.invoke('openui:mcp:connect', config),
+
   clearHistory: (): void => ipcRenderer.send('openui:clear-history'),
 
   // Rate the last assistant response (self-improvement loop). 5 = 👍, 1 = 👎.
@@ -150,6 +176,45 @@ const api = {
     return (): void => { ipcRenderer.removeListener('openui:task:reset', fn) }
   },
 
+  // The model the backend is ACTUALLY using this turn (agent.ts pushes it so the
+  // UI never displays a model the backend isn't running).
+  onChatModel: (cb: (info: { model: string; tier: Tier }) => void): (() => void) => {
+    const fn = wrap<{ model: string; tier: Tier }>(cb)
+    ipcRenderer.on('openui:chat:model', fn)
+    return (): void => { ipcRenderer.removeListener('openui:chat:model', fn) }
+  },
+
+  // ── Parallel sub-agents (real concurrent execution) ─────────────────────────
+  onSubagentGroup: (cb: (g: SubagentGroupPayload) => void): (() => void) => {
+    const fn = wrap<SubagentGroupPayload>(cb)
+    ipcRenderer.on('openui:subagent:group', fn)
+    return (): void => { ipcRenderer.removeListener('openui:subagent:group', fn) }
+  },
+  onSubagentTool: (cb: (t: SubagentToolPayload) => void): (() => void) => {
+    const fn = wrap<SubagentToolPayload>(cb)
+    ipcRenderer.on('openui:subagent:tool', fn)
+    return (): void => { ipcRenderer.removeListener('openui:subagent:tool', fn) }
+  },
+  onSubagentStatus: (cb: (s: SubagentStatusPayload) => void): (() => void) => {
+    const fn = wrap<SubagentStatusPayload>(cb)
+    ipcRenderer.on('openui:subagent:status', fn)
+    return (): void => { ipcRenderer.removeListener('openui:subagent:status', fn) }
+  },
+  onSubagentDone: (cb: (d: SubagentDonePayload) => void): (() => void) => {
+    const fn = wrap<SubagentDonePayload>(cb)
+    ipcRenderer.on('openui:subagent:done', fn)
+    return (): void => { ipcRenderer.removeListener('openui:subagent:done', fn) }
+  },
+  onSubagentGroupDone: (cb: (d: { groupId: string; status: string }) => void): (() => void) => {
+    const fn = wrap<{ groupId: string; status: string }>(cb)
+    ipcRenderer.on('openui:subagent:group-done', fn)
+    return (): void => { ipcRenderer.removeListener('openui:subagent:group-done', fn) }
+  },
+
+  // Live screen thumbnail for the activity panel (read-only capture in main).
+  captureScreenThumbnail: (): Promise<ScreenThumbnail> =>
+    ipcRenderer.invoke('openui:screen:thumbnail'),
+
   transcribeAndChat: (audio: ArrayBuffer, mimeType: string, tier: Tier): Promise<void> =>
     ipcRenderer.invoke('openui:voice', { audio: new Uint8Array(audio), mimeType, tier }),
 
@@ -174,7 +239,8 @@ const api = {
   },
 
   // Ask the main process to open the OS settings pane for the given permission
-  // (accessibility | microphone): macOS System Settings or Windows ms-settings:.
+  // (accessibility | microphone | screenRecording): macOS System Settings or
+  // Windows ms-settings: (screenRecording has no Windows pane).
   openSettings: (permission: PermissionTarget): void => {
     ipcRenderer.send('openui:permission:open-settings', permission)
   },
@@ -415,6 +481,14 @@ const api = {
 
   respondHitl: (id: string, approved: boolean): void => {
     ipcRenderer.send('openui:hitl:response', { id, approved })
+  },
+
+  // Main emits openui:hitl:timeout when its backstop auto-denied a request the
+  // user never answered — the renderer should dismiss a stale modal for it.
+  onHitlTimeout: (cb: (payload: { id: string }) => void): (() => void) => {
+    const fn = wrap<{ id: string }>(cb)
+    ipcRenderer.on('openui:hitl:timeout', fn)
+    return (): void => { ipcRenderer.removeListener('openui:hitl:timeout', fn) }
   },
 
   // ── Plan approval (approve the whole plan once, vs. per-tool HITL) ────────────

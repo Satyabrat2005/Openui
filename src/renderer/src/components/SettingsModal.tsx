@@ -34,8 +34,8 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
   // (persisted to the local settings store, read by the main-process Figma tool).
   const [figmaToken, setFigmaToken] = useState('')
   const [figmaSaved, setFigmaSaved] = useState(false)
-  // GitHub personal access token — same pattern as Figma: a per-user credential
-  // (persisted locally, read by the main-process GitHub PR-review / issue tools).
+  // GitHub personal access token — read by the main-process GitHub tools when
+  // the GITHUB_TOKEN env var is absent (the normal case for end users).
   const [githubToken, setGithubToken] = useState('')
   const [githubSaved, setGithubSaved] = useState(false)
 
@@ -112,7 +112,6 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
       .catch(() => {})
   }
 
-  // Persist the GitHub token (trimmed) on blur, with a brief "Saved" confirmation.
   const saveGithubToken = (): void => {
     void window.openui
       .setSetting('github_token', githubToken.trim())
@@ -339,9 +338,9 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
             )}
           </div>
           <div style={{ fontSize: 12, color: '#8e8e93', lineHeight: 1.5, marginTop: 3, marginBottom: 8 }}>
-            Paste a personal access token to let OpenUI review your pull requests and pull GitHub
-            issues as tasks. Create one at github.com → Settings → Developer settings → Personal
-            access tokens (repo scope). Stored locally on this device.
+            Paste a personal access token with &quot;repo&quot; scope to let OpenUI create repos,
+            push code, and open pull requests for you. Create one at github.com → Settings →
+            Developer settings → Personal access tokens. Stored locally on this device.
           </div>
           <input
             type="password"

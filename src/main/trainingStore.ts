@@ -198,14 +198,23 @@ export function buildFewShotBlock(): string {
 
 // ── JSONL export (fine-tuning-ready) ───────────────────────────────────────────
 
+/** One trajectory in the standard chat fine-tuning shape. */
+export interface ChatFinetuneRecord {
+  messages: Array<{ role: string; content: string }>
+  quality: number | null
+  outcome: string | null
+  model: string | null
+  tier: string | null
+}
+
 /**
- * Convert one stored trajectory into a single JSONL record in the standard chat
- * fine-tuning shape: a `messages` array of system/user/assistant/tool turns,
- * plus `quality`/`outcome` metadata a training pipeline can filter on.
+ * Convert one stored trajectory into the standard chat fine-tuning shape: a
+ * `messages` array of system/user/assistant/tool turns, plus `quality`/
+ * `outcome` metadata a training pipeline can filter on.
  */
-function trajectoryToJsonl(
+function trajectoryToRecord(
   entry: ReturnType<typeof database.training.getExamplesForExport>[number]
-): string {
+): ChatFinetuneRecord {
   const { example, steps } = entry
   const messages: Array<{ role: string; content: string }> = [
     { role: 'user', content: example.instruction }
@@ -222,13 +231,21 @@ function trajectoryToJsonl(
   if (example.final_response) {
     messages.push({ role: 'assistant', content: example.final_response })
   }
-  return JSON.stringify({
+  return {
     messages,
     quality: example.quality_score,
     outcome: example.outcome,
     model: example.model,
     tier: example.tier
-  })
+  }
+}
+
+/**
+ * Quality-filtered trajectories as structured records — the input to the local
+ * LoRA fine-tuning pipeline (finetune/pipeline.ts). Same filter as the export.
+ */
+export function getFinetuneRecords(minQuality = 3): ChatFinetuneRecord[] {
+  return database.training.getExamplesForExport(minQuality).map(trajectoryToRecord)
 }
 
 export interface ExportResult {
@@ -269,7 +286,7 @@ export async function exportDatasetToFile(
     target = result.filePath
   }
 
-  const jsonl = rows.map(trajectoryToJsonl).join('\n') + '\n'
+  const jsonl = rows.map((r) => JSON.stringify(trajectoryToRecord(r))).join('\n') + '\n'
   try {
     await writeFile(target, jsonl, 'utf8')
   } catch (err) {

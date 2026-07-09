@@ -10,9 +10,16 @@
 //          SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
 //
 // Response: { tier, status, currentPeriodEnd, customerId }
+//
+// Authenticates the caller's bearer token (supabase.auth.getUser) and only
+// ever looks up the verified user's own subscription — a body-supplied
+// `userId` is accepted only if it matches that verified id, closing an
+// object-level-authorization hole where any caller could read another user's
+// subscription/billing status by passing their id in the request body.
 import { serve } from 'https://deno.land/std@0.177.0/http/server.ts'
 import Stripe from 'https://esm.sh/stripe@14.0.0?target=deno'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+import { requireVerifiedUser } from '../_shared/auth.ts'
 
 const stripe = new Stripe(Deno.env.get('STRIPE_SECRET_KEY') ?? '', {
   apiVersion: '2024-06-20'
@@ -49,9 +56,13 @@ serve(async (req) => {
     const { userId } = await req.json()
     if (!userId) return json({ error: 'userId is required.' }, 400)
 
+    const auth = await requireVerifiedUser(req, supabase, userId)
+    if (!auth.ok) return json({ error: auth.error }, auth.status)
+    const verifiedUserId = auth.user.id
+
     // Resolve the Stripe customer: prefer the id stamped on the user by the
     // webhook, else fall back to a lookup by email.
-    const { data } = await supabase.auth.admin.getUserById(userId)
+    const { data } = await supabase.auth.admin.getUserById(verifiedUserId)
     let customerId = data.user?.app_metadata?.stripeCustomerId as string | undefined
     if (!customerId && data.user?.email) {
       const list = await stripe.customers.list({ email: data.user.email, limit: 1 })

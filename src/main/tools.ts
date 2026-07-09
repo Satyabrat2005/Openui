@@ -10,7 +10,7 @@
  *
  * PLATFORM: open_app, search_files, and control_calendar select a backend at
  * call time via process.platform:
- *   macOS   → AppleScript via node-osascript (lazy-loaded)
+ *   macOS   → AppleScript via the `osascript` binary (execFile, no shell)
  *   Windows → PowerShell (Start-Process / Get-ChildItem / Outlook COM)
  *   Linux   → best-effort xdg-open / find (limited functionality)
  * Mouse/keyboard tools use @nut-tree/nut-js which is cross-platform.
@@ -26,15 +26,25 @@ import { readFile, writeFile, mkdir, rename, copyFile, unlink, readdir, stat } f
 import { resolve as resolvePath, join as joinPath, dirname, sep } from 'node:path'
 import { homedir } from 'node:os'
 import { SENSITIVE_PATH_RE, resolveSafePath } from './fs/pathSafety'
-import { desktopCapturer, clipboard, shell, BrowserWindow } from 'electron'
-import { checkAccessibility, type PermissionTarget } from './permissions'
+import { app, desktopCapturer, clipboard, shell, BrowserWindow } from 'electron'
+import { checkAccessibility, checkScreenRecording, type PermissionTarget } from './permissions'
+import { resolveApp, type InstalledApp } from './appResolver'
 import { githubToolSchemas, githubRegistry } from './github'
 import { figmaToolSchemas, figmaRegistry } from './figma'
+import { designToolSchemas, designRegistry } from './designFlow'
 import { callChatProxyText } from './edgeFunctions'
 import { trackEvent } from './telemetry/posthog'
 import { Events } from './telemetry/events'
 import { findWorkflow } from './workflows'
 import { searchLocalKnowledge } from './rag'
+import {
+  buildVisionSystemPrompt,
+  parseVisionAction,
+  scaleToScreen,
+  type VisionAction
+} from './visionAction'
+import { originOf, isOriginGranted, listGrantedOrigins } from './browser/consent'
+import { sanitizePageText, defangPageText } from './browser/sanitizer'
 
 // execFile (no shell) is used so arguments are passed as an argv array —
 // there is no shell to interpret quotes, pipes, $(...) or `;`.
@@ -64,6 +74,22 @@ export interface ToolResult {
    * can show a modal guiding the user to grant the required OS permission.
    */
   permissionDenied?: PermissionTarget
+  /**
+   * Set when the tool refused to act until the user gives a one-time,
+   * per-action confirmation that NO autonomy mode can bypass: per-site browser
+   * consent, and sensitive actions (payments, refunds, password changes,
+   * account deletion, sending messages/emails). ok is always false alongside
+   * this, so any caller that ignores the field fails CLOSED (subagents and
+   * autonomous runs simply see a denial). The interactive agent loop upgrades
+   * it into a HitlModal prompt and re-runs the tool after the human click.
+   */
+  needsConfirmation?: {
+    kind: 'site-consent' | 'sensitive-action'
+    /** Human-readable question for the confirmation dialog. */
+    label: string
+    /** For site-consent: the origin to persist a grant for on approval. */
+    origin?: string
+  }
 }
 
 /** JSON-Schema-style description used both to prompt the LLM and to validate. */
@@ -85,6 +111,13 @@ export interface ExecutorContext {
   tier: Tier
   /** Set to true after the user has approved a pending HITL request, bypassing the gate. */
   bypassHitl?: boolean
+  /**
+   * Set to true ONLY by the interactive loop after the user approved a
+   * needsConfirmation prompt for THIS exact call. Authorises exactly one
+   * sensitive action inside the re-run — it is never carried across calls and
+   * autonomy modes never set it.
+   */
+  sensitiveApproved?: boolean
 }
 
 /**
@@ -95,10 +128,20 @@ export const STATE_CHANGING_TOOLS = new Set<string>([
   'left_click',
   'type_text',
   'open_app',
+  'open_whatsapp_chat',
   'move_mouse',
+  // computer_use hands the loop autonomous mouse/keyboard control; the whole loop
+  // takes ONE approval up front rather than gating each synthesised action.
+  'computer_use',
+  // connect_browser attaches the agent to the persistent automation profile —
+  // the HITL approval on it IS the user's "yes, use my browser" click. Per-site
+  // consent then gates each new origin separately (see browser/consent.ts).
+  'connect_browser',
   'browser_navigate',
   'browser_click',
   'browser_fill_input',
+  // Same one-approval-per-loop contract as computer_use, scoped to the page.
+  'browser_vision_act',
   'control_calendar',
   // Filesystem + clipboard mutations. Reads (list_directory, read_file,
   // read_clipboard) are intentionally absent — they observe, never change state.
@@ -108,6 +151,16 @@ export const STATE_CHANGING_TOOLS = new Set<string>([
   'copy_file',
   'delete_file',
   'write_clipboard',
+  // GitHub repo automation — outward-facing writes, gated behind the HITL modal.
+  // check_repo_exists is intentionally absent (read-only). open_pull_request and
+  // merge_pr are additionally listed in DESTRUCTIVE_TOOLS so they ALWAYS confirm.
+  'create_repo',
+  'update_readme',
+  'push_files',
+  'open_pull_request',
+  'merge_pr',
+  // Design-in-browser: writes an HTML file into the workspace and opens it.
+  'design_preview',
 ])
 
 /**
@@ -121,8 +174,14 @@ export const STATE_CHANGING_TOOLS = new Set<string>([
  * delete_file moves the target to the OS Recycle Bin / Trash (recoverable)
  * rather than hard-unlinking, but it is still listed here so it ALWAYS asks —
  * even under approve-plan / full-auto autonomy a deletion is never silently run.
+ *
+ * open_pull_request and merge_pr are the outward-facing, hard-to-reverse GitHub
+ * steps: each always requires one human approval per call, so they live here
+ * rather than only in STATE_CHANGING_TOOLS. merge_pr in particular can NEVER
+ * run automatically — there is no autonomy mode that merges without the user's
+ * explicit Allow click.
  */
-export const DESTRUCTIVE_TOOLS = new Set<string>(['delete_file'])
+export const DESTRUCTIVE_TOOLS = new Set<string>(['delete_file', 'open_pull_request', 'merge_pr'])
 
 /**
  * Returned by executeTool when a state-changing tool needs user approval.
@@ -144,14 +203,19 @@ export interface PendingApprovalResult {
  * on context.tier.
  */
 export const TIER_TOOL_REQUIREMENTS: Partial<Record<string, Tier>> = {
-  read_screen_cloud_vision: 'pro'
+  read_screen_cloud_vision: 'pro',
+  // The visual fallback loop reasons over screenshots with cloud vision (same
+  // path as read_screen's pro branch), so it requires a paid tier.
+  computer_use: 'pro',
+  // Same vision loop as computer_use, driven inside the automation browser.
+  browser_vision_act: 'pro'
 }
 
 const TIER_ORDER: Tier[] = ['free', 'pro', 'enterprise']
 
 type Executor = (args: Record<string, unknown>, context?: ExecutorContext) => Promise<ToolResult>
 
-// ── macOS helpers (AppleScript via node-osascript) ────────────────────────────
+// ── macOS helpers (AppleScript via osascript) ──────────────────────────────
 
 /** require() the first module name that resolves; throws if none do. */
 function requireFirst(names: string[]): unknown {
@@ -171,30 +235,37 @@ function requireFirst(names: string[]): unknown {
  * Escape a JS string for safe interpolation into an AppleScript double-quoted
  * string literal.
  *
- * SECURITY: node-osascript's variable-injection helper serialises strings as
- * '"' + value + '"' with NO escaping, so any '"' in a value breaks out of the
- * literal and the rest of the value is executed as AppleScript. We therefore
- * build the full script ourselves with every untrusted value passed through
- * this escaper and never use the package's variable injection.
+ * SECURITY: the script text is interpolated directly (there is no separate
+ * variable-injection channel to osascript), so any unescaped '"' in a value
+ * would break out of the literal and the rest of the value would execute as
+ * AppleScript. Every untrusted value MUST be passed through this escaper
+ * before being embedded in a script string.
  */
 function asStringLiteral(value: string): string {
   return '"' + value.replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"'
 }
 
+// Hard wall-clock bound on every AppleScript child, matching PS_TIMEOUT_MS/
+// PS_MAX_BUFFER below — a hung `tell application` call (e.g. a modal dialog)
+// is killed rather than left to hang the tool call indefinitely.
+const AS_TIMEOUT_MS = 15_000
+const AS_MAX_BUFFER = 1024 * 1024
+
 /**
- * Run a fully-formed AppleScript via node-osascript. All dynamic values must
- * already be embedded as escaped literals via asStringLiteral() — the broken
- * built-in serialiser is never exercised.
+ * Run a fully-formed AppleScript via the `osascript` binary directly (no
+ * shell — the script is passed as a single argv element to execFile). All
+ * dynamic values must already be embedded as escaped literals via
+ * asStringLiteral(). Bounded by AS_TIMEOUT_MS/AS_MAX_BUFFER so a hung script
+ * (and its child process) cannot hang a tool call forever — a Promise.race
+ * alone would not achieve this, since it only stops waiting without killing
+ * the underlying process.
  */
-function runAppleScript(script: string): Promise<string> {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const osascript = requireFirst(['node-osascript']) as any
-  return new Promise<string>((resolve, reject) => {
-    osascript.execute(script, (err: unknown, result: unknown): void => {
-      if (err) reject(err instanceof Error ? err : new Error(String(err)))
-      else resolve(Array.isArray(result) ? result.join(', ') : String(result ?? ''))
-    })
+async function runAppleScript(script: string): Promise<string> {
+  const { stdout } = await execFileAsync('osascript', ['-e', script], {
+    timeout: AS_TIMEOUT_MS,
+    maxBuffer: AS_MAX_BUFFER
   })
+  return stdout.trim()
 }
 
 // ── Windows helpers (PowerShell) ──────────────────────────────────────────────
@@ -296,6 +367,255 @@ const WIN_BLOCKED_APPS = new Set([
   'regedit', 'regedt32', 'reg', 'bcdedit', 'wmic'
 ])
 
+/**
+ * macOS counterpart to WIN_BLOCKED_APPS: shells, terminals and scripting
+ * hosts that turn open_app + type_text into arbitrary code execution.
+ * Matched case-insensitively, with any ".app" stripped.
+ */
+const MAC_BLOCKED_APPS = new Set([
+  'terminal', 'iterm', 'iterm2', 'script editor', 'applescript editor',
+  'automator', 'console', 'shortcuts'
+])
+
+/**
+ * PowerShell resolver for open_app on Windows. A plain `Start-Process -FilePath
+ * <name>` only works for a full path or an executable already on PATH — it fails
+ * for Store/UWP apps (WhatsApp, Spotify, WhatsApp Desktop) and for desktop apps
+ * whose .exe isn't on PATH. This script resolves a friendly name the way a user
+ * would from the Start menu, trying each strategy in order and stopping at the
+ * first that launches:
+ *   1. A literal existing path (full path passed straight through).
+ *   2. An installed app matched by display name via Get-StartApps — this covers
+ *      both Store/UWP apps (launched via shell:AppsFolder\<AppUserModelID>) and
+ *      registered desktop apps.
+ *   3. A Start-menu shortcut (.lnk) whose name matches.
+ *   4. A last-resort Start-Process so PATH names (notepad, msedge, code) still work.
+ *
+ * SECURITY: the untrusted app name is read only as the VALUE `$env:OPENUI_APP`
+ * (supplied via extraEnv) and is never spliced into the script text, so it cannot
+ * be re-parsed as PowerShell code. open_app also whitelists the name against
+ * APP_NAME_RE (no `*?[]` wildcards) before this runs.
+ */
+const WIN_OPEN_APP_SCRIPT = `
+$ErrorActionPreference = 'SilentlyContinue'
+$ProgressPreference = 'SilentlyContinue'
+$app = $env:OPENUI_APP
+if ([string]::IsNullOrWhiteSpace($app)) { Write-Error 'No application name provided.'; exit 1 }
+
+# 1) A literal file/path that exists — launch it directly.
+if (Test-Path -LiteralPath $app) {
+  Start-Process -FilePath $app
+  Write-Output 'path'
+  exit 0
+}
+
+# 2) Match an installed app by display name (covers Store/UWP + registered desktop apps).
+$match = $null
+try {
+  $apps = Get-StartApps
+  $match = $apps | Where-Object { $_.Name -ieq $app } | Select-Object -First 1
+  if (-not $match) { $match = $apps | Where-Object { $_.Name -like ('*' + $app + '*') } | Select-Object -First 1 }
+} catch { }
+if ($match) {
+  Start-Process ('shell:AppsFolder\\' + $match.AppID)
+  Write-Output ('app: ' + $match.Name)
+  exit 0
+}
+
+# 3) A Start-menu shortcut (.lnk) whose name matches.
+$roots = @(
+  (Join-Path $env:ProgramData 'Microsoft\\Windows\\Start Menu\\Programs'),
+  (Join-Path $env:AppData 'Microsoft\\Windows\\Start Menu\\Programs')
+)
+foreach ($root in $roots) {
+  if (Test-Path -LiteralPath $root) {
+    $links = Get-ChildItem -LiteralPath $root -Recurse -Filter *.lnk -ErrorAction SilentlyContinue
+    $lnk = $links | Where-Object { $_.BaseName -ieq $app } | Select-Object -First 1
+    if (-not $lnk) { $lnk = $links | Where-Object { $_.BaseName -like ('*' + $app + '*') } | Select-Object -First 1 }
+    if ($lnk) {
+      Start-Process -FilePath $lnk.FullName
+      Write-Output ('shortcut: ' + $lnk.BaseName)
+      exit 0
+    }
+  }
+}
+
+# 4) Last resort: let Start-Process resolve it on PATH (notepad, calc, msedge, code...).
+try {
+  Start-Process -FilePath $app -ErrorAction Stop
+  Write-Output 'path'
+  exit 0
+} catch {
+  # Write straight to the stderr stream: Write-Error is swallowed here because
+  # $ErrorActionPreference = 'SilentlyContinue', which would leave the caller with
+  # only Node's opaque "Command failed: <base64>" message and no real reason.
+  [Console]::Error.WriteLine("Could not find an application named '" + $app + "'. Try its exact name as shown in the Start menu (e.g. 'Visual Studio Code', not 'VS Code'), or a full path to its .exe.")
+  exit 1
+}
+`.trim()
+
+/**
+ * Static index script for the OpenUI app resolver: enumerate every installed app
+ * the user could open, as JSON. Two sources cover the vast majority of apps:
+ *   • Get-StartApps — Store/UWP apps + registered desktop apps, each with an
+ *     AppUserModelID we can launch via shell:AppsFolder.
+ *   • Start-menu .lnk shortcuts — path-launchable, and a safety net for anything
+ *     Get-StartApps misses.
+ * Takes NO user input, so nothing untrusted is ever spliced into the script.
+ */
+const WIN_LIST_APPS_SCRIPT = `
+$ErrorActionPreference = 'SilentlyContinue'
+$ProgressPreference = 'SilentlyContinue'
+$apps = New-Object System.Collections.ArrayList
+foreach ($a in (Get-StartApps)) {
+  if ($a.Name) {
+    [void]$apps.Add([pscustomobject]@{ name = [string]$a.Name; appId = [string]$a.AppID; path = ''; source = 'startapps' })
+  }
+}
+$roots = @(
+  (Join-Path $env:ProgramData 'Microsoft\\Windows\\Start Menu\\Programs'),
+  (Join-Path $env:AppData 'Microsoft\\Windows\\Start Menu\\Programs')
+)
+foreach ($root in $roots) {
+  if (Test-Path -LiteralPath $root) {
+    Get-ChildItem -LiteralPath $root -Recurse -Filter *.lnk -ErrorAction SilentlyContinue | ForEach-Object {
+      [void]$apps.Add([pscustomobject]@{ name = [string]$_.BaseName; appId = ''; path = [string]$_.FullName; source = 'shortcut' })
+    }
+  }
+}
+# @(...) guarantees a JSON array even when only one app is found.
+ConvertTo-Json -InputObject @($apps) -Compress -Depth 3
+`.trim()
+
+/** Launch a resolved app by its Start-menu AppID (Store/UWP + registered desktop). */
+const WIN_LAUNCH_APPID_SCRIPT = `
+$ErrorActionPreference = 'Stop'
+Start-Process ('shell:AppsFolder\\' + $env:OPENUI_LAUNCH_TARGET)
+`.trim()
+
+/** Launch a resolved app by a full path to its .exe/.lnk. */
+const WIN_LAUNCH_PATH_SCRIPT = `
+$ErrorActionPreference = 'Stop'
+Start-Process -FilePath $env:OPENUI_LAUNCH_TARGET
+`.trim()
+
+// In-memory index of installed apps. Enumerating shells out to PowerShell (a few
+// hundred ms), so a short TTL cache keeps rapid "open X / open Y" sequences snappy
+// without going stale as the user installs/uninstalls apps across a session.
+let _winAppCache: { at: number; apps: InstalledApp[] } | null = null
+const WIN_APP_CACHE_TTL_MS = 60_000
+
+/** Enumerate installed Windows apps (cached), for the resolver + list_apps. */
+async function enumerateWindowsApps(): Promise<InstalledApp[]> {
+  if (_winAppCache && Date.now() - _winAppCache.at < WIN_APP_CACHE_TTL_MS) {
+    return _winAppCache.apps
+  }
+  const out = await runPowerShellScript(WIN_LIST_APPS_SCRIPT)
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(out || '[]')
+  } catch {
+    parsed = []
+  }
+  const arr = Array.isArray(parsed) ? parsed : parsed ? [parsed] : []
+  const apps: InstalledApp[] = []
+  for (const raw of arr) {
+    const a = raw as Record<string, unknown>
+    const name = typeof a?.name === 'string' ? a.name.trim() : ''
+    if (!name) continue
+    apps.push({
+      name,
+      appId: typeof a.appId === 'string' && a.appId ? a.appId : undefined,
+      path: typeof a.path === 'string' && a.path ? a.path : undefined,
+      source: a.source === 'shortcut' ? 'shortcut' : 'startapps'
+    })
+  }
+  _winAppCache = { at: Date.now(), apps }
+  return apps
+}
+
+// Standard locations for .app bundles. readdir (not `mdfind`) so this works
+// even when Spotlight is disabled or still indexing.
+const MAC_APP_DIRS = [
+  '/Applications',
+  '/Applications/Utilities',
+  '/System/Applications',
+  '/System/Applications/Utilities',
+  joinPath(homedir(), 'Applications')
+]
+
+let _macAppCache: { at: number; apps: InstalledApp[] } | null = null
+const MAC_APP_CACHE_TTL_MS = 60_000
+
+/** Enumerate installed macOS apps (cached), for the resolver + list_apps. */
+async function enumerateMacApps(): Promise<InstalledApp[]> {
+  if (_macAppCache && Date.now() - _macAppCache.at < MAC_APP_CACHE_TTL_MS) {
+    return _macAppCache.apps
+  }
+  const apps: InstalledApp[] = []
+  for (const dir of MAC_APP_DIRS) {
+    let entries: string[]
+    try {
+      entries = await readdir(dir)
+    } catch {
+      continue
+    }
+    for (const entry of entries) {
+      if (!entry.endsWith('.app')) continue
+      apps.push({
+        name: entry.slice(0, -'.app'.length),
+        path: joinPath(dir, entry),
+        source: 'app-bundle'
+      })
+    }
+  }
+  _macAppCache = { at: Date.now(), apps }
+  return apps
+}
+
+/** Launch a resolved app by AppID (preferred) or path. Throws on failure. */
+async function launchWindowsApp(match: InstalledApp): Promise<void> {
+  if (match.appId) {
+    await runPowerShellScript(WIN_LAUNCH_APPID_SCRIPT, { OPENUI_LAUNCH_TARGET: match.appId })
+  } else if (match.path) {
+    await runPowerShellScript(WIN_LAUNCH_PATH_SCRIPT, { OPENUI_LAUNCH_TARGET: match.path })
+  } else {
+    throw new Error(`No launch target for "${match.name}".`)
+  }
+}
+
+/**
+ * List the apps installed on this machine (read-only). Lets the model discover
+ * the exact name to pass to open_app when the user's phrasing is ambiguous, and
+ * lets the user ask "what can you open?". Supported on Windows (Start-menu +
+ * Get-StartApps index) and macOS (.app bundles in the standard Applications
+ * directories); Linux returns a clear "not supported yet" message.
+ */
+async function list_apps(args: Record<string, unknown>): Promise<ToolResult> {
+  if (!IS_WIN && !IS_MAC) {
+    return {
+      ok: false,
+      error: 'list_apps is currently supported on Windows and macOS only.'
+    }
+  }
+  try {
+    const apps = IS_MAC ? await enumerateMacApps() : await enumerateWindowsApps()
+    const filter = typeof args.filter === 'string' ? args.filter.toLowerCase().trim() : ''
+    const names = [...new Set(apps.map((a) => a.name))].sort((a, b) => a.localeCompare(b))
+    const shown = filter ? names.filter((n) => n.toLowerCase().includes(filter)) : names
+    if (shown.length === 0) {
+      return { ok: true, output: filter ? `No installed apps match "${filter}".` : 'No installed apps found.' }
+    }
+    const header = filter
+      ? `Installed apps matching "${filter}" (${shown.length}):`
+      : `Installed apps (${shown.length}):`
+    return { ok: true, output: `${header}\n${shown.join('\n')}` }
+  } catch (err) {
+    const stderr = (err as { stderr?: string }).stderr?.trim()
+    return { ok: false, error: `list_apps failed: ${stderr || (err instanceof Error ? err.message : String(err))}` }
+  }
+}
+
 // SENSITIVE_PATH_RE + resolveSafePath live in ./fs/pathSafety so the filesystem
 // trust boundary can be unit-tested without importing this heavyweight module.
 // search_files also uses SENSITIVE_PATH_RE to withhold credential/token paths
@@ -309,46 +629,137 @@ function loadNut(): any {
 
 // ── Playwright browser automation ─────────────────────────────────────────────
 
-// Singleton headful Chromium browser and page.  null before the first
-// browser_navigate call, or after the browser is closed/crashed.
+// Singleton headful browser CONTEXT (persistent profile) and page. null before
+// the first browser_navigate call, or after the browser is closed/crashed.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-let _pwBrowser: any = null
+let _pwContext: any = null
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let _pwPage: any = null
 
 /**
- * Lazy-load Playwright (must be `npm install`-ed separately, along with
- * `npx playwright install chromium`) and return the shared Page, launching a
- * headful Chromium window if none is already open.  The same browser window
- * persists across tool calls so the user can watch OpenUI work.
+ * Browser channels tried, in order, when launching the automation browser.
+ * We prefer the user's REAL installed browser (Edge, then Chrome) so the window
+ * looks and behaves like their normal browser; `undefined` falls back to
+ * Playwright's bundled Chromium when neither is installed.
  */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function getOrCreatePage(): Promise<any> {
-  if (_pwPage) return _pwPage
+const BROWSER_CHANNELS: (string | undefined)[] = IS_WIN
+  ? ['msedge', 'chrome', undefined]
+  : ['chrome', 'msedge', undefined]
+
+/**
+ * Lazy-load Playwright (must be `npm install`-ed separately) and launch the
+ * headful automation window. Only connect_browser calls this — attaching the
+ * agent to a browser session is an explicit, user-approved step, never a side
+ * effect of another tool.
+ *
+ * This drives the user's REAL installed browser (Edge/Chrome via a Playwright
+ * channel) inside a PERSISTENT profile stored under the app's userData dir — not
+ * a throwaway "guest" Chromium. That means cookies/logins survive across runs,
+ * so the user can sign in once and the automation window stays useful instead of
+ * being an empty test browser. The same window persists across tool calls so the
+ * user can watch OpenUI work.
+ */
+async function launchBrowserContext(preferred: 'edge' | 'chrome' | 'auto'): Promise<void> {
+  if (_pwContext) return
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const pw = requireFirst(['playwright']) as any
-  _pwBrowser = await pw.chromium.launch({ headless: false })
-  _pwPage = await _pwBrowser.newPage()
+
+  // A dedicated, persistent profile dir keeps logins/cookies between sessions.
+  // It is separate from the user's live browser profile (which is locked while
+  // their browser is open), so launching never conflicts with normal browsing.
+  const profileDir = joinPath(app.getPath('userData'), 'browser-profile')
+
+  // The user's pick (via connect_browser args) is tried first; the platform
+  // default order is the fallback so a missing pick still connects something.
+  const pickedChannel = preferred === 'edge' ? 'msedge' : preferred === 'chrome' ? 'chrome' : null
+  const channels = pickedChannel
+    ? [pickedChannel, ...BROWSER_CHANNELS.filter((c) => c !== pickedChannel)]
+    : BROWSER_CHANNELS
+
+  let lastErr: unknown = null
+  for (const channel of channels) {
+    try {
+      _pwContext = await pw.chromium.launchPersistentContext(profileDir, {
+        headless: false,
+        channel,
+        viewport: null,
+        args: ['--start-maximized', '--no-first-run', '--no-default-browser-check']
+      })
+      break
+    } catch (err) {
+      lastErr = err // channel not installed — try the next one
+    }
+  }
+  if (!_pwContext) {
+    throw lastErr instanceof Error ? lastErr : new Error('Failed to launch a browser')
+  }
+
+  _pwPage = _pwContext.pages()[0] ?? (await _pwContext.newPage())
   // Reset state if the browser is closed by the user or crashes.
-  _pwBrowser.on('disconnected', () => {
-    _pwBrowser = null
+  _pwContext.on('close', () => {
+    _pwContext = null
     _pwPage = null
   })
+}
+
+/**
+ * The shared Page of the connected session, or null when no session exists.
+ * Browser tools must NOT auto-launch: the agent attaches to a browser only
+ * through the user-approved connect_browser step.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function getConnectedPage(): any | null {
   return _pwPage
+}
+
+const NOT_CONNECTED: ToolResult = {
+  ok: false,
+  error:
+    'No browser session is connected. Call connect_browser first — the user must approve ' +
+    'attaching OpenUI to a browser before any page can be opened.'
+}
+
+/**
+ * Explicitly attach the agent to the persistent automation browser. The HITL
+ * approval on this tool is the user's "yes, drive my browser" click; each new
+ * site then needs its own one-time consent (browser/consent.ts). Reports which
+ * origins are already granted so both the user and the model see the scope.
+ */
+async function connect_browser(args: Record<string, unknown>): Promise<ToolResult> {
+  const raw = typeof args.browser === 'string' ? args.browser : 'auto'
+  const preferred = raw === 'edge' || raw === 'chrome' ? raw : 'auto'
+  try {
+    const alreadyOpen = _pwContext !== null
+    await launchBrowserContext(preferred)
+    const granted = listGrantedOrigins()
+    return {
+      ok: true,
+      output:
+        `${alreadyOpen ? 'Browser session already connected' : 'Browser session connected'} ` +
+        `(persistent OpenUI automation profile — logins are kept between sessions, separate from the user's own browser profile). ` +
+        `Sites the user has previously granted: ${granted.length ? granted.join(', ') : 'none yet'}. ` +
+        `Every OTHER site still requires the user’s one-time consent when you first navigate to it.`
+    }
+  } catch (err) {
+    return {
+      ok: false,
+      error: `connect_browser failed: ${err instanceof Error ? err.message : String(err)}`
+    }
+  }
 }
 
 /**
  * Gracefully close the Playwright browser.  Should be called from the main
- * process before the Electron app quits so Chromium exits cleanly.
+ * process before the Electron app quits so the browser exits cleanly.
  */
 export async function closeBrowser(): Promise<void> {
-  if (_pwBrowser) {
+  if (_pwContext) {
     try {
-      await _pwBrowser.close()
+      await _pwContext.close()
     } catch {
       // ignore — process exit will kill the child anyway
     }
-    _pwBrowser = null
+    _pwContext = null
     _pwPage = null
   }
 }
@@ -359,6 +770,16 @@ const ALLOWED_URL_SCHEME = /^https?:\/\//i
 const MAX_URL_LEN = 2048
 // CSS selectors provided by the model are length-bounded as a light sanity check.
 const MAX_SELECTOR_LEN = 512
+
+/**
+ * Click/type targets whose labels indicate an action that moves money, changes
+ * credentials, destroys an account, or sends a message to another person.
+ * These ALWAYS pause for one human click — even in full-auto, even when the
+ * model is mid computer-use loop. There is no bypass mode. Slight
+ * over-matching (an extra confirmation) is the correct failure direction.
+ */
+const SENSITIVE_ACTION_RE =
+  /\b(pay(?:\s+now)?|payment|buy\s+now|purchase|checkout|place\s+order|confirm\s+(?:order|purchase|payment)|complete\s+(?:order|purchase)|subscribe|transfer|send\s+money|refund|withdraw|delete\s+(?:my\s+)?account|close\s+(?:my\s+)?account|deactivate\s+account|change\s+password|reset\s+password|update\s+password|send\s+(?:message|email|mail)|\bsend\b|submit\s+application|post\s+comment|publish|tweet)\b/i
 
 // ── tool implementations ──────────────────────────────────────────────────────
 
@@ -381,6 +802,39 @@ async function open_app(args: Record<string, unknown>): Promise<ToolResult> {
   }
   try {
     if (IS_MAC) {
+      const isMacBlocked = (name: string): boolean =>
+        MAC_BLOCKED_APPS.has(name.toLowerCase().replace(/\.app$/, '').trim())
+      if (isMacBlocked(appName)) {
+        return {
+          ok: false,
+          error: `open_app refuses to launch "${appName}": shells, terminals and scripting hosts are blocked for safety.`
+        }
+      }
+      // OpenUI resolver: index installed .app bundles and fuzzy-match the
+      // user's phrasing ("vs code" → "Visual Studio Code"), mirroring the
+      // Windows path below. Matched in JS against system-supplied names —
+      // never spliced into a script — and the winner launched via `open -a`
+      // (no shell). Re-checked against the blocklist in case an alias ever
+      // maps a benign phrase to a blocked app name.
+      const match = resolveApp(appName, await enumerateMacApps())
+      if (match) {
+        if (isMacBlocked(match.name)) {
+          return {
+            ok: false,
+            error: `open_app refuses to launch "${match.name}": shells, terminals and scripting hosts are blocked for safety.`
+          }
+        }
+        if (match.path) {
+          await execFileAsync('open', ['-a', match.path])
+        } else {
+          await runAppleScript(`tell application ${asStringLiteral(match.name)} to activate`)
+        }
+        const via = match.name.toLowerCase() === appName.toLowerCase() ? '' : ` (matched "${appName}")`
+        return { ok: true, output: `Launched ${match.name}${via}.` }
+      }
+      // Fallback: not in the standard bundle directories (e.g. a system
+      // service, or an app addressed by its AppleScript application name
+      // rather than its bundle display name) — let AppleScript resolve it.
       await runAppleScript(`tell application ${asStringLiteral(appName)} to activate`)
     } else if (IS_WIN) {
       const base = appName.toLowerCase().replace(/\.exe$/, '').trim()
@@ -390,26 +844,148 @@ async function open_app(args: Record<string, unknown>): Promise<ToolResult> {
           error: `open_app refuses to launch "${appName}": shells, scripting hosts and registry tools are blocked for safety.`
         }
       }
-      // The app name is passed out-of-band via the environment and read as a
-      // value ($env:OPENUI_APP); it never appears in the command text, so it
-      // cannot be parsed as PowerShell code.
-      await runPowerShell('Start-Process -FilePath $env:OPENUI_APP', { OPENUI_APP: appName })
+      // OpenUI resolver: index the installed apps and fuzzy-match the user's
+      // phrasing ("VS Code" → "Visual Studio Code", "chrome" → "Google Chrome").
+      // The user text is matched in JS against system-supplied names — it is never
+      // spliced into a script — and the winner is launched by its AppID/path.
+      const match = resolveApp(appName, await enumerateWindowsApps())
+      if (match) {
+        await launchWindowsApp(match)
+        const via = match.name.toLowerCase() === appName.toLowerCase() ? '' : ` (matched "${appName}")`
+        return { ok: true, output: `Launched ${match.name}${via}.` }
+      }
+      // Fallback resolver script: handles literal full paths and bare PATH names
+      // (notepad, msedge, code) that aren't in the Start-menu index. The app name
+      // is passed out-of-band via $env:OPENUI_APP, never spliced into the script.
+      const out = await runPowerShellScript(WIN_OPEN_APP_SCRIPT, { OPENUI_APP: appName })
+      return { ok: true, output: `Launched ${appName}${out ? ` (${out})` : ''}.` }
     } else {
       // Linux best-effort: xdg-open treats the argument as a file/URI/app name.
       await execFileAsync('xdg-open', [appName])
     }
     return { ok: true, output: `Activated ${appName}.` }
   } catch (err) {
+    // execFile rejects with message "Command failed: <full command line>", which
+    // for -EncodedCommand is a giant base64 blob — useless to the model/user and
+    // context-polluting. Prefer the process's real stderr (the friendly resolver
+    // message) and fall back to the raw message only when stderr is empty.
+    const stderr = (err as { stderr?: string }).stderr?.trim()
+    const detail = stderr || (err instanceof Error ? err.message : String(err))
     return {
       ok: false,
-      error: `Tool execution failed: ${err instanceof Error ? err.message : String(err)}`
+      error: `open_app could not launch "${appName}": ${detail}`
     }
+  }
+}
+
+/** Sleep helper for scripted UI flows (WhatsApp chat opening, etc.). */
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+/** Press then release a key combo via nut-js (e.g. Ctrl+F). */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function tapKeys(nut: any, ...keys: any[]): Promise<void> {
+  await nut.keyboard.pressKey(...keys)
+  await nut.keyboard.releaseKey(...keys)
+}
+
+/**
+ * Open a specific WhatsApp conversation by contact/group name.
+ *
+ * Why a dedicated tool instead of letting the model chain open_app → read_screen
+ * → click: on the local/free tier read_screen only returns OCR *text*, never the
+ * X,Y coordinates that move_mouse/left_click need, so a visual "find the search
+ * box and click it" flow is impossible there. Modelling the whole flow as one
+ * deterministic, keyboard-driven tool sidesteps that — WhatsApp Desktop's own
+ * shortcuts (Ctrl+F to focus chat search, type, Enter to open the top hit) work
+ * without any coordinates. This is UI automation, so timings are necessarily
+ * best-effort; the delays are overridable via OPENUI_WA_* env vars for tuning.
+ */
+async function open_whatsapp_chat(args: Record<string, unknown>): Promise<ToolResult> {
+  const raw =
+    typeof args.contact === 'string'
+      ? args.contact
+      : typeof args.name === 'string'
+        ? args.name
+        : typeof args.query === 'string'
+          ? args.query
+          : ''
+  // Strip control chars/newlines: a stray newline would submit the search early.
+  // eslint-disable-next-line no-control-regex
+  const contact = raw.replace(/[\x00-\x1f\x7f]/g, '').trim()
+  if (!contact) {
+    return { ok: false, error: 'open_whatsapp_chat requires a "contact" name (the chat to open).' }
+  }
+  if (contact.length > 128) {
+    return { ok: false, error: 'open_whatsapp_chat "contact" is too long (max 128 characters).' }
+  }
+  if (!checkAccessibility()) {
+    return {
+      ok: false,
+      error:
+        'Tool execution failed: Missing OS permissions — Accessibility access is required for keyboard control. ' +
+        'Please grant access in System Settings → Privacy & Security → Accessibility.',
+      permissionDenied: 'accessibility'
+    }
+  }
+
+  const launchMs = Number(process.env.OPENUI_WA_LAUNCH_MS ?? 3000)
+  const searchMs = Number(process.env.OPENUI_WA_SEARCH_MS ?? 900)
+  const filterMs = Number(process.env.OPENUI_WA_FILTER_MS ?? 2000)
+
+  try {
+    // 1) Launch or focus WhatsApp. Reuse the Start-menu resolver on Windows so the
+    //    Store/UWP app is found the same way `open_app WhatsApp` finds it.
+    if (IS_MAC) {
+      await runAppleScript('tell application "WhatsApp" to activate')
+    } else if (IS_WIN) {
+      await runPowerShellScript(WIN_OPEN_APP_SCRIPT, { OPENUI_APP: 'WhatsApp' })
+    } else {
+      await execFileAsync('xdg-open', ['whatsapp://'])
+    }
+
+    const nut = loadNut()
+    // Give the window time to appear + gain focus (cold start is slow; a warm app
+    // just refocuses). Keyboard input goes to whatever is focused, so this wait is
+    // what makes the difference between typing into WhatsApp vs. into thin air.
+    await delay(launchMs)
+
+    // 2) Focus the chat-search box. Escape first clears any open menu/compose
+    //    state so Ctrl+F reliably lands on the top-level "Search" field.
+    await tapKeys(nut, nut.Key.Escape)
+    await delay(200)
+    await tapKeys(nut, nut.Key.LeftControl, nut.Key.F)
+    await delay(searchMs)
+
+    // 3) Clear any residual query, then type the contact name.
+    await tapKeys(nut, nut.Key.LeftControl, nut.Key.A)
+    await tapKeys(nut, nut.Key.Delete)
+    await nut.keyboard.type(contact)
+    await delay(filterMs) // let the results list filter down
+
+    // 4) Open the top match: select the first result, then Enter.
+    await tapKeys(nut, nut.Key.Down)
+    await delay(200)
+    await tapKeys(nut, nut.Key.Enter)
+
+    return {
+      ok: true,
+      output:
+        `Opened WhatsApp and searched for "${contact}", then opened the top matching chat. ` +
+        `If the wrong chat opened or none did, tell me the contact's exact name as it appears in WhatsApp.`
+    }
+  } catch (err) {
+    const stderr = (err as { stderr?: string }).stderr?.trim()
+    const detail = stderr || (err instanceof Error ? err.message : String(err))
+    return { ok: false, error: `open_whatsapp_chat failed for "${contact}": ${detail}` }
   }
 }
 
 /**
  * Search the filesystem and return matching file paths.
- * macOS:   Spotlight mdfind (no shell — query passed as argv element)
+ * macOS:   Spotlight mdfind, scoped to $HOME, filename match only (no shell —
+ *          query passed as argv elements)
  * Windows: PowerShell Get-ChildItem (home dir, depth 5, filter *query*)
  * Linux:   find (home dir, maxdepth 6, case-insensitive name match)
  */
@@ -422,7 +998,13 @@ async function search_files(args: Record<string, unknown>): Promise<ToolResult> 
     if (IS_MAC) {
       // execFile passes `query` as a single argv element to mdfind — no shell
       // is spawned, so shell metacharacters in the query are inert.
-      const { stdout } = await execFileAsync('mdfind', [query], { maxBuffer: 1024 * 1024 })
+      // Scoped to $HOME (parity with the Windows/Linux branches below) and
+    // matched against the filename only (-name), not Spotlight's default
+    // full-content+metadata search — narrower scope AND narrower semantics,
+    // both intentional.
+    const { stdout } = await execFileAsync('mdfind', ['-onlyin', homedir(), '-name', query], {
+      maxBuffer: 1024 * 1024
+    })
       rawOutput = stdout
     } else if (IS_WIN) {
       // The query is passed out-of-band via the environment and referenced as a
@@ -575,15 +1157,17 @@ try {
   $lines = @()
   foreach ($item in $f) { $lines += "$($item.Subject) @ $($item.Start)" }
   if ($lines.Count -eq 0) { 'No events scheduled today.' } else { $lines -join [char]10 }
-} catch { 'Calendar not available (Microsoft Outlook required): ' + $_.Exception.Message }
+} catch { Write-Error ('Calendar not available (Microsoft Outlook required): ' + $_.Exception.Message); exit 1 }
 `
       try {
         const output = await runPowerShellScript(script)
         return { ok: true, output: output || 'No events scheduled today.' }
       } catch (err) {
+        const stderr = (err as { stderr?: string }).stderr?.trim()
+        const detail = stderr || (err instanceof Error ? err.message : String(err))
         return {
           ok: false,
-          error: `Tool execution failed: ${err instanceof Error ? err.message : String(err)}`
+          error: `control_calendar "list" failed: ${detail}`
         }
       }
     }
@@ -614,7 +1198,7 @@ try {
   if ($env:OPENUI_CAL_END) { $appt.End = [DateTime]::Parse($env:OPENUI_CAL_END) } else { $appt.End = $appt.Start.AddHours(1) }
   $appt.Save()
   'Created calendar event: ' + $appt.Subject
-} catch { 'Calendar not available (Microsoft Outlook required): ' + $_.Exception.Message }
+} catch { Write-Error ('Calendar not available (Microsoft Outlook required): ' + $_.Exception.Message); exit 1 }
 `
       try {
         const output = await runPowerShellScript(script, {
@@ -625,9 +1209,11 @@ try {
         })
         return { ok: true, output: output || `Created event "${title}".` }
       } catch (err) {
+        const stderr = (err as { stderr?: string }).stderr?.trim()
+        const detail = stderr || (err instanceof Error ? err.message : String(err))
         return {
           ok: false,
-          error: `Tool execution failed: ${err instanceof Error ? err.message : String(err)}`
+          error: `control_calendar "create" failed: ${detail}`
         }
       }
     }
@@ -745,6 +1331,40 @@ function notifyOcrFallback(): void {
   }
 }
 
+/** A captured frame of the primary display, ready for a vision model. */
+interface ScreenCapture {
+  pngBuffer: Buffer
+  base64Image: string
+  /** Actual thumbnail dimensions (Electron preserves aspect ratio, so these
+   *  rarely equal the requested 1920×1080 box). */
+  width: number
+  height: number
+}
+
+/**
+ * Capture the primary display as a PNG thumbnail. Shared by read_screen and the
+ * computer_use loop. Throws on failure (no sources / capture error) so each
+ * caller can wrap it in whatever error shape it needs.
+ */
+async function captureScreenPng(): Promise<ScreenCapture> {
+  const sources = await desktopCapturer.getSources({
+    types: ['screen'],
+    thumbnailSize: { width: 1920, height: 1080 }
+  })
+  if (!sources.length) {
+    throw new Error(
+      'No screen sources found. ' +
+        (IS_MAC
+          ? 'Ensure Screen Recording permission is granted in System Settings → Privacy & Security → Screen Recording.'
+          : 'Ensure the app has permission to capture the screen.')
+    )
+  }
+  const thumbnail = sources[0].thumbnail
+  const { width, height } = thumbnail.getSize()
+  const pngBuffer = thumbnail.toPNG()
+  return { pngBuffer, base64Image: pngBuffer.toString('base64'), width, height }
+}
+
 async function read_screen(
   _args: Record<string, unknown>,
   context?: ExecutorContext
@@ -752,31 +1372,36 @@ async function read_screen(
   const tier = context?.tier ?? 'free'
 
   // ── 1. Capture the primary display ────────────────────────────────────────
-  let pngBuffer: Buffer
-  try {
-    const sources = await desktopCapturer.getSources({
-      types: ['screen'],
-      thumbnailSize: { width: 1920, height: 1080 }
-    })
-    if (!sources.length) {
-      return {
-        ok: false,
-        error:
-          'No screen sources found. ' +
-          (IS_MAC
-            ? 'Ensure Screen Recording permission is granted in System Settings → Privacy & Security → Screen Recording.'
-            : 'Ensure the app has permission to capture the screen.')
-      }
-    }
-    pngBuffer = sources[0].thumbnail.toPNG()
-  } catch (err) {
+  // Checked proactively (not just on an empty sources[] result) because on
+  // modern macOS a denied Screen Recording permission often still returns a
+  // source object — just with a blank thumbnail — so the empty-array check
+  // below cannot be relied on alone to catch the denied case.
+  if (IS_MAC && checkScreenRecording() !== 'granted') {
     return {
       ok: false,
-      error: `Screen capture failed: ${err instanceof Error ? err.message : String(err)}`
+      error:
+        'Tool execution failed: Missing OS permissions — Screen Recording access is required. ' +
+        'Please grant access in System Settings → Privacy & Security → Screen Recording.',
+      permissionDenied: 'screenRecording'
     }
   }
-
-  const base64Image = pngBuffer.toString('base64')
+  let pngBuffer: Buffer
+  let base64Image: string
+  try {
+    ;({ pngBuffer, base64Image } = await captureScreenPng())
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    // Preserve the two distinct messages: a missing-source hint vs. a capture
+    // error. On macOS a missing source almost always means denied Screen
+    // Recording, so carry the permissionDenied signal so the renderer can guide
+    // the user to System Settings.
+    const noSources = msg.startsWith('No screen sources')
+    return {
+      ok: false,
+      error: noSources ? msg : `Screen capture failed: ${msg}`,
+      ...(IS_MAC && noSources ? { permissionDenied: 'screenRecording' as const } : {})
+    }
+  }
 
   // ── 2. Analyse: Vision API (pro/enterprise) or local OCR (free) ───────────
   if (tier === 'pro' || tier === 'enterprise') {
@@ -801,7 +1426,10 @@ async function read_screen(
         ]
       })
       trackEvent(Events.SCREEN_CAPTURED, { tier, method: 'cloud_vision' })
-      return { ok: true, output: description }
+      // On-screen text is untrusted data (a web page or document on screen can
+      // carry injection phrasing) — defang protocol markers before the model
+      // reads it.
+      return { ok: true, output: defangPageText(description) }
     } catch (err) {
       return {
         ok: false,
@@ -826,7 +1454,7 @@ async function read_screen(
     return {
       ok: true,
       output:
-        `Screen OCR text:\n${data.text}\n\n` +
+        `Screen OCR text:\n${defangPageText(data.text)}\n\n` +
         `Note: For precise UI-element coordinates, screen analysis with Claude Vision ` +
         `requires a Pro subscription. Consider recommending an upgrade if OCR is insufficient.`
     }
@@ -838,23 +1466,386 @@ async function read_screen(
   }
 }
 
+// ── Generalised screenshot → reason → act loop (computer_use) ─────────────────
+
+/** Hard cap on loop iterations — a runaway or stuck model can never spin forever. */
+const COMPUTER_USE_MAX_ITERATIONS = 12
+/** Pause after each action so the UI can repaint before the next screenshot. */
+const COMPUTER_USE_SETTLE_MS = 600
+/** Bound on the natural-language goal accepted from the model. */
+const MAX_GOAL_LEN = 1024
+
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
+
 /**
- * Navigate the shared headful Chromium browser to a URL.
- * Launches Chromium on the first call.  Only http/https URLs are accepted.
+ * Ask the vision model for the single next action given the current screenshot,
+ * the goal, and a compact history of what has already been tried. Routed through
+ * chat-proxy (same path as read_screen's cloud vision) so OUR Anthropic key stays
+ * server-side and the model is clamped to the caller's verified entitlement.
+ * Returns a validated VisionAction; throws on transport/parse failure.
  */
-async function browser_navigate(args: Record<string, unknown>): Promise<ToolResult> {
+async function askVisionAction(opts: {
+  capture: ScreenCapture
+  goal: string
+  priorActions: string[]
+  tier: Tier
+}): Promise<VisionAction> {
+  const { capture, goal, priorActions, tier } = opts
+  const historyText = priorActions.length
+    ? `Actions already taken:\n${priorActions.join('\n')}`
+    : 'No actions taken yet.'
+
+  const reply = await callChatProxyText({
+    system: buildVisionSystemPrompt(capture.width, capture.height),
+    modelKey: tier === 'enterprise' ? 'enterprise-default' : 'pro-default',
+    messages: [
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'image',
+            source: { type: 'base64', media_type: 'image/png', data: capture.base64Image }
+          },
+          {
+            type: 'text',
+            text: `GOAL: ${goal}\n\n${historyText}\n\nReturn the next single action as one JSON object.`
+          }
+        ]
+      }
+    ]
+  })
+
+  const parsed = parseVisionAction(reply)
+  if (!parsed.ok) throw new Error(parsed.error)
+  return parsed.action
+}
+
+/**
+ * Drive a screenshot → reason → act loop until a goal is met, failed, or the
+ * iteration cap is hit. This is the GENERALISED FALLBACK for any app or website
+ * that has no dedicated tool: it captures the screen, sends the frame to a vision
+ * model, and executes the returned click/type via the same move_mouse/left_click/
+ * type_text primitives, then repeats with a fresh screenshot.
+ *
+ * SECURITY: this synthesises mouse/keyboard input from model output that is itself
+ * steered by whatever is on screen (a prompt-injection surface). It is therefore
+ * (a) a STATE_CHANGING tool, so the agent loop takes a single explicit approval
+ * before the loop starts; (b) hard-capped in iterations; and (c) still subject to
+ * the Accessibility permission gate on every synthesised action. Every coordinate
+ * is validated + scaled from screenshot space to real-display pixels before use.
+ */
+async function computer_use(
+  args: Record<string, unknown>,
+  context?: ExecutorContext
+): Promise<ToolResult> {
+  const goal = typeof args.goal === 'string' ? args.goal.trim() : ''
+  if (!goal) return { ok: false, error: 'computer_use requires a string "goal".' }
+  if (goal.length > MAX_GOAL_LEN) return { ok: false, error: 'computer_use "goal" is too long.' }
+  const tier = context?.tier ?? 'free'
+
+  // The loop drives the mouse/keyboard, which needs Accessibility. Fail fast with
+  // the same permission signal the primitives use, so the renderer can guide the
+  // user to System Settings before we burn a vision call.
+  if (!checkAccessibility()) {
+    return {
+      ok: false,
+      error:
+        'Tool execution failed: Missing OS permissions — Accessibility access is required to control the mouse and keyboard. ' +
+        'Please grant access in System Settings → Privacy & Security → Accessibility.',
+      permissionDenied: 'accessibility'
+    }
+  }
+
+  // The loop screenshots the display every iteration, so it also needs Screen
+  // Recording on macOS. Check it proactively (a denied permission can still
+  // return a source with a blank thumbnail) before spending a vision call.
+  if (IS_MAC && checkScreenRecording() !== 'granted') {
+    return {
+      ok: false,
+      error:
+        'Tool execution failed: Missing OS permissions — Screen Recording access is required. ' +
+        'Please grant access in System Settings → Privacy & Security → Screen Recording.',
+      permissionDenied: 'screenRecording'
+    }
+  }
+
+  // Real display size, used to scale image-space coordinates to true pixels. If
+  // nut-js can't report it we fall back to a 1:1 mapping inside scaleToScreen().
+  let screenW = 0
+  let screenH = 0
+  try {
+    const nut = loadNut()
+    screenW = await nut.screen.width()
+    screenH = await nut.screen.height()
+  } catch {
+    /* dimensions unknown — scaleToScreen() degrades to 1:1 */
+  }
+
+  const priorActions: string[] = []
+
+  for (let i = 0; i < COMPUTER_USE_MAX_ITERATIONS; i++) {
+    let capture: ScreenCapture
+    try {
+      capture = await captureScreenPng()
+    } catch (err) {
+      return { ok: false, error: `computer_use: screen capture failed — ${errText(err)}` }
+    }
+
+    let action: VisionAction
+    try {
+      action = await askVisionAction({ capture, goal, priorActions, tier })
+    } catch (err) {
+      return { ok: false, error: `computer_use: vision step failed — ${errText(err)}` }
+    }
+
+    if (action.action === 'done') {
+      const trail = priorActions.length ? `\nSteps:\n${priorActions.join('\n')}` : ''
+      return {
+        ok: true,
+        output: `Completed "${goal}" in ${i + 1} step(s). ${action.summary ?? ''}`.trim() + trail
+      }
+    }
+    if (action.action === 'fail') {
+      return {
+        ok: false,
+        error: `computer_use could not complete "${goal}": ${action.reason ?? 'the model reported it was stuck'}.`
+      }
+    }
+
+    if (action.action === 'click') {
+      const { x, y } = scaleToScreen(
+        action.x ?? 0,
+        action.y ?? 0,
+        capture.width,
+        capture.height,
+        screenW,
+        screenH
+      )
+      const moved = await move_mouse({ x, y })
+      if (!moved.ok) return moved
+      const clicked = await left_click({})
+      if (!clicked.ok) return clicked
+      priorActions.push(
+        `${i + 1}. click (${action.x},${action.y})${action.why ? ` — ${action.why}` : ''}`
+      )
+    } else {
+      // action.action === 'type'
+      const typed = await type_text({ text: action.text ?? '' })
+      if (!typed.ok) return typed
+      priorActions.push(
+        `${i + 1}. type "${(action.text ?? '').slice(0, 60)}"${action.why ? ` — ${action.why}` : ''}`
+      )
+    }
+
+    await sleep(COMPUTER_USE_SETTLE_MS)
+  }
+
+  return {
+    ok: false,
+    error:
+      `computer_use reached the ${COMPUTER_USE_MAX_ITERATIONS}-step limit without completing "${goal}". ` +
+      `Steps taken:\n${priorActions.join('\n')}`
+  }
+}
+
+/** Read a PNG buffer's pixel dimensions from its IHDR chunk (bytes 16–23). */
+function pngDimensions(buf: Buffer): { width: number; height: number } {
+  if (buf.length < 24) return { width: 0, height: 0 }
+  return { width: buf.readUInt32BE(16), height: buf.readUInt32BE(20) }
+}
+
+/**
+ * Screenshot → reason → act loop INSIDE the connected automation browser — the
+ * messy-DOM fallback for pages where CSS selectors are unreliable (canvas UIs,
+ * heavy SPAs, cookie-wall overlays). Mirrors computer_use but stays scoped to
+ * the Playwright page: it captures page.screenshot() (never the whole desktop),
+ * and clicks/types through page.mouse/page.keyboard (never OS-level input), so
+ * it cannot touch anything outside the browser window.
+ *
+ * SAFETY: (a) STATE_CHANGING — one approval starts the loop; (b) every
+ * iteration re-checks that the CURRENT page origin is user-granted, so a click
+ * that lands on a new site stops for consent; (c) sensitive actions (pay,
+ * password, delete account, send) stop for one human click each — an approval
+ * authorises exactly ONE sensitive action, then the next one stops again.
+ */
+async function browser_vision_act(
+  args: Record<string, unknown>,
+  context?: ExecutorContext
+): Promise<ToolResult> {
+  const goal = typeof args.goal === 'string' ? args.goal.trim() : ''
+  if (!goal) return { ok: false, error: 'browser_vision_act requires a string "goal".' }
+  if (goal.length > MAX_GOAL_LEN) {
+    return { ok: false, error: 'browser_vision_act "goal" is too long.' }
+  }
+  const tier = context?.tier ?? 'free'
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const page: any = getConnectedPage()
+  if (!page) return NOT_CONNECTED
+
+  // One user approval buys exactly one sensitive action inside this loop.
+  let sensitiveBudget = context?.sensitiveApproved ? 1 : 0
+
+  const priorActions: string[] = []
+
+  for (let i = 0; i < COMPUTER_USE_MAX_ITERATIONS; i++) {
+    // The loop can wander (a click may land on a different site): re-verify the
+    // current origin is granted before acting on anything drawn from it.
+    const origin = originOf(String(page.url() ?? ''))
+    if (origin && !isOriginGranted(origin)) {
+      return {
+        ok: false,
+        error:
+          `browser_vision_act stopped: the page moved to ${origin}, which the user has not ` +
+          `granted. Ask them to approve access, then call the tool again.`,
+        needsConfirmation: {
+          kind: 'site-consent',
+          origin,
+          label: `Allow OpenUI to continue on ${origin}? (one-time grant for this site)`
+        }
+      }
+    }
+
+    let capture: ScreenCapture
+    try {
+      const pngBuffer: Buffer = await page.screenshot({ type: 'png', timeout: 15_000 })
+      const { width, height } = pngDimensions(pngBuffer)
+      capture = { pngBuffer, base64Image: pngBuffer.toString('base64'), width, height }
+    } catch (err) {
+      return { ok: false, error: `browser_vision_act: page screenshot failed — ${errText(err)}` }
+    }
+
+    let action: VisionAction
+    try {
+      action = await askVisionAction({ capture, goal, priorActions, tier })
+    } catch (err) {
+      return { ok: false, error: `browser_vision_act: vision step failed — ${errText(err)}` }
+    }
+
+    if (action.action === 'done') {
+      const trail = priorActions.length ? `\nSteps:\n${priorActions.join('\n')}` : ''
+      return {
+        ok: true,
+        output: `Completed "${goal}" in ${i + 1} step(s). ${action.summary ?? ''}`.trim() + trail
+      }
+    }
+    if (action.action === 'fail') {
+      return {
+        ok: false,
+        error: `browser_vision_act could not complete "${goal}": ${action.reason ?? 'the model reported it was stuck'}.`
+      }
+    }
+
+    // Sensitive-action gate on what the model SAYS it is about to do. The
+    // model's own rationale is the best label available in a pixel loop.
+    const intent = `${action.why ?? ''} ${action.action === 'type' ? (action.text ?? '') : ''}`
+    if (SENSITIVE_ACTION_RE.test(intent)) {
+      if (sensitiveBudget > 0) {
+        sensitiveBudget--
+      } else {
+        const desc = (action.why ?? intent).trim().slice(0, 120)
+        return {
+          ok: false,
+          error:
+            `browser_vision_act paused before a sensitive step: ${desc}. Ask the user to ` +
+            `confirm; a re-run after approval performs ONE such step. Progress so far:\n${priorActions.join('\n') || '(none)'}`,
+          needsConfirmation: {
+            kind: 'sensitive-action',
+            label: `Confirm sensitive step on ${origin ?? 'the current page'}: ${desc}?`
+          }
+        }
+      }
+    }
+
+    try {
+      if (action.action === 'click') {
+        // Screenshots come back in device pixels; the mouse works in CSS pixels.
+        // Scale image-space coordinates to the viewport before clicking.
+        const vp = page.viewportSize() ?? { width: capture.width, height: capture.height }
+        const { x, y } = scaleToScreen(
+          action.x ?? 0,
+          action.y ?? 0,
+          capture.width,
+          capture.height,
+          vp.width,
+          vp.height
+        )
+        await page.mouse.click(x, y)
+        priorActions.push(
+          `${i + 1}. click (${action.x},${action.y})${action.why ? ` — ${action.why}` : ''}`
+        )
+      } else {
+        // action.action === 'type'
+        await page.keyboard.type(action.text ?? '')
+        priorActions.push(
+          `${i + 1}. type "${(action.text ?? '').slice(0, 60)}"${action.why ? ` — ${action.why}` : ''}`
+        )
+      }
+    } catch (err) {
+      return { ok: false, error: `browser_vision_act: action failed — ${errText(err)}` }
+    }
+
+    await sleep(COMPUTER_USE_SETTLE_MS)
+  }
+
+  return {
+    ok: false,
+    error:
+      `browser_vision_act reached the ${COMPUTER_USE_MAX_ITERATIONS}-step limit without completing "${goal}". ` +
+      `Steps taken:\n${priorActions.join('\n')}`
+  }
+}
+
+/**
+ * Navigate the connected automation browser to a URL. Requires connect_browser
+ * first, and one-time user consent per site. Only http/https URLs are accepted.
+ */
+async function browser_navigate(
+  args: Record<string, unknown>,
+  context?: ExecutorContext
+): Promise<ToolResult> {
   const url = typeof args.url === 'string' ? args.url.trim() : ''
   if (!url) return { ok: false, error: 'browser_navigate requires a string "url".' }
   if (url.length > MAX_URL_LEN) return { ok: false, error: 'browser_navigate "url" is too long.' }
   if (!ALLOWED_URL_SCHEME.test(url)) {
     return { ok: false, error: 'browser_navigate only accepts http:// and https:// URLs.' }
   }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const page: any = getConnectedPage()
+  if (!page) return NOT_CONNECTED
+
+  // Per-site consent: the FIRST visit to any origin needs one human click,
+  // persisted per-origin — connecting the browser is never a blanket grant.
+  // sensitiveApproved covers the re-run right after the user just approved
+  // this exact navigation (the grant is also persisted, so this is
+  // belt-and-braces against a slow settings write).
+  const origin = originOf(url)
+  if (!origin) return { ok: false, error: `browser_navigate could not parse the URL origin: ${url}` }
+  if (!isOriginGranted(origin) && !context?.sensitiveApproved) {
+    return {
+      ok: false,
+      error:
+        `Navigation blocked: the user has not granted OpenUI access to ${origin}. ` +
+        `Ask them to approve the consent prompt; do not retry until they do.`,
+      needsConfirmation: {
+        kind: 'site-consent',
+        origin,
+        label: `Allow OpenUI to open and interact with ${origin}? (one-time grant for this site)`
+      }
+    }
+  }
+
   try {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const page: any = await getOrCreatePage()
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30_000 })
     const title: string = await page.title()
-    return { ok: true, output: `Navigated to ${url}. Page title: "${title}".` }
+    // A redirect can land on a different origin than the one the user granted —
+    // surface that honestly so the model (and transcript) records where we are.
+    const finalOrigin = originOf(String(page.url() ?? '')) ?? origin
+    const redirectNote =
+      finalOrigin !== origin && !isOriginGranted(finalOrigin)
+        ? ` NOTE: the page redirected to ${finalOrigin}, which the user has NOT separately granted — get consent via browser_navigate before interacting further.`
+        : ''
+    return { ok: true, output: `Navigated to ${url}. Page title: "${title}".${redirectNote}` }
   } catch (err) {
     return {
       ok: false,
@@ -867,16 +1858,47 @@ async function browser_navigate(args: Record<string, unknown>): Promise<ToolResu
  * Click an element on the current browser page using a CSS selector.
  * browser_navigate must be called first.
  */
-async function browser_click(args: Record<string, unknown>): Promise<ToolResult> {
+async function browser_click(
+  args: Record<string, unknown>,
+  context?: ExecutorContext
+): Promise<ToolResult> {
   const selector = typeof args.selector === 'string' ? args.selector.trim() : ''
   if (!selector) return { ok: false, error: 'browser_click requires a string "selector".' }
   if (selector.length > MAX_SELECTOR_LEN) {
     return { ok: false, error: 'browser_click "selector" is too long.' }
   }
-  if (!_pwPage) {
-    return { ok: false, error: 'No browser page is open. Call browser_navigate first.' }
-  }
+  if (!_pwPage) return NOT_CONNECTED
   try {
+    // Sensitive-action gate: read what the target element SAYS before clicking
+    // it. A "Pay now" / "Delete account" / "Send" click always pauses for one
+    // human click — no autonomy mode bypasses this (sensitiveApproved is set
+    // only for the immediate re-run after the user approved THIS action).
+    if (!context?.sensitiveApproved) {
+      const el = _pwPage.locator(selector).first()
+      const parts = await Promise.all([
+        el.innerText({ timeout: 3_000 }).catch(() => ''),
+        el.getAttribute('aria-label').catch(() => ''),
+        el.getAttribute('value').catch(() => ''),
+        el.getAttribute('title').catch(() => '')
+      ])
+      const targetLabel = parts.filter(Boolean).join(' ').slice(0, 300)
+      const haystack = `${targetLabel} ${selector}`
+      if (SENSITIVE_ACTION_RE.test(haystack)) {
+        const origin = originOf(String(_pwPage.url() ?? '')) ?? 'the current page'
+        const shown = targetLabel.trim().slice(0, 80) || selector.slice(0, 80)
+        return {
+          ok: false,
+          error:
+            `Click blocked pending user confirmation: "${shown}" on ${origin} looks like a ` +
+            `sensitive action (payment, credentials, account change, or sending a message). ` +
+            `Ask the user to confirm; do not retry until they do.`,
+          needsConfirmation: {
+            kind: 'sensitive-action',
+            label: `Confirm sensitive action: click "${shown}" on ${origin}?`
+          }
+        }
+      }
+    }
     await _pwPage.click(selector, { timeout: 10_000 })
     return { ok: true, output: `Clicked element matching "${selector}".` }
   } catch (err) {
@@ -892,13 +1914,15 @@ async function browser_click(args: Record<string, unknown>): Promise<ToolResult>
  * Returns up to 12 000 characters so the model can reason about the content.
  */
 async function browser_extract_text(_args: Record<string, unknown>): Promise<ToolResult> {
-  if (!_pwPage) {
-    return { ok: false, error: 'No browser page is open. Call browser_navigate first.' }
-  }
+  if (!_pwPage) return NOT_CONNECTED
   try {
     const raw: unknown = await _pwPage.evaluate(() => document.body?.innerText ?? '')
     const text = (typeof raw === 'string' ? raw : String(raw)).slice(0, 12_000)
-    return { ok: true, output: text || '(page has no visible text)' }
+    if (!text) return { ok: true, output: '(page has no visible text)' }
+    // Page text is UNTRUSTED DATA: defang protocol markers / injection phrasing
+    // and wrap it in provenance markers before it reaches the model.
+    const origin = originOf(String(_pwPage.url() ?? '')) ?? 'unknown origin'
+    return { ok: true, output: sanitizePageText(text, origin) }
   } catch (err) {
     return {
       ok: false,
@@ -911,17 +1935,41 @@ async function browser_extract_text(_args: Record<string, unknown>): Promise<Too
  * Fill a text input or textarea on the current browser page.
  * Clears any existing value before typing.
  */
-async function browser_fill_input(args: Record<string, unknown>): Promise<ToolResult> {
+async function browser_fill_input(
+  args: Record<string, unknown>,
+  context?: ExecutorContext
+): Promise<ToolResult> {
   const selector = typeof args.selector === 'string' ? args.selector.trim() : ''
   const text = typeof args.text === 'string' ? args.text : ''
   if (!selector) return { ok: false, error: 'browser_fill_input requires a string "selector".' }
   if (selector.length > MAX_SELECTOR_LEN) {
     return { ok: false, error: 'browser_fill_input "selector" is too long.' }
   }
-  if (!_pwPage) {
-    return { ok: false, error: 'No browser page is open. Call browser_navigate first.' }
-  }
+  if (!_pwPage) return NOT_CONNECTED
   try {
+    // Typing into a password field is credentials handling — always one human
+    // click first, regardless of autonomy mode.
+    if (!context?.sensitiveApproved) {
+      const inputType: string =
+        (await _pwPage
+          .locator(selector)
+          .first()
+          .getAttribute('type')
+          .catch(() => '')) ?? ''
+      if (inputType.toLowerCase() === 'password') {
+        const origin = originOf(String(_pwPage.url() ?? '')) ?? 'the current page'
+        return {
+          ok: false,
+          error:
+            `Fill blocked pending user confirmation: "${selector}" on ${origin} is a password ` +
+            `field. Ask the user to confirm; do not retry until they do.`,
+          needsConfirmation: {
+            kind: 'sensitive-action',
+            label: `Confirm: let OpenUI type into a password field on ${origin}?`
+          }
+        }
+      }
+    }
     await _pwPage.fill(selector, text, { timeout: 10_000 })
     return { ok: true, output: `Filled "${selector}" with ${text.length} character(s).` }
   } catch (err) {
@@ -1176,16 +2224,58 @@ async function write_clipboard(args: Record<string, unknown>): Promise<ToolResul
 export const toolSchemas: ToolSchema[] = [
   ...githubToolSchemas,
   ...figmaToolSchemas,
+  ...designToolSchemas,
   {
     name: 'open_app',
     description:
       'Launch or focus an application by name. ' +
       'On macOS, use the display name (e.g. "Safari", "Calendar"). ' +
-      'On Windows, use the executable name (e.g. "notepad", "msedge", "code").',
+      'On Windows, use the name as it appears in the Start menu — friendly names ' +
+      'work for Store and desktop apps alike (e.g. "WhatsApp", "Spotify", "Notepad", ' +
+      '"Microsoft Edge"), as do bare executable names on PATH ("notepad", "msedge", "code") ' +
+      'and full paths to an .exe.',
     parameters: {
       type: 'object',
       properties: { appName: { type: 'string', description: 'The application name to open.' } },
       required: ['appName']
+    }
+  },
+  {
+    name: 'open_whatsapp_chat',
+    description:
+      'Open a specific WhatsApp conversation by contact or group name. Use this ' +
+      'INSTEAD of open_app + read_screen/click whenever the user wants to open, ' +
+      'go to, or message a particular WhatsApp chat (e.g. "open my WhatsApp chat ' +
+      'with Ashu", "message Mom on WhatsApp"). It launches WhatsApp, searches for ' +
+      'the name, and opens the top matching chat via the keyboard — no screen ' +
+      'coordinates needed. Do NOT invent a "search_contact" tool; this is the one to use.',
+    parameters: {
+      type: 'object',
+      properties: {
+        contact: {
+          type: 'string',
+          description: 'The contact or group name of the chat to open, as it appears in WhatsApp.'
+        }
+      },
+      required: ['contact']
+    }
+  },
+  {
+    name: 'list_apps',
+    description:
+      'List the applications installed on this computer (Windows and macOS). Use this to ' +
+      'discover the exact name of an app before calling open_app when the user is ' +
+      'vague, or to answer "what apps can you open?". Optionally pass a "filter" ' +
+      'substring to narrow the list (e.g. filter "studio" to find "Visual Studio Code").',
+    parameters: {
+      type: 'object',
+      properties: {
+        filter: {
+          type: 'string',
+          description: 'Optional case-insensitive substring to filter app names by.'
+        }
+      },
+      required: []
     }
   },
   {
@@ -1260,10 +2350,48 @@ export const toolSchemas: ToolSchema[] = [
     parameters: { type: 'object', properties: {}, required: [] }
   },
   {
+    name: 'computer_use',
+    description:
+      'GENERALISED visual fallback: run a screenshot → decide → act loop to accomplish a goal in ANY app or website that has no dedicated tool. ' +
+      'It repeatedly captures the screen, asks a vision model for the next click/type, and executes it — you do NOT hand-drive read_screen/move_mouse/left_click for these. ' +
+      'Use this ONLY when no purpose-built tool fits: prefer open_app, browser_* , control_calendar, and the github/figma tools when they cover the task (they are faster and more reliable). ' +
+      'Requires a Pro or Enterprise subscription (uses cloud vision).',
+    parameters: {
+      type: 'object',
+      properties: {
+        goal: {
+          type: 'string',
+          description:
+            'A single concrete on-screen objective, e.g. "in the Settings window, turn on Dark Mode" or "compose a new note titled Groceries".'
+        }
+      },
+      required: ['goal']
+    }
+  },
+  {
+    name: 'connect_browser',
+    description:
+      'Attach OpenUI to its persistent automation browser (the user’s installed Edge/Chrome in a dedicated ' +
+      'profile where their logins persist between sessions). MUST be called once before any other browser_* tool. ' +
+      'The user approves the connection, and then separately approves EACH new website the first time you navigate ' +
+      'to it — connecting never grants blanket access.',
+    parameters: {
+      type: 'object',
+      properties: {
+        browser: {
+          type: 'string',
+          description: 'Which installed browser to prefer.',
+          enum: ['edge', 'chrome', 'auto']
+        }
+      },
+      required: []
+    }
+  },
+  {
     name: 'browser_navigate',
     description:
-      'Open a URL in the headful Chromium browser controlled by Playwright. ' +
-      'Accepts only http:// and https:// URLs. Launches the browser automatically on the first call. ' +
+      'Open a URL in the connected automation browser (call connect_browser first). ' +
+      'Accepts only http:// and https:// URLs. The FIRST visit to each website pauses for the user’s one-time consent. ' +
       'Prefer this over the visual navigation workflow (read_screen → move_mouse → left_click) ' +
       'for ALL web-based tasks: booking flights, scraping websites, filling web forms, reading prices, ' +
       'searching the web, or any task where the primary surface is a web page.',
@@ -1276,6 +2404,27 @@ export const toolSchemas: ToolSchema[] = [
         }
       },
       required: ['url']
+    }
+  },
+  {
+    name: 'browser_vision_act',
+    description:
+      'Visual fallback INSIDE the connected automation browser: runs a screenshot → decide → click/type loop on the ' +
+      'current page until a goal is met. Use it when CSS selectors are unreliable (canvas editors, messy SPAs, ' +
+      'cookie-wall overlays, complex upload dialogs) — try browser_click/browser_fill_input FIRST; they are faster. ' +
+      'Sensitive steps (payments, passwords, account changes, sending messages) always pause for the user’s confirmation. ' +
+      'Requires a Pro or Enterprise subscription (uses cloud vision).',
+    parameters: {
+      type: 'object',
+      properties: {
+        goal: {
+          type: 'string',
+          description:
+            'A single concrete on-page objective, e.g. "dismiss the cookie banner and open the pricing page" or ' +
+            '"upload main.tex via the project Upload dialog".'
+        }
+      },
+      required: ['goal']
     }
   },
   {
@@ -1480,16 +2629,21 @@ async function run_workflow(args: Record<string, unknown>): Promise<ToolResult> 
 
 const registry: Record<string, Executor> = {
   open_app,
+  open_whatsapp_chat,
+  list_apps,
   search_files,
   control_calendar,
   move_mouse,
   left_click,
   type_text,
   read_screen,
+  computer_use,
+  connect_browser,
   browser_navigate,
   browser_click,
   browser_extract_text,
   browser_fill_input,
+  browser_vision_act,
   search_local_files,
   run_workflow,
   list_directory,
@@ -1502,7 +2656,8 @@ const registry: Record<string, Executor> = {
   read_clipboard,
   write_clipboard,
   ...githubRegistry,
-  ...figmaRegistry
+  ...figmaRegistry,
+  ...designRegistry
 }
 
 /**
@@ -1549,6 +2704,21 @@ export async function executeTool(
   args: Record<string, unknown>,
   context: ExecutorContext = { tier: 'free' }
 ): Promise<ToolResult | PendingApprovalResult> {
+  // Tier gate FIRST: if the tool is out of the caller's tier, deny it up front
+  // rather than prompting the user to approve an action they cannot actually run
+  // (e.g. a free user should be told computer_use needs Pro, not asked to Allow
+  // it and only then be refused). This runs before the HITL gate below.
+  const requiredTier = TIER_TOOL_REQUIREMENTS[name]
+  if (requiredTier && TIER_ORDER.indexOf(context.tier) < TIER_ORDER.indexOf(requiredTier)) {
+    return {
+      ok: false,
+      error:
+        `"${name}" requires a ${requiredTier} subscription or higher ` +
+        `(current tier: ${context.tier}). ` +
+        `Please let the user know they need to upgrade to use this feature.`
+    }
+  }
+
   // Gate: require explicit user approval for any state-changing tool.
   if (STATE_CHANGING_TOOLS.has(name) && !context.bypassHitl) {
     return { status: 'pending_approval', tool: name, args }
@@ -1557,20 +2727,6 @@ export async function executeTool(
   const schema = toolSchemas.find((s) => s.name === name)
   const fn = registry[name]
   if (!schema || !fn) return { ok: false, error: `Unknown tool "${name}".` }
-
-  // Check explicit tier gate for this tool name.
-  const requiredTier = TIER_TOOL_REQUIREMENTS[name]
-  if (requiredTier) {
-    if (TIER_ORDER.indexOf(context.tier) < TIER_ORDER.indexOf(requiredTier)) {
-      return {
-        ok: false,
-        error:
-          `"${name}" requires a ${requiredTier} subscription or higher ` +
-          `(current tier: ${context.tier}). ` +
-          `Please let the user know they need to upgrade to use this feature.`
-      }
-    }
-  }
 
   // Reject anything that is not a plain object before per-field validation.
   if (typeof args !== 'object' || args === null || Array.isArray(args)) {
@@ -1615,6 +2771,10 @@ export function describeToolCall(name: string, args: Record<string, unknown>): s
   switch (name) {
     case 'open_app':
       return `Open ${String(args.appName ?? args.name ?? 'app')}`
+    case 'open_whatsapp_chat':
+      return `Open WhatsApp chat with ${String(args.contact ?? args.name ?? args.query ?? '')}`
+    case 'list_apps':
+      return args.filter ? `List installed apps matching "${String(args.filter)}"` : 'List installed apps'
     case 'search_files':
       return `Search files for "${String(args.query ?? '')}"`
     case 'control_calendar': {
@@ -1632,8 +2792,25 @@ export function describeToolCall(name: string, args: Record<string, unknown>): s
       return 'Type text'
     case 'read_screen':
       return 'Read screen'
+    case 'computer_use':
+      return `Take screen control to: ${String(args.goal ?? '')}`
+    case 'connect_browser':
+      return 'Connect to your browser (persistent OpenUI profile)'
+    case 'browser_vision_act':
+      return `Visually operate the browser to: ${String(args.goal ?? '')}`
     case 'browser_navigate':
       return `Navigate to ${String(args.url ?? '')}`
+    case 'push_files': {
+      const fileCount =
+        typeof args.files === 'object' && args.files !== null && !Array.isArray(args.files)
+          ? Object.keys(args.files as Record<string, unknown>).length
+          : 0
+      return `Push ${fileCount} file(s) to ${String(args.repo ?? '')}@${String(args.branch ?? 'openui/init')}`
+    }
+    case 'merge_pr':
+      return `Merge PR #${Number(args.pr_number)} in ${String(args.repo ?? '')}`
+    case 'design_preview':
+      return `Preview design "${String(args.name ?? '')}" in your browser`
     case 'browser_click':
       return `Click "${String(args.selector ?? '')}"`
     case 'browser_extract_text':
@@ -1646,6 +2823,14 @@ export function describeToolCall(name: string, args: Record<string, unknown>): s
       return `Get diff for PR #${String(args.pr_number ?? '')} in ${String(args.repo ?? '')}`
     case 'post_pr_comment':
       return `Post review on PR #${String(args.pr_number ?? '')} in ${String(args.repo ?? '')}`
+    case 'check_repo_exists':
+      return `Check if repo ${String(args.repo ?? '')} exists`
+    case 'create_repo':
+      return `Create GitHub repo "${String(args.name ?? '')}"${args.private ? ' (private)' : ''}`
+    case 'update_readme':
+      return `Update README in ${String(args.repo ?? '')}`
+    case 'open_pull_request':
+      return `Open pull request in ${String(args.repo ?? '')}`
     case 'get_figma_file':
       return `Get Figma file ${String(args.file_key ?? '')}`
     case 'export_figma_frames':
