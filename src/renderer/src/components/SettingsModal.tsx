@@ -38,6 +38,14 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
   // the GITHUB_TOKEN env var is absent (the normal case for end users).
   const [githubToken, setGithubToken] = useState('')
   const [githubSaved, setGithubSaved] = useState(false)
+  // Google Calendar — a dedicated OAuth "Desktop app" client (id/secret) the
+  // user supplies here; the main process runs the loopback OAuth flow on Connect
+  // and stores only the resulting refresh token.
+  const [gcalClientId, setGcalClientId] = useState('')
+  const [gcalClientSecret, setGcalClientSecret] = useState('')
+  const [gcalConnected, setGcalConnected] = useState(false)
+  const [gcalConnecting, setGcalConnecting] = useState(false)
+  const [gcalMessage, setGcalMessage] = useState('')
 
   useEffect(() => {
     let cancelled = false
@@ -75,6 +83,27 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
       .getSetting('github_token')
       .then((value) => {
         if (!cancelled && typeof value === 'string') setGithubToken(value)
+      })
+      .catch(() => {})
+
+    window.openui
+      .getSetting('google_oauth_client_id')
+      .then((value) => {
+        if (!cancelled && typeof value === 'string') setGcalClientId(value)
+      })
+      .catch(() => {})
+
+    window.openui
+      .getSetting('google_oauth_client_secret')
+      .then((value) => {
+        if (!cancelled && typeof value === 'string') setGcalClientSecret(value)
+      })
+      .catch(() => {})
+
+    window.openui
+      .googleCalendarStatus()
+      .then((s) => {
+        if (!cancelled) setGcalConnected(Boolean(s?.connected))
       })
       .catch(() => {})
 
@@ -120,6 +149,31 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
         window.setTimeout(() => setGithubSaved(false), 1500)
       })
       .catch(() => {})
+  }
+
+  const saveGcalClientId = (): void => {
+    void window.openui.setSetting('google_oauth_client_id', gcalClientId.trim()).catch(() => {})
+  }
+  const saveGcalClientSecret = (): void => {
+    void window.openui.setSetting('google_oauth_client_secret', gcalClientSecret.trim()).catch(() => {})
+  }
+
+  const connectGoogleCalendar = async (): Promise<void> => {
+    if (gcalConnecting) return
+    setGcalConnecting(true)
+    setGcalMessage('Waiting for Google sign-in in your browser…')
+    try {
+      // Persist the latest id/secret first so the main-process flow can read them.
+      await window.openui.setSetting('google_oauth_client_id', gcalClientId.trim())
+      await window.openui.setSetting('google_oauth_client_secret', gcalClientSecret.trim())
+      const result = await window.openui.connectGoogleCalendar()
+      setGcalConnected(result.ok)
+      setGcalMessage(result.ok ? 'Connected.' : result.error || 'Connection failed.')
+    } catch {
+      setGcalMessage('Connection failed.')
+    } finally {
+      setGcalConnecting(false)
+    }
   }
 
   const toggle = async (): Promise<void> => {
@@ -364,6 +418,94 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
               outline: 'none'
             }}
           />
+        </div>
+
+        {/* Integrations: Google Calendar (dedicated OAuth for invites + Meet links) */}
+        <div style={{ borderTop: '1px solid rgba(0,0,0,0.06)', paddingTop: 14, marginTop: 14 }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <div style={{ fontSize: 13.5, fontWeight: 600, color: '#1c1c1e' }}>Google Calendar</div>
+            <span
+              style={{
+                fontSize: 11,
+                color: gcalConnected ? '#34c759' : '#8e8e93',
+                fontWeight: 500
+              }}
+            >
+              {gcalConnected ? 'Connected' : 'Not connected'}
+            </span>
+          </div>
+          <div style={{ fontSize: 12, color: '#8e8e93', lineHeight: 1.5, marginTop: 3, marginBottom: 8 }}>
+            Lets OpenUI email calendar invites and attach Google Meet links. Create an OAuth
+            &quot;Desktop app&quot; client at console.cloud.google.com (enable the Google Calendar API),
+            paste its Client ID and Secret below, then click Connect. Stored locally on this device.
+          </div>
+          <input
+            type="password"
+            value={gcalClientId}
+            onChange={(e) => setGcalClientId(e.target.value)}
+            onBlur={saveGcalClientId}
+            placeholder="Client ID (…apps.googleusercontent.com)"
+            aria-label="Google OAuth client ID"
+            autoComplete="off"
+            spellCheck={false}
+            style={{
+              width: '100%',
+              boxSizing: 'border-box',
+              border: '1px solid rgba(0,0,0,0.12)',
+              borderRadius: 8,
+              padding: '8px 10px',
+              fontSize: 12.5,
+              fontFamily: 'inherit',
+              color: '#1c1c1e',
+              background: '#fff',
+              outline: 'none',
+              marginBottom: 6
+            }}
+          />
+          <input
+            type="password"
+            value={gcalClientSecret}
+            onChange={(e) => setGcalClientSecret(e.target.value)}
+            onBlur={saveGcalClientSecret}
+            placeholder="Client Secret"
+            aria-label="Google OAuth client secret"
+            autoComplete="off"
+            spellCheck={false}
+            style={{
+              width: '100%',
+              boxSizing: 'border-box',
+              border: '1px solid rgba(0,0,0,0.12)',
+              borderRadius: 8,
+              padding: '8px 10px',
+              fontSize: 12.5,
+              fontFamily: 'inherit',
+              color: '#1c1c1e',
+              background: '#fff',
+              outline: 'none'
+            }}
+          />
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 8 }}>
+            <button
+              type="button"
+              onClick={() => void connectGoogleCalendar()}
+              disabled={gcalConnecting || !gcalClientId.trim() || !gcalClientSecret.trim()}
+              style={{
+                fontSize: 12.5,
+                fontWeight: 500,
+                color: '#fff',
+                background: gcalConnecting ? '#8e8e93' : '#0a84ff',
+                border: 'none',
+                borderRadius: 8,
+                padding: '7px 14px',
+                cursor: gcalConnecting ? 'default' : 'pointer'
+              }}
+            >
+              {gcalConnecting ? 'Connecting…' : gcalConnected ? 'Reconnect' : 'Connect'}
+            </button>
+            {gcalMessage && (
+              <span style={{ fontSize: 11, color: '#8e8e93', lineHeight: 1.4 }}>{gcalMessage}</span>
+            )}
+          </div>
         </div>
 
         {/* App version & update check */}

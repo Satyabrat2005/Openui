@@ -394,6 +394,9 @@ export interface OpenUIApi {
   // App settings (key/value persisted in SQLite).
   getSetting: (key: string) => Promise<unknown>
   setSetting: (key: string, value: unknown) => Promise<void>
+  // Google Calendar (dedicated OAuth connect + status).
+  googleCalendarStatus: () => Promise<{ connected: boolean }>
+  connectGoogleCalendar: () => Promise<{ ok: boolean; output?: string; error?: string }>
   // Team / Shared Workflows.
   listWorkflows: () => Promise<Workflow[]>
   exportWorkflow: (workflow: Workflow) => Promise<WorkflowResult>

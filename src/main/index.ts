@@ -9,6 +9,7 @@ import { openSettingsPane, type PermissionTarget } from './permissions'
 import { registerStripeIPC, isPaymentFlowWebContents } from './stripe/checkout'
 import { registerWaitlistIPC } from './waitlist'
 import { closeBrowser } from './tools'
+import { connectGoogleCalendar, isGoogleCalendarConnected } from './googleCalendar'
 import { connectMcpServer, disconnectAll, type McpServerConfig } from './mcp-client'
 import { initDatabase, database } from './database'
 import { registerDeepLinkProtocol, setupDeepLinkHandlers } from './auth/deeplink'
@@ -518,6 +519,10 @@ app.whenReady().then(async () => {
     const { key, value } = (payload ?? {}) as { key?: unknown; value?: unknown }
     if (typeof key === 'string') database.settings.setSetting(key, value)
   })
+
+  // ── Google Calendar (dedicated OAuth, see googleCalendar.ts) ───────────────
+  ipcMain.handle('openui:google-calendar-status', () => ({ connected: isGoogleCalendarConnected() }))
+  ipcMain.handle('openui:connect-google-calendar', () => connectGoogleCalendar())
 
   // ── Local RAG knowledge base ──────────────────────────────────────────────
   // Index a local directory of .txt/.pdf files and store embeddings in the
