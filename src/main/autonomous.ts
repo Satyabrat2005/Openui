@@ -17,6 +17,8 @@ import type { BrowserWindow } from 'electron'
 import { callModel, parseToolCall, emit, StreamGate, type Message } from './agent'
 import { codingToolSchemas, executeCodingTool, describeCodingToolCall } from './codingTools'
 import { getNextTask, recordTaskOutcome, type TaskSource, type AgentTask } from './tasks'
+import { resetActiveProject } from './sandbox'
+import { disarmEditorAutoOpen } from './editor'
 import { detectProjectType, getProjectProfile, type ProjectProfile } from './projectProfiles'
 import { startRun, type RunLog } from './runLog'
 import {
@@ -196,6 +198,12 @@ export async function runAutonomousCoding(
   if (running) return
   running = true
   stopRequested = false
+
+  // Unattended work goes to the shared default workspace, never into the folder
+  // a previous interactive build named, and never pops an editor window over
+  // whatever the user is currently doing.
+  resetActiveProject()
+  disarmEditorAutoOpen()
 
   try {
     let worked = 0
