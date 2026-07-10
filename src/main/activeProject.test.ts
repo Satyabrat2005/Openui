@@ -11,7 +11,12 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { join } from 'node:path'
 
-const HOME = join('C:', 'Users', 'Jane Doe')
+// CI runs Linux, developers run Windows. getWorkspaceDir() resolve()s the
+// OPENUI_WORKSPACE override, so the fixture paths must be ABSOLUTE on whichever
+// platform the suite runs on — "C:\..." is merely a relative path on Linux, and
+// resolve() would silently prefix it with the runner's cwd.
+const FS_ROOT = process.platform === 'win32' ? 'C:\\' : '/'
+const HOME = join(FS_ROOT, 'Users', 'Jane Doe')
 
 vi.mock('electron', () => ({
   app: { getPath: (n: string) => (n === 'home' ? HOME : join(HOME, 'AppData', 'Roaming', 'openui')) }
@@ -73,8 +78,10 @@ describe('setActiveProject', () => {
 
 describe('OPENUI_WORKSPACE override', () => {
   it('still wins over the active project (tests and power users depend on it)', () => {
-    process.env.OPENUI_WORKSPACE = join('C:', 'tmp', 'ws')
+    const override = join(FS_ROOT, 'tmp', 'ws')
+    process.env.OPENUI_WORKSPACE = override
     setActiveProject('snake-game')
-    expect(getWorkspaceDir()).toBe(join('C:', 'tmp', 'ws'))
+    expect(getWorkspaceDir()).toBe(override)
+    expect(getWorkspaceDir()).not.toContain('OpenUI Projects')
   })
 })
