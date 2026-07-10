@@ -15,6 +15,7 @@ import {
   writeSandboxFile,
   readSandboxFile,
   listSandboxFiles,
+  getWorkspaceDir,
   runTests,
   runInstall,
   runScript,
@@ -22,6 +23,7 @@ import {
   runPythonScript,
   runCppProgram
 } from './sandbox'
+import { maybeOpenEditorOnFirstWrite } from './editor'
 import { snapshotBeforeWrite } from './snapshots'
 import type { ToolSchema, ToolResult } from './tools'
 
@@ -37,6 +39,10 @@ async function write_file(args: Record<string, unknown>): Promise<ToolResult> {
     // snapshot transaction (interactive writes).
     await snapshotBeforeWrite(path)
     const written = await writeSandboxFile(path, content)
+    // Bring the project up in an editor the first time a session writes, so the
+    // user watches the files land. Not awaited: launching a GUI must not sit in
+    // front of the write's result.
+    void maybeOpenEditorOnFirstWrite(getWorkspaceDir())
     return { ok: true, output: `Wrote ${Buffer.byteLength(content, 'utf8')} bytes to ${written}.` }
   } catch (err) {
     return { ok: false, error: `write_file failed: ${err instanceof Error ? err.message : String(err)}` }

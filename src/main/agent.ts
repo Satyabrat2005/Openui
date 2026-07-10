@@ -3,6 +3,9 @@ import { BrowserWindow, ipcMain } from 'electron'
 import { toolSchemas, executeTool, describeToolCall, DESTRUCTIVE_TOOLS, type ToolSchema, type ToolResult, type PendingApprovalResult, type Tier } from './tools'
 import { SPAWN_SUBAGENTS_TOOL, runParallelSubagents, parseSubTaskSpecs } from './subagents'
 import { codingToolSchemas, executeCodingTool, describeCodingToolCall } from './codingTools'
+import { setActiveProject } from './sandbox'
+import { deriveProjectSlug } from './projectName'
+import { armEditorAutoOpen } from './editor'
 import { generatePlan, looksLikeTask, type Plan } from './planner'
 import { getMcpToolSchemas, callMcpTool } from './mcp-client'
 import { database } from './database'
@@ -457,6 +460,13 @@ function knownCodingToolNames(): Set<string> {
 async function runBuilderSession(win: BrowserWindow, tier: Tier, userMessage: string): Promise<string> {
   const messages: Message[] = [{ role: 'user', content: userMessage }]
   const codingNames = knownCodingToolNames()
+
+  // Give this build its own folder under ~/OpenUI Projects (so successive builds
+  // don't overwrite each other) and arm the editor to open on the first write.
+  // Only the interactive session arms it; the unattended runner in autonomous.ts
+  // must never steal focus.
+  setActiveProject(deriveProjectSlug(userMessage))
+  armEditorAutoOpen()
 
   for (let turn = 0; turn < MAX_BUILDER_TURNS; turn++) {
     const gate = new StreamGate((delta) => emit(win, 'openui:chat:chunk', delta))

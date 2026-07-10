@@ -4,9 +4,9 @@
  *
  * The agent runs UNATTENDED: it writes code and runs tests without a human in
  * the loop. To bound the blast radius of a model that is buggy or steered by a
- * malicious task/issue, every file operation is confined to a single workspace
- * directory under the app's userData folder, and the only command it may run is
- * the project's test script.
+ * malicious task/issue, every file operation is confined to a single project
+ * directory under `~/OpenUI Projects`, and the only command it may run is the
+ * project's test script.
  *
  * TRUST MODEL — running `npm test` executes whatever the workspace's
  * package.json defines, which is arbitrary code by design (that is the point of
@@ -28,6 +28,7 @@ import { execFile, spawn } from 'node:child_process'
 import { promisify } from 'node:util'
 import { mkdir, writeFile, readFile, readdir, stat } from 'node:fs/promises'
 import { join, resolve, relative, isAbsolute, dirname, basename } from 'node:path'
+import { isSafeProjectSlug } from './projectName'
 
 const execFileAsync = promisify(execFile)
 
@@ -60,15 +61,63 @@ const LONG_RUNNING_SCRIPT_RE = /^(dev|start|serve|watch|preview|serve:.*|dev:.*)
 const MAX_FILE_BYTES = 512 * 1024
 
 /**
- * Absolute path to the agent's workspace. Created lazily on first use under
- * the OS-appropriate userData dir (e.g. %APPDATA%\OpenUI on Windows,
- * ~/Library/Application Support/OpenUI on macOS). Overridable for power users
- * via OPENUI_WORKSPACE.
+ * Folder name used when no project has been named — unattended runs (the
+ * autonomous task runner) and any caller that never calls setActiveProject.
+ */
+const DEFAULT_PROJECT = 'workspace'
+
+/**
+ * Where generated projects live: `~/OpenUI Projects`. Deliberately a directory
+ * the user actually browses to. It used to be the app's userData folder, which
+ * meant a successful build was invisible — the files were real but nobody could
+ * find them.
+ */
+export function getProjectsRoot(): string {
+  return join(app.getPath('home'), 'OpenUI Projects')
+}
+
+/**
+ * The project the current build session writes into, as a single path segment.
+ * Module state rather than a parameter because every sandbox entry point
+ * resolves against "the workspace"; threading a project through all of them
+ * would touch every tool signature for no gain.
+ */
+let activeProject: string | null = null
+
+/**
+ * Point the sandbox at `~/OpenUI Projects/<slug>`. Rejects anything that is not
+ * a bare slug — this is the boundary where a name derived from a user message
+ * becomes a path, so a separator or `..` here would defeat resolveInSandbox by
+ * moving the root itself rather than escaping it.
+ */
+export function setActiveProject(slug: string): void {
+  activeProject = isSafeProjectSlug(slug) ? slug : DEFAULT_PROJECT
+}
+
+/** The active project slug, or null when none has been set this session. */
+export function getActiveProject(): string | null {
+  return activeProject
+}
+
+/**
+ * Return to the shared default workspace. Unattended runs call this so they
+ * never inherit — and write into — whatever project the last interactive build
+ * happened to name.
+ */
+export function resetActiveProject(): void {
+  activeProject = null
+}
+
+/**
+ * Absolute path to the agent's workspace: the active project's folder under
+ * `~/OpenUI Projects`. Created lazily on first use. Overridable for power users
+ * (and for tests, which must not write to a real home directory) via
+ * OPENUI_WORKSPACE.
  */
 export function getWorkspaceDir(): string {
   const override = process.env.OPENUI_WORKSPACE?.trim()
   if (override) return resolve(override)
-  return join(app.getPath('userData'), 'autonomous-workspace')
+  return join(getProjectsRoot(), activeProject ?? DEFAULT_PROJECT)
 }
 
 /** Ensure the workspace directory exists; returns its absolute path. */
