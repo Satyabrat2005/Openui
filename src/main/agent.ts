@@ -20,7 +20,14 @@ import { Events } from './telemetry/events'
 import { classifyFeedbackSignal, getCustomSystemPrompt } from './improvement'
 import { startRun } from './runLog'
 import { grantOrigin } from './browser/consent'
-import { resolveOllamaModel, resolveGeneralModel, DEFAULT_CODE_MODEL } from './models'
+import {
+  resolveOllamaModel,
+  resolveGeneralModel,
+  DEFAULT_CODE_MODEL,
+  shouldRouteToCloud,
+  resolveCloudModel,
+  streamAnthropic
+} from './models'
 import {
   TrajectoryRecorder,
   applyQualitySignal,
@@ -693,13 +700,17 @@ async function callOllama(
 }
 
 /**
- * The model router. OpenUI runs entirely on a local / self-hosted Ollama server —
- * there is no cloud proxy, no Anthropic/OpenAI keys, and no per-message metering
- * or credit balance that can run out. Every tier (free / pro / enterprise), the
- * planner, and the autonomous agent all stream from the same Ollama server.
+ * The model router. OpenUI is local-first: by default every tier, the planner,
+ * and the autonomous agent stream from a local / self-hosted Ollama server, with
+ * no per-message metering or credit balance that can run out. Start it once with
+ * `ollama serve` and pull a model with `ollama pull qwen3.5` (override via the
+ * OLLAMA_MODEL / OLLAMA_HOST env vars).
  *
- * Start the engine once with `ollama serve` and pull a model with
- * `ollama pull qwen3.5` (override via the OLLAMA_MODEL / OLLAMA_HOST env vars).
+ * There is one opt-in exception: a bring-your-own-key frontier cloud tier. When
+ * the user pastes an Anthropic key AND turns cloud routing on (both required, see
+ * shouldRouteToCloud), turns stream from the cloud model instead, and fall back
+ * to local on any error. Nothing routes to the cloud by default — installing the
+ * app never sends a byte off the machine.
  *
  * `systemPrompt` is supplied by the caller so the same router drives both the
  * interactive desktop assistant (handleChat) and the autonomous coding agent
@@ -719,12 +730,31 @@ export async function callModel(
   // instead of the general one.
   opts: { coding?: boolean } = {}
 ): Promise<string> {
+  // Neither tier is metered by OpenUI — the cloud tier is bring-your-own-key.
+  // Keep the renderer's usage counter in "unlimited".
+  emitLocalUsage(win, tier)
+
+  // Frontier cloud tier (opt-in, BYOK): only when the user turned cloud routing
+  // on AND a key is configured. Local Ollama stays the default and the fallback,
+  // so a transient cloud failure degrades to "still working locally" rather than
+  // a dead turn. The swap is surfaced, never silent.
+  if (shouldRouteToCloud()) {
+    const cloudModel = resolveCloudModel()
+    try {
+      return await streamAnthropic(messages, systemPrompt, onDelta, cloudModel)
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err)
+      console.warn(`[agent] Cloud model "${cloudModel}" failed (${reason}); falling back to local.`)
+      emit(win, 'openui:chat:warning', {
+        message: `Cloud model "${cloudModel}" is unavailable (${reason}). Falling back to the local model.`
+      })
+      // fall through to the local path below
+    }
+  }
+
   // Code-heavy callers (the autonomous coding agent) get the code-tuned model;
   // everything else uses the general model.
   const localModel = opts.coding ? await localCodeModel() : await localGeneralModel()
-
-  // Local AI is never metered — keep the renderer's usage counter in "unlimited".
-  emitLocalUsage(win, tier)
 
   if (await isOllamaRunning()) {
     return callOllama(win, messages, systemPrompt, onDelta, localModel)

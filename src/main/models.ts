@@ -15,6 +15,7 @@
  */
 import { Ollama } from 'ollama'
 import Anthropic from '@anthropic-ai/sdk'
+import { database } from './database'
 
 /** A minimal chat message — kept local so this module has no cycle with agent.ts. */
 export interface ModelMessage {
@@ -43,7 +44,23 @@ const POOL_CACHE_MS = 30_000
 export const DEFAULT_GENERAL_MODEL = 'qwen3.5:latest'
 export const DEFAULT_CODE_MODEL = 'qwen2.5-coder:7b'
 
+/**
+ * The frontier cloud model used when the user opts into cloud routing AND has an
+ * Anthropic key configured (bring-your-own-key). Opus 4.8 is Anthropic's current
+ * flagship; override per install with the `cloud_model` setting or the
+ * ANTHROPIC_MODEL env var. Local Ollama remains the default and the offline /
+ * privacy tier — cloud is strictly opt-in (see shouldRouteToCloud).
+ */
+export const DEFAULT_CLOUD_MODEL = 'claude-opus-4-8'
+
 let poolCache: { at: number; models: AvailableModel[] } | null = null
+
+/** Turn "claude-opus-4-8" → "Claude Opus 4.8" for the UI model tag. */
+function prettifyCloud(id: string): string {
+  // Fold a trailing "-<major>-<minor>" into a dotted version before spacing.
+  const dotted = id.replace(/-(\d+)-(\d+)$/, ' $1.$2')
+  return dotted.replace(/-/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
+}
 
 /** Turn "llama3:8b" → "Llama 3 8B", "qwen2.5:latest" → "Qwen 2.5". */
 function prettifyOllama(name: string): string {
@@ -73,10 +90,12 @@ export async function getAvailableModels(): Promise<AvailableModel[]> {
     // Ollama not running — fall through; the pool may still get a cloud entry.
   }
 
-  // Only advertise a cloud model when a key is genuinely present, so the UI tag
-  // reflects a model we can actually call.
-  if (process.env.ANTHROPIC_API_KEY) {
-    models.push({ id: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6', provider: 'anthropic' })
+  // Only advertise a cloud model when a key is genuinely present (env OR the
+  // Settings value), so the UI tag reflects a model we can actually call. The id
+  // and label track resolveCloudModel, so overriding the model updates the tag.
+  if (getAnthropicKey()) {
+    const id = resolveCloudModel()
+    models.push({ id, label: prettifyCloud(id), provider: 'anthropic' })
   }
 
   poolCache = { at: Date.now(), models }
@@ -131,6 +150,103 @@ export async function resolveGeneralModel(): Promise<string> {
   return resolveOllamaModel(process.env.OLLAMA_MODEL ?? DEFAULT_GENERAL_MODEL)
 }
 
+// ── cloud (Anthropic) tier — bring-your-own-key ──────────────────────────────
+//
+// OpenUI is local-first: chat, planning and the coding agent all run on Ollama
+// by default, with no per-message metering and nothing leaving the machine. The
+// cloud tier is an OPT-IN escape hatch for users who want frontier capability
+// and supply their own Anthropic key — the harness (tools, verify loop, desktop
+// reach) is the product; the model is a swappable component. Two independent
+// facts gate it: a key must exist, AND the user must have flipped the routing
+// toggle on. Either alone routes nowhere near the cloud.
+//
+// Key resolution mirrors github.ts's getToken(): env first (dev-only override),
+// then the value pasted into Settings.
+
+/** Resolved Anthropic API key: ANTHROPIC_API_KEY env, else the Settings value, else null. */
+export function getAnthropicKey(): string | null {
+  const env = process.env.ANTHROPIC_API_KEY?.trim()
+  if (env) return env
+  try {
+    const stored: unknown = database.settings.getSetting('anthropic_api_key')
+    return typeof stored === 'string' && stored.trim() ? stored.trim() : null
+  } catch {
+    return null
+  }
+}
+
+/** The cloud model id: ANTHROPIC_MODEL env, else the `cloud_model` setting, else the flagship default. */
+export function resolveCloudModel(): string {
+  const env = process.env.ANTHROPIC_MODEL?.trim()
+  if (env) return env
+  try {
+    const stored: unknown = database.settings.getSetting('cloud_model')
+    if (typeof stored === 'string' && stored.trim()) return stored.trim()
+  } catch {
+    // fall through to the default
+  }
+  return DEFAULT_CLOUD_MODEL
+}
+
+/**
+ * The user's cloud-routing preference. Off unless explicitly set to true — a
+ * privacy-first default, so simply installing the app never sends a byte to a
+ * cloud provider. Distinct from key presence: this is intent, getAnthropicKey is
+ * capability.
+ */
+export function isCloudRoutingEnabled(): boolean {
+  try {
+    return database.settings.getSetting('cloud_routing_enabled') === true
+  } catch {
+    return false
+  }
+}
+
+/** True only when the user turned cloud routing on AND a key is actually configured. */
+export function shouldRouteToCloud(): boolean {
+  return isCloudRoutingEnabled() && getAnthropicKey() !== null
+}
+
+/** Longest single response we'll request from the cloud model (bounds BYOK cost per turn). */
+const CLOUD_MAX_TOKENS = 8192
+
+/**
+ * Stream a turn from the Anthropic model and return the full text. Deltas are
+ * forwarded through `onDelta` so the renderer streams cloud output exactly like
+ * local output. Deliberately minimal: this app drives the model with a TEXT
+ * tool-call protocol (see toolCallParser.ts), not native tool use, so a plain
+ * system + messages request is all it needs — no `tools`, no `thinking`. Throws
+ * on any API/auth error so the caller can fall back to local.
+ */
+export async function streamAnthropic(
+  messages: ModelMessage[],
+  systemPrompt: string,
+  onDelta: (delta: string) => void,
+  model: string = resolveCloudModel(),
+  maxTokens: number = CLOUD_MAX_TOKENS
+): Promise<string> {
+  const apiKey = getAnthropicKey()
+  if (!apiKey) throw new Error('No Anthropic API key is configured.')
+
+  const client = new Anthropic({ apiKey })
+  const stream = client.messages.stream({
+    model,
+    max_tokens: maxTokens,
+    system: systemPrompt,
+    messages: messages.map((m) => ({ role: m.role, content: m.content }))
+  })
+
+  let full = ''
+  stream.on('text', (delta) => {
+    full += delta
+    onDelta(delta)
+  })
+  // finalMessage() resolves on completion and rejects on API/auth errors; it also
+  // handles abort/error wiring internally, so we don't hand-roll a Promise here.
+  await stream.finalMessage()
+  return full
+}
+
 /**
  * Assign `count` models to subagents from the real pool, round-robin. When the
  * pool has fewer models than subagents (the common single-model case), models
@@ -158,7 +274,9 @@ export async function callModelById(
   systemPrompt: string
 ): Promise<string> {
   if (model.provider === 'anthropic') {
-    const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
+    const apiKey = getAnthropicKey()
+    if (!apiKey) throw new Error('No Anthropic API key is configured.')
+    const client = new Anthropic({ apiKey })
     const res = await client.messages.create({
       model: model.id,
       max_tokens: 1536,
