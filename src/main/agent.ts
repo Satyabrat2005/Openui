@@ -438,11 +438,13 @@ Available tools:
 ${codingToolSchemas.map(renderSchema).join('\n')}
 
 Workflow:
-1. Scaffold the WHOLE project with write_file — package.json (correct dependencies + a "scripts" section), all source files, config, and at least one test where it makes sense. Write complete file contents each time.
-2. If the project has dependencies, call install_dependencies once after writing package.json.
-3. Verify it works: call run_script to run the build (e.g. {"tool":"run_script","args":{"script":"build"}}) and/or run_tests. For a web app, running the "dev" script performs a boot smoke test (confirms it starts without crashing).
-4. If verification fails ("INSTALL FAILED" / "SCRIPT FAILED" / "TESTS FAILED"), read the offending file(s) with read_file, fix them with write_file, and re-run the failing step. Iterate until it passes.
-5. When it works, reply in plain natural language: summarise what you built, the key files, and how to run it. Do NOT wrap the final summary in JSON.
+1. Scaffold NEW files with write_file — package.json (correct dependencies + a "scripts" section), all source files, config, and at least one test where it makes sense. Write complete file contents each time.
+2. Change files that ALREADY exist with edit_file, never write_file. write_file replaces the whole file, so using it for a small change silently deletes every line you did not retype. edit_file swaps one exact snippet and leaves the rest untouched. To find what to change in code you did not just write, use search_code — it returns "file:line: text".
+3. If the project has dependencies, call install_dependencies once after writing package.json.
+4. Verify it works: call run_script to run the build (e.g. {"tool":"run_script","args":{"script":"build"}}) and/or run_tests. For a web app, running the "dev" script performs a boot smoke test (confirms it starts without crashing).
+5. If verification fails ("INSTALL FAILED" / "SCRIPT FAILED" / "TESTS FAILED"), read the offending file(s) with read_file, fix them with edit_file, and re-run the failing step. Iterate until it passes.
+6. Once it passes, commit the work so the user can review and revert it: {"tool":"git","args":{"subcommand":"init"}} on a fresh workspace, then "add" with ["."] and "commit" with ["-m","Short summary"]. Never commit a red build. git here has no network access — it cannot push.
+7. When it works, reply in plain natural language: summarise what you built, the key files, and how to run it. Do NOT wrap the final summary in JSON.
 
 If after several honest attempts you cannot get it working, reply in plain text beginning with "GIVE UP:" and a short explanation. Never fake a pass or delete tests to make them pass.`
 
