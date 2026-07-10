@@ -1,8 +1,10 @@
 -- 001_create_usage_tracking — per-user, per-day cloud message counter.
 --
 -- The chat-proxy Edge Function reads/writes this table to enforce each tier's
--- daily message limit (Free = 20/day on OUR API keys). One row per user per day;
--- the count resets naturally because a new day yields a new (user_id, date) key.
+-- daily message limit (Free = 5/day on OUR API keys, see chat-proxy's
+-- DAILY_LIMIT map and src/main/stripe/pricing.ts's TIERS.free.dailyMessageLimit).
+-- One row per user per day; the count resets naturally because a new day
+-- yields a new (user_id, date) key.
 
 CREATE TABLE IF NOT EXISTS usage_tracking (
   user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE,
