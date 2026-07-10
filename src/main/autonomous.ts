@@ -16,6 +16,7 @@
 import type { BrowserWindow } from 'electron'
 import { callModel, parseToolCall, emit, StreamGate, type Message } from './agent'
 import { codingToolSchemas, executeCodingTool, describeCodingToolCall } from './codingTools'
+import { VerifyGate } from './verifyGate'
 import { getNextTask, recordTaskOutcome, type TaskSource, type AgentTask } from './tasks'
 import { resetActiveProject } from './sandbox'
 import { disarmEditorAutoOpen } from './editor'
@@ -84,15 +85,20 @@ Available tools:
 ${codingToolSchemas.map(renderSchema).join('\n')}
 
 Workflow:
-1. If unsure of the current state, call list_files / read_file to inspect the workspace.
-2. Implement the task with write_file (write complete file contents each time). To scaffold a new project, write the WHOLE file tree — package.json (with the right dependencies and "scripts"), source files, config, and tests.
-3. If the project has dependencies, call install_dependencies once after writing package.json.
-4. Verify your work with the verifier that fits the project (the PROJECT TYPE section below tells you which):
+1. Orient before changing anything. Call list_files to see the tree, search_code to locate a symbol or string (it returns "file:line: text"), and read_file to read what you are about to touch. Never edit a file you have not read this session.
+2. Create NEW files with write_file. To scaffold a new project, write the WHOLE file tree — package.json (with the right dependencies and "scripts"), source files, config, and tests.
+3. Change EXISTING files with edit_file, never write_file. write_file replaces the entire file, so using it for a small change silently deletes every line you did not retype. edit_file swaps one exact snippet and leaves the rest untouched. If edit_file reports that old_string is ambiguous, add surrounding lines to make it unique — do not fall back to write_file.
+4. If the project has dependencies, call install_dependencies once after writing package.json.
+5. Verify your work with the verifier that fits the project (the PROJECT TYPE section below tells you which):
    - Call run_tests to run an npm test suite, and/or
    - Call run_script to run a build/train/lint script you defined (e.g. {"tool":"run_script","args":{"script":"build"}}). A dev server ("dev"/"start") is run as a boot smoke test — it confirms the app starts without crashing.
    - For Python work, call run_pytest and/or run_python; for single-file C++, call run_cpp with the sample input.
-5. Read the output carefully. If it starts with "TESTS FAILED" / "SCRIPT FAILED" / "INSTALL FAILED", read the offending file(s) with read_file, fix the code with write_file, and re-run the failing step. Iterate.
-6. When verification passes, reply in plain natural language summarising what you built/changed. Do NOT wrap the final summary in JSON.
+6. Read the output carefully. If it starts with "TESTS FAILED" / "SCRIPT FAILED" / "INSTALL FAILED", read the offending file(s) with read_file, fix them with edit_file, and re-run the failing step. Iterate.
+7. Commit each coherent, VERIFIED change so the work is reviewable and revertable. On a fresh workspace run {"tool":"git","args":{"subcommand":"init"}} first, then add and commit:
+   {"tool":"git","args":{"subcommand":"add","args":["."]}}
+   {"tool":"git","args":{"subcommand":"commit","args":["-m","Short summary of the change"]}}
+   Commit only after the relevant verifier passed — never commit a red build. git here cannot push, pull, fetch or reach any network; publishing is a separate step a human approves.
+8. When verification passes, reply in plain natural language summarising what you built/changed. Do NOT wrap the final summary in JSON.
 
 If after several honest attempts you cannot make it pass, reply in plain text beginning with "GIVE UP:" followed by a short explanation. Never fake a pass or delete tests to make them pass.`
 
@@ -130,7 +136,9 @@ async function workOnTask(
 ): Promise<TaskOutcome> {
   const messages: Message[] = [{ role: 'user', content: taskPrompt(task, profile) }]
   const systemPrompt = `${CODING_SYSTEM_PROMPT}\n\n${profile.promptAddendum}`
-  let lastVerificationPassed = false
+  // Tracks whether a verifier passed and nothing has changed since; refuses to
+  // let the agent finish on unverified work.
+  const verifyGate = new VerifyGate(profile)
 
   for (let turn = 0; turn < MAX_CODING_TURNS; turn++) {
     if (stopRequested) {
@@ -148,8 +156,19 @@ async function workOnTask(
     gate.finalize(toolCall !== null)
     if (!toolCall) {
       // Plain-language reply ⇒ the agent considers the task finished (or gave up).
-      const gaveUp = /^\s*GIVE UP:/i.test(responseText)
-      return { success: lastVerificationPassed && !gaveUp, summary: responseText.trim() }
+      const decision = verifyGate.onFinalReply(responseText)
+      if (decision === 'nudge') {
+        // It wrote code and never proved it works. Say so and keep the loop alive.
+        emit(win, 'openui:task:update', {
+          id: `a${++taskSeq}`,
+          label: verifyGate.nudgeLabel,
+          status: 'working',
+          detail: `Summarised without running ${profile.verifiers.join(' / ')} — asking it to verify.`
+        })
+        messages.push({ role: 'user', content: verifyGate.nudgeMessage() })
+        continue
+      }
+      return { success: verifyGate.isVerified && decision !== 'give_up', summary: responseText.trim() }
     }
 
     const taskId = `a${++taskSeq}`
@@ -166,11 +185,9 @@ async function workOnTask(
       error: result.ok ? undefined : result.error?.slice(0, 300)
     })
     // Success signal is project-type-aware: only THIS profile's verification
-    // tool(s) count, and a later failed re-run clears an earlier pass.
-    if (result.ok) {
-      const verdict = profile.verdict(toolCall.tool, result.output ?? '')
-      if (verdict !== null) lastVerificationPassed = verdict === 'pass'
-    }
+    // tool(s) count, a later failed re-run clears an earlier pass, and any edit
+    // to the tree expires a pass that described the tree as it used to be.
+    verifyGate.observe(toolCall.tool, toolCall.args, result.ok, result.output ?? '')
 
     emit(win, 'openui:task:update', {
       id: taskId,

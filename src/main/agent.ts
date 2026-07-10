@@ -3,6 +3,8 @@ import { BrowserWindow, ipcMain } from 'electron'
 import { toolSchemas, executeTool, describeToolCall, DESTRUCTIVE_TOOLS, type ToolSchema, type ToolResult, type PendingApprovalResult, type Tier } from './tools'
 import { SPAWN_SUBAGENTS_TOOL, runParallelSubagents, parseSubTaskSpecs } from './subagents'
 import { codingToolSchemas, executeCodingTool, describeCodingToolCall } from './codingTools'
+import { VerifyGate } from './verifyGate'
+import { detectProjectType, getProjectProfile } from './projectProfiles'
 import { setActiveProject } from './sandbox'
 import { deriveProjectSlug } from './projectName'
 import { armEditorAutoOpen } from './editor'
@@ -18,7 +20,14 @@ import { Events } from './telemetry/events'
 import { classifyFeedbackSignal, getCustomSystemPrompt } from './improvement'
 import { startRun } from './runLog'
 import { grantOrigin } from './browser/consent'
-import { resolveOllamaModel, resolveGeneralModel, DEFAULT_CODE_MODEL } from './models'
+import {
+  resolveOllamaModel,
+  resolveGeneralModel,
+  DEFAULT_CODE_MODEL,
+  shouldRouteToCloud,
+  resolveCloudModel,
+  streamAnthropic
+} from './models'
 import {
   TrajectoryRecorder,
   applyQualitySignal,
@@ -438,11 +447,13 @@ Available tools:
 ${codingToolSchemas.map(renderSchema).join('\n')}
 
 Workflow:
-1. Scaffold the WHOLE project with write_file — package.json (correct dependencies + a "scripts" section), all source files, config, and at least one test where it makes sense. Write complete file contents each time.
-2. If the project has dependencies, call install_dependencies once after writing package.json.
-3. Verify it works: call run_script to run the build (e.g. {"tool":"run_script","args":{"script":"build"}}) and/or run_tests. For a web app, running the "dev" script performs a boot smoke test (confirms it starts without crashing).
-4. If verification fails ("INSTALL FAILED" / "SCRIPT FAILED" / "TESTS FAILED"), read the offending file(s) with read_file, fix them with write_file, and re-run the failing step. Iterate until it passes.
-5. When it works, reply in plain natural language: summarise what you built, the key files, and how to run it. Do NOT wrap the final summary in JSON.
+1. Scaffold NEW files with write_file — package.json (correct dependencies + a "scripts" section), all source files, config, and at least one test where it makes sense. Write complete file contents each time.
+2. Change files that ALREADY exist with edit_file, never write_file. write_file replaces the whole file, so using it for a small change silently deletes every line you did not retype. edit_file swaps one exact snippet and leaves the rest untouched. To find what to change in code you did not just write, use search_code — it returns "file:line: text".
+3. If the project has dependencies, call install_dependencies once after writing package.json.
+4. Verify it works: call run_script to run the build (e.g. {"tool":"run_script","args":{"script":"build"}}) and/or run_tests. For a web app, running the "dev" script performs a boot smoke test (confirms it starts without crashing).
+5. If verification fails ("INSTALL FAILED" / "SCRIPT FAILED" / "TESTS FAILED"), read the offending file(s) with read_file, fix them with edit_file, and re-run the failing step. Iterate until it passes.
+6. Once it passes, commit the work so the user can review and revert it: {"tool":"git","args":{"subcommand":"init"}} on a fresh workspace, then "add" with ["."] and "commit" with ["-m","Short summary"]. Never commit a red build. git here has no network access — it cannot push.
+7. When it works, reply in plain natural language: summarise what you built, the key files, and how to run it. Do NOT wrap the final summary in JSON.
 
 If after several honest attempts you cannot get it working, reply in plain text beginning with "GIVE UP:" and a short explanation. Never fake a pass or delete tests to make them pass.`
 
@@ -468,14 +479,32 @@ async function runBuilderSession(win: BrowserWindow, tier: Tier, userMessage: st
   setActiveProject(deriveProjectSlug(userMessage))
   armEditorAutoOpen()
 
+  // Same project-type branching the unattended runner uses, so "build me a
+  // Codeforces solution" is verified with run_cpp rather than `npm test`.
+  const profile = getProjectProfile(detectProjectType(userMessage))
+  const verifyGate = new VerifyGate(profile)
+  const systemPrompt = `${BUILDER_SYSTEM_PROMPT}\n\n${profile.promptAddendum}`
+
   for (let turn = 0; turn < MAX_BUILDER_TURNS; turn++) {
     const gate = new StreamGate((delta) => emit(win, 'openui:chat:chunk', delta))
-    const responseText = await callModel(win, tier, messages, BUILDER_SYSTEM_PROMPT, gate.push)
+    const responseText = await callModel(win, tier, messages, systemPrompt, gate.push)
     messages.push({ role: 'assistant', content: responseText })
 
     const toolCall = parseToolCallCore(responseText, codingNames)
     gate.finalize(toolCall !== null)
-    if (!toolCall) return responseText.trim() // natural-language reply ⇒ done
+    if (!toolCall) {
+      // Natural-language reply ⇒ the model thinks it is done. Only let it be done
+      // if it actually ran something against the code as it now stands.
+      if (verifyGate.onFinalReply(responseText) !== 'nudge') return responseText.trim()
+      emit(win, 'openui:task:update', {
+        id: `b${++taskSeq}`,
+        label: verifyGate.nudgeLabel,
+        status: 'working',
+        detail: `Summarised without running ${profile.verifiers.join(' / ')} — asking it to verify.`
+      } satisfies TaskUpdate)
+      messages.push({ role: 'user', content: verifyGate.nudgeMessage() })
+      continue
+    }
 
     const taskId = `b${++taskSeq}`
     const label = describeCodingToolCall(toolCall.tool, toolCall.args)
@@ -490,6 +519,7 @@ async function runBuilderSession(win: BrowserWindow, tier: Tier, userMessage: st
       detail: result.ok ? result.output?.slice(0, 200) : result.error
     } satisfies TaskUpdate)
 
+    verifyGate.observe(toolCall.tool, toolCall.args, result.ok, result.output ?? '')
     messages.push({ role: 'user', content: formatToolResult(toolCall, result) })
   }
 
@@ -670,13 +700,17 @@ async function callOllama(
 }
 
 /**
- * The model router. OpenUI runs entirely on a local / self-hosted Ollama server —
- * there is no cloud proxy, no Anthropic/OpenAI keys, and no per-message metering
- * or credit balance that can run out. Every tier (free / pro / enterprise), the
- * planner, and the autonomous agent all stream from the same Ollama server.
+ * The model router. OpenUI is local-first: by default every tier, the planner,
+ * and the autonomous agent stream from a local / self-hosted Ollama server, with
+ * no per-message metering or credit balance that can run out. Start it once with
+ * `ollama serve` and pull a model with `ollama pull qwen3.5` (override via the
+ * OLLAMA_MODEL / OLLAMA_HOST env vars).
  *
- * Start the engine once with `ollama serve` and pull a model with
- * `ollama pull qwen3.5` (override via the OLLAMA_MODEL / OLLAMA_HOST env vars).
+ * There is one opt-in exception: a bring-your-own-key frontier cloud tier. When
+ * the user pastes an Anthropic key AND turns cloud routing on (both required, see
+ * shouldRouteToCloud), turns stream from the cloud model instead, and fall back
+ * to local on any error. Nothing routes to the cloud by default — installing the
+ * app never sends a byte off the machine.
  *
  * `systemPrompt` is supplied by the caller so the same router drives both the
  * interactive desktop assistant (handleChat) and the autonomous coding agent
@@ -696,12 +730,31 @@ export async function callModel(
   // instead of the general one.
   opts: { coding?: boolean } = {}
 ): Promise<string> {
+  // Neither tier is metered by OpenUI — the cloud tier is bring-your-own-key.
+  // Keep the renderer's usage counter in "unlimited".
+  emitLocalUsage(win, tier)
+
+  // Frontier cloud tier (opt-in, BYOK): only when the user turned cloud routing
+  // on AND a key is configured. Local Ollama stays the default and the fallback,
+  // so a transient cloud failure degrades to "still working locally" rather than
+  // a dead turn. The swap is surfaced, never silent.
+  if (shouldRouteToCloud()) {
+    const cloudModel = resolveCloudModel()
+    try {
+      return await streamAnthropic(messages, systemPrompt, onDelta, cloudModel)
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err)
+      console.warn(`[agent] Cloud model "${cloudModel}" failed (${reason}); falling back to local.`)
+      emit(win, 'openui:chat:warning', {
+        message: `Cloud model "${cloudModel}" is unavailable (${reason}). Falling back to the local model.`
+      })
+      // fall through to the local path below
+    }
+  }
+
   // Code-heavy callers (the autonomous coding agent) get the code-tuned model;
   // everything else uses the general model.
   const localModel = opts.coding ? await localCodeModel() : await localGeneralModel()
-
-  // Local AI is never metered — keep the renderer's usage counter in "unlimited".
-  emitLocalUsage(win, tier)
 
   if (await isOllamaRunning()) {
     return callOllama(win, messages, systemPrompt, onDelta, localModel)

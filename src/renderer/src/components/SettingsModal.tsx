@@ -38,6 +38,12 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
   // the GITHUB_TOKEN env var is absent (the normal case for end users).
   const [githubToken, setGithubToken] = useState('')
   const [githubSaved, setGithubSaved] = useState(false)
+  // Cloud AI (bring-your-own-key): an Anthropic key plus an explicit routing
+  // toggle. BOTH are required before any turn leaves the machine — the key is
+  // capability, the toggle is intent (see shouldRouteToCloud in models.ts).
+  const [anthropicKey, setAnthropicKey] = useState('')
+  const [anthropicSaved, setAnthropicSaved] = useState(false)
+  const [cloudRouting, setCloudRouting] = useState(false)
   // Google Calendar — a dedicated OAuth "Desktop app" client (id/secret) the
   // user supplies here; the main process runs the loopback OAuth flow on Connect
   // and stores only the resulting refresh token.
@@ -83,6 +89,20 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
       .getSetting('github_token')
       .then((value) => {
         if (!cancelled && typeof value === 'string') setGithubToken(value)
+      })
+      .catch(() => {})
+
+    window.openui
+      .getSetting('anthropic_api_key')
+      .then((value) => {
+        if (!cancelled && typeof value === 'string') setAnthropicKey(value)
+      })
+      .catch(() => {})
+
+    window.openui
+      .getSetting('cloud_routing_enabled')
+      .then((value) => {
+        if (!cancelled) setCloudRouting(value === true)
       })
       .catch(() => {})
 
@@ -149,6 +169,24 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
         window.setTimeout(() => setGithubSaved(false), 1500)
       })
       .catch(() => {})
+  }
+
+  const saveAnthropicKey = (): void => {
+    void window.openui
+      .setSetting('anthropic_api_key', anthropicKey.trim())
+      .then(() => {
+        setAnthropicSaved(true)
+        window.setTimeout(() => setAnthropicSaved(false), 1500)
+      })
+      .catch(() => {})
+  }
+
+  const toggleCloudRouting = (): void => {
+    const next = !cloudRouting
+    setCloudRouting(next)
+    void window.openui
+      .setSetting('cloud_routing_enabled', next)
+      .catch(() => setCloudRouting(!next))
   }
 
   const saveGcalClientId = (): void => {
@@ -360,6 +398,64 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
             onBlur={saveFigmaToken}
             placeholder="figd_…"
             aria-label="Figma personal access token"
+            autoComplete="off"
+            spellCheck={false}
+            style={{
+              width: '100%',
+              boxSizing: 'border-box',
+              border: '1px solid rgba(0,0,0,0.12)',
+              borderRadius: 8,
+              padding: '8px 10px',
+              fontSize: 12.5,
+              fontFamily: 'inherit',
+              color: '#1c1c1e',
+              background: '#fff',
+              outline: 'none'
+            }}
+          />
+        </div>
+
+        {/* Cloud AI: bring-your-own-key frontier model (opt-in) */}
+        <div
+          style={{
+            borderTop: '1px solid rgba(0,0,0,0.06)',
+            paddingTop: 14,
+            marginTop: 14
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'flex-start', gap: 14 }}>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 13.5, fontWeight: 600, color: '#1c1c1e' }}>Cloud AI</div>
+              <div style={{ fontSize: 12, color: '#8e8e93', lineHeight: 1.5, marginTop: 3 }}>
+                By default OpenUI runs entirely on your local model — nothing leaves this machine.
+                Turn this on to route turns to a frontier Claude model instead, using your own
+                Anthropic key. Local stays the fallback if the cloud call fails.
+              </div>
+            </div>
+            <Switch
+              on={cloudRouting}
+              disabled={!anthropicKey.trim()}
+              label="Cloud AI routing"
+              onClick={toggleCloudRouting}
+            />
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 12 }}>
+            <div style={{ fontSize: 12.5, fontWeight: 500, color: '#1c1c1e' }}>Anthropic API key</div>
+            {anthropicSaved && (
+              <span style={{ fontSize: 11, color: '#34c759', fontWeight: 500 }}>Saved</span>
+            )}
+          </div>
+          <div style={{ fontSize: 12, color: '#8e8e93', lineHeight: 1.5, marginTop: 3, marginBottom: 8 }}>
+            Get one at console.anthropic.com → API keys. Stored locally on this device; the toggle
+            above stays off until a key is saved.
+          </div>
+          <input
+            type="password"
+            value={anthropicKey}
+            onChange={(e) => setAnthropicKey(e.target.value)}
+            onBlur={saveAnthropicKey}
+            placeholder="sk-ant-…"
+            aria-label="Anthropic API key"
             autoComplete="off"
             spellCheck={false}
             style={{
