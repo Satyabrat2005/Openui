@@ -461,6 +461,30 @@ export async function executeCodingTool(
   }
 }
 
+/**
+ * git subcommands that rewrite the working tree. `add` and `commit` only move
+ * content into the index/history, so they leave the files the verifier ran
+ * against exactly as they were.
+ */
+const GIT_TREE_MUTATING = new Set(['checkout', 'switch', 'restore', 'rm', 'mv', 'stash'])
+
+/**
+ * True when a SUCCESSFUL call to this tool changed the workspace source tree.
+ *
+ * A passing verifier is a statement about the tree as it stood when the verifier
+ * ran. The moment a file changes, that statement expires — so the coding loop
+ * uses this to drop a stale "tests passed" rather than let the model edit after
+ * a green run and then declare victory.
+ */
+export function mutatesWorkspace(name: string, args: Record<string, unknown>): boolean {
+  if (name === 'write_file' || name === 'edit_file') return true
+  if (name === 'git') {
+    const sub = typeof args.subcommand === 'string' ? args.subcommand.trim() : ''
+    return GIT_TREE_MUTATING.has(sub)
+  }
+  return false
+}
+
 /** Short human-readable label for a coding tool call, shown in the task UI. */
 export function describeCodingToolCall(name: string, args: Record<string, unknown>): string {
   switch (name) {

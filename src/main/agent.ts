@@ -3,6 +3,8 @@ import { BrowserWindow, ipcMain } from 'electron'
 import { toolSchemas, executeTool, describeToolCall, DESTRUCTIVE_TOOLS, type ToolSchema, type ToolResult, type PendingApprovalResult, type Tier } from './tools'
 import { SPAWN_SUBAGENTS_TOOL, runParallelSubagents, parseSubTaskSpecs } from './subagents'
 import { codingToolSchemas, executeCodingTool, describeCodingToolCall } from './codingTools'
+import { VerifyGate } from './verifyGate'
+import { detectProjectType, getProjectProfile } from './projectProfiles'
 import { setActiveProject } from './sandbox'
 import { deriveProjectSlug } from './projectName'
 import { armEditorAutoOpen } from './editor'
@@ -470,14 +472,32 @@ async function runBuilderSession(win: BrowserWindow, tier: Tier, userMessage: st
   setActiveProject(deriveProjectSlug(userMessage))
   armEditorAutoOpen()
 
+  // Same project-type branching the unattended runner uses, so "build me a
+  // Codeforces solution" is verified with run_cpp rather than `npm test`.
+  const profile = getProjectProfile(detectProjectType(userMessage))
+  const verifyGate = new VerifyGate(profile)
+  const systemPrompt = `${BUILDER_SYSTEM_PROMPT}\n\n${profile.promptAddendum}`
+
   for (let turn = 0; turn < MAX_BUILDER_TURNS; turn++) {
     const gate = new StreamGate((delta) => emit(win, 'openui:chat:chunk', delta))
-    const responseText = await callModel(win, tier, messages, BUILDER_SYSTEM_PROMPT, gate.push)
+    const responseText = await callModel(win, tier, messages, systemPrompt, gate.push)
     messages.push({ role: 'assistant', content: responseText })
 
     const toolCall = parseToolCallCore(responseText, codingNames)
     gate.finalize(toolCall !== null)
-    if (!toolCall) return responseText.trim() // natural-language reply ⇒ done
+    if (!toolCall) {
+      // Natural-language reply ⇒ the model thinks it is done. Only let it be done
+      // if it actually ran something against the code as it now stands.
+      if (verifyGate.onFinalReply(responseText) !== 'nudge') return responseText.trim()
+      emit(win, 'openui:task:update', {
+        id: `b${++taskSeq}`,
+        label: verifyGate.nudgeLabel,
+        status: 'working',
+        detail: `Summarised without running ${profile.verifiers.join(' / ')} — asking it to verify.`
+      } satisfies TaskUpdate)
+      messages.push({ role: 'user', content: verifyGate.nudgeMessage() })
+      continue
+    }
 
     const taskId = `b${++taskSeq}`
     const label = describeCodingToolCall(toolCall.tool, toolCall.args)
@@ -492,6 +512,7 @@ async function runBuilderSession(win: BrowserWindow, tier: Tier, userMessage: st
       detail: result.ok ? result.output?.slice(0, 200) : result.error
     } satisfies TaskUpdate)
 
+    verifyGate.observe(toolCall.tool, toolCall.args, result.ok, result.output ?? '')
     messages.push({ role: 'user', content: formatToolResult(toolCall, result) })
   }
 
