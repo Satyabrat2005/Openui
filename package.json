@@ -6,7 +6,7 @@
     "author": "OpenUI",
     "license": "MIT",
     "scripts": {
-        "postinstall": "node scripts/generate-tray-icon.cjs && node scripts/convert-icon.js",
+        "postinstall": "electron-builder install-app-deps && node scripts/generate-tray-icon.cjs && node scripts/convert-icon.js",
         "icons": "node scripts/generate-tray-icon.cjs && node scripts/convert-icon.js",
         "dev": "electron-vite dev",
         "build": "electron-vite build",
