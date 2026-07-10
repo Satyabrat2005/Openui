@@ -15,6 +15,7 @@ import { Events } from './telemetry/events'
 import { classifyFeedbackSignal, getCustomSystemPrompt } from './improvement'
 import { startRun } from './runLog'
 import { grantOrigin } from './browser/consent'
+import { resolveOllamaModel, resolveGeneralModel, DEFAULT_CODE_MODEL } from './models'
 import {
   TrajectoryRecorder,
   applyQualitySignal,
@@ -366,10 +367,12 @@ When writing feedback comments:
 
 /**
  * Local Ollama model for GENERAL tasks: chat, planning/refiner, and the
- * interactive builder session. Overridable via OLLAMA_MODEL.
+ * interactive builder session. An explicit OLLAMA_MODEL wins outright; otherwise
+ * the preference is resolved against the models actually installed on this
+ * machine, so a default that was never pulled can't break every turn.
  */
-function localGeneralModel(): string {
-  return process.env.OLLAMA_MODEL ?? 'qwen3.5:9b'
+async function localGeneralModel(): Promise<string> {
+  return resolveGeneralModel()
 }
 
 /**
@@ -378,9 +381,16 @@ function localGeneralModel(): string {
  *   1. OLLAMA_CODE_MODEL env (explicit override wins),
  *   2. the active fine-tuned checkpoint (finetune/pipeline.ts promotes a
  *      "openui-qwen-coder:vN" tag here only after it passed held-out eval),
- *   3. the stock code-tuned model that fits the 8 GB VRAM budget.
+ *   3. the stock code-tuned model that fits the 8 GB VRAM budget, resolved
+ *      against what is really installed (falling back to any installed model
+ *      rather than a tag nobody pulled).
  */
-function localCodeModel(): string {
+async function localCodeModel(): Promise<string> {
+  return resolveOllamaModel(preferredCodeModel())
+}
+
+/** The code model we'd *like* to run, before checking what is installed. */
+function preferredCodeModel(): string {
   if (process.env.OLLAMA_CODE_MODEL) return process.env.OLLAMA_CODE_MODEL
   try {
     const tuned: unknown = database.settings.getSetting('active_finetuned_model')
@@ -388,7 +398,7 @@ function localCodeModel(): string {
   } catch {
     // settings unavailable (tests, early boot) — fall through to the default
   }
-  return 'qwen2.5-coder:7b'
+  return DEFAULT_CODE_MODEL
 }
 
 // ── Builder mode (interactive project scaffolding in the sandbox) ─────────────
@@ -479,10 +489,10 @@ async function runBuilderSession(win: BrowserWindow, tier: Tier, userMessage: st
 /**
  * The model every tier runs on. OpenUI is now fully local: chat, planning, and
  * the autonomous agent all run on the self-hosted Ollama server. Override the
- * model with the OLLAMA_MODEL env var (default: qwen3.5:9b). Tiers no longer map
- * to different cloud models — they only affect metering/entitlement plumbing.
+ * model with the OLLAMA_MODEL env var. Tiers no longer map to different cloud
+ * models — they only affect metering/entitlement plumbing.
  */
-function modelForTier(_tier: Tier): string {
+async function modelForTier(_tier: Tier): Promise<string> {
   return localGeneralModel()
 }
 
@@ -600,7 +610,7 @@ async function callOllama(
   messages: Message[],
   systemPrompt: string,
   onDelta: (delta: string) => void,
-  model: string = localGeneralModel()
+  model: string
 ): Promise<string> {
   const ollama = new Ollama({ host: process.env.OLLAMA_HOST ?? 'http://127.0.0.1:11434' })
 
@@ -655,8 +665,8 @@ async function callOllama(
  * or credit balance that can run out. Every tier (free / pro / enterprise), the
  * planner, and the autonomous agent all stream from the same Ollama server.
  *
- * Start the engine once with `ollama serve` and pull the model with
- * `ollama pull qwen3.5:9b` (override via the OLLAMA_MODEL / OLLAMA_HOST env vars).
+ * Start the engine once with `ollama serve` and pull a model with
+ * `ollama pull qwen3.5` (override via the OLLAMA_MODEL / OLLAMA_HOST env vars).
  *
  * `systemPrompt` is supplied by the caller so the same router drives both the
  * interactive desktop assistant (handleChat) and the autonomous coding agent
@@ -678,7 +688,7 @@ export async function callModel(
 ): Promise<string> {
   // Code-heavy callers (the autonomous coding agent) get the code-tuned model;
   // everything else uses the general model.
-  const localModel = opts.coding ? localCodeModel() : localGeneralModel()
+  const localModel = opts.coding ? await localCodeModel() : await localGeneralModel()
 
   // Local AI is never metered — keep the renderer's usage counter in "unlimited".
   emitLocalUsage(win, tier)
@@ -767,7 +777,7 @@ export async function handleChat(win: BrowserWindow, userMessage: string, tier: 
 
   const autonomy = getAutonomyLevel()
 
-  const model = modelForTier(effectiveTier)
+  const model = await modelForTier(effectiveTier)
   // Tell the renderer the model the backend is ACTUALLY using this turn, so the
   // UI's model tag reflects reality (client-side tier ≠ effective model after
   // entitlement clamping). Read-only main→renderer push.
@@ -775,7 +785,7 @@ export async function handleChat(win: BrowserWindow, userMessage: string, tier: 
   if (requestedTier !== effectiveTier) {
     trackEvent(Events.MODEL_DOWNGRADE, {
       tier,
-      requested_model: modelForTier(requestedTier),
+      requested_model: await modelForTier(requestedTier),
       downgraded_to: model
     })
   }

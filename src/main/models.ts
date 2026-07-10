@@ -35,6 +35,14 @@ export interface AvailableModel {
 const OLLAMA_HOST = process.env.OLLAMA_HOST ?? 'http://127.0.0.1:11434'
 const POOL_CACHE_MS = 30_000
 
+/**
+ * Preferred tags. These are only ever a *starting point* — `resolveOllamaModel`
+ * maps them onto a model this machine really has, so a preference that was never
+ * pulled (or a tag that does not exist in the registry) can't take the app down.
+ */
+export const DEFAULT_GENERAL_MODEL = 'qwen3.5:latest'
+export const DEFAULT_CODE_MODEL = 'qwen2.5-coder:7b'
+
 let poolCache: { at: number; models: AvailableModel[] } | null = null
 
 /** Turn "llama3:8b" → "Llama 3 8B", "qwen2.5:latest" → "Qwen 2.5". */
@@ -76,6 +84,54 @@ export async function getAvailableModels(): Promise<AvailableModel[]> {
 }
 
 /**
+ * Map a *preferred* Ollama tag onto one this machine actually has.
+ *
+ * Hardcoding a tag is how the app used to die at the first token with
+ * `model 'qwen3.5:9b' not found`: npm-installed defaults drift from whatever the
+ * user really pulled. Resolution order:
+ *
+ *   1. the preference, if it is installed verbatim;
+ *   2. any installed tag from the same family ("qwen3.5:9b" → "qwen3.5:latest");
+ *   3. for a code preference, any installed model that looks code-tuned;
+ *   4. the first installed model — one that works beats one that doesn't exist.
+ *
+ * When nothing is installed (or Ollama is unreachable) we hand the preference
+ * back untouched, so callers keep their existing "is Ollama running?" error path
+ * instead of getting a confusing message from here.
+ */
+export async function resolveOllamaModel(preferred: string): Promise<string> {
+  const installed = (await getAvailableModels())
+    .filter((m) => m.provider === 'ollama')
+    .map((m) => m.id)
+  if (installed.length === 0) return preferred
+  if (installed.includes(preferred)) return preferred
+
+  const base = preferred.split(':')[0]
+  const sameFamily = installed.find((id) => id.split(':')[0] === base)
+  const coder = base.includes('coder') ? installed.find((id) => id.includes('coder')) : undefined
+  const chosen = sameFamily ?? coder ?? installed[0]
+
+  // Substituting silently would make the UI's model tag a lie and leave the user
+  // wondering why output changed, so say so once per resolution.
+  console.warn(
+    `[models] Ollama model "${preferred}" is not installed; using "${chosen}" instead. ` +
+      `Run \`ollama pull ${preferred}\` to use the preferred model.`
+  )
+  return chosen
+}
+
+/**
+ * The general-purpose local model. OLLAMA_MODEL states a *preference*, not a
+ * guarantee — it is resolved against the installed set like any other, because a
+ * configured-but-never-pulled tag is precisely what used to kill every turn.
+ * Shared by the chat router (agent.ts) and the weekly prompt refiner so the two
+ * can never disagree about which model ran.
+ */
+export async function resolveGeneralModel(): Promise<string> {
+  return resolveOllamaModel(process.env.OLLAMA_MODEL ?? DEFAULT_GENERAL_MODEL)
+}
+
+/**
  * Assign `count` models to subagents from the real pool, round-robin. When the
  * pool has fewer models than subagents (the common single-model case), models
  * repeat — every agent still runs concurrently on a genuine model. Returns a
@@ -83,7 +139,7 @@ export async function getAvailableModels(): Promise<AvailableModel[]> {
  */
 export function assignModels(pool: AvailableModel[], count: number): AvailableModel[] {
   if (pool.length === 0) {
-    const fallbackId = process.env.OLLAMA_MODEL ?? 'qwen3.5:9b'
+    const fallbackId = process.env.OLLAMA_MODEL ?? DEFAULT_GENERAL_MODEL
     const fallback: AvailableModel = { id: fallbackId, label: prettifyOllama(fallbackId), provider: 'ollama' }
     return Array.from({ length: count }, () => fallback)
   }

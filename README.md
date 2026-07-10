@@ -218,7 +218,7 @@ callModel(tier)
   └─ enterprise:  cloud proxy → claude-sonnet-4-6      (unlimited; GLM in local dev only)
 
 autonomous coding (background, optional, requires Ollama)
-  ├─ general:     qwen3.5:9b (local)
+  ├─ general:     qwen3.5 (local; resolved against whatever `ollama list` reports)
   └─ code:        qwen2.5-coder:7b — or your fine-tuned openui-qwen-coder:vN once promoted
 ```
 

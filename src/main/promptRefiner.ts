@@ -17,6 +17,7 @@ import type { BrowserWindow } from 'electron'
 import { Ollama } from 'ollama'
 import { database } from './database'
 import { buildDefaultSystemPrompt } from './agent'
+import { resolveGeneralModel } from './models'
 import { withOllamaLock } from './ollamaLock'
 import {
   SETTINGS,
@@ -134,7 +135,7 @@ async function generateRefinement(system: string, user: string): Promise<string 
       const text = await withOllamaLock(async () => {
         const ollama = new Ollama({ host: process.env.OLLAMA_HOST ?? 'http://127.0.0.1:11434' })
         const res = await ollama.chat({
-          model: process.env.OLLAMA_MODEL ?? 'qwen3.5:9b',
+          model: await resolveGeneralModel(),
           messages: [
             { role: 'system', content: system },
             { role: 'user', content: user }
@@ -281,7 +282,7 @@ export async function refineSystemPromptNow(): Promise<RefineResult> {
   trackEvent(Events.PROMPT_REFINED, {
     failing_count: failing.length,
     clusters: clusters.length,
-    model: process.env.OLLAMA_MODEL ?? 'qwen3.5:9b'
+    model: await resolveGeneralModel()
   })
   return { refined: true, failingCount: failing.length, clusters: clusters.length }
 }
