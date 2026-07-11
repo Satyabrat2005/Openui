@@ -201,10 +201,19 @@ export default function AssistantPopup({
     // Non-fatal notice for the in-flight turn (e.g. the GPU runner crashed and we
     // fell back to CPU). The turn keeps streaming, so unlike onError we don't touch
     // the assistant bubble — just show the notice as a status caption.
-    const offWarning = window.openui.onWarning((warning) => {
-      const text = warning?.message ?? ''
-      if (text) setCaption(`⚠️ ${text}`)
-    })
+    //
+    // Guarded because this is an INFORMATIONAL channel: during `npm run dev` a
+    // BrowserWindow keeps its original preload while the renderer hot-reloads, so
+    // a renderer newer than the live preload can see `onWarning` as undefined.
+    // A missing non-fatal notice must never throw and break the whole chat — fall
+    // back to a no-op unsubscribe instead. A full restart reloads the preload.
+    const offWarning =
+      typeof window.openui.onWarning === 'function'
+        ? window.openui.onWarning((warning) => {
+            const text = warning?.message ?? ''
+            if (text) setCaption(`⚠️ ${text}`)
+          })
+        : () => {}
 
     // Fired by main process after Whisper returns, before the agent streams.
     const offTranscript = window.openui.onTranscript((text) => {
