@@ -23,6 +23,7 @@ import {
   writeSandboxFile,
   readSandboxFile,
   editSandboxFile,
+  applyPatchToSandboxFile,
   searchSandbox,
   listSandboxFiles,
   getWorkspaceDir,
@@ -36,6 +37,20 @@ import {
 } from './sandbox'
 import { maybeOpenEditorOnFirstWrite } from './editor'
 import { snapshotBeforeWrite } from './snapshots'
+import { reindexFileInCodebase, searchCodebaseSemantic } from './codebaseIndex'
+import { updateCodebaseMapForFile, findDefinition, findUsages } from './codebaseMap'
+
+/**
+ * Keep the derived views of the workspace current after a file changes: the
+ * semantic index (Task §1) and the symbol/dependency map (Task §2). Both are
+ * fire-and-forget and self-degrading — a missing native module or a downed
+ * Ollama makes the index a no-op — so they never block or fail the triggering
+ * write.
+ */
+function onFileMutated(path: string): void {
+  void reindexFileInCodebase(path)
+  void updateCodebaseMapForFile(path)
+}
 import type { ToolSchema, ToolResult } from './tools'
 
 type CodingExecutor = (args: Record<string, unknown>) => Promise<ToolResult>
@@ -54,6 +69,7 @@ async function write_file(args: Record<string, unknown>): Promise<ToolResult> {
     // user watches the files land. Not awaited: launching a GUI must not sit in
     // front of the write's result.
     void maybeOpenEditorOnFirstWrite(getWorkspaceDir())
+    onFileMutated(path)
     return { ok: true, output: `Wrote ${Buffer.byteLength(content, 'utf8')} bytes to ${written}.` }
   } catch (err) {
     return { ok: false, error: `write_file failed: ${err instanceof Error ? err.message : String(err)}` }
@@ -92,10 +108,32 @@ async function edit_file(args: Record<string, unknown>): Promise<ToolResult> {
     await snapshotBeforeWrite(path)
     const result = await editSandboxFile(path, args.old_string, args.new_string, replaceAll)
     void maybeOpenEditorOnFirstWrite(getWorkspaceDir())
+    onFileMutated(path)
     const plural = result.replacements === 1 ? '' : 's'
     return { ok: true, output: `Replaced ${result.replacements} occurrence${plural} in ${result.path}.` }
   } catch (err) {
     return { ok: false, error: `edit_file failed: ${err instanceof Error ? err.message : String(err)}` }
+  }
+}
+
+async function apply_patch(args: Record<string, unknown>): Promise<ToolResult> {
+  const path = typeof args.path === 'string' ? args.path : ''
+  const diff = typeof args.diff === 'string' ? args.diff : ''
+  if (!path) return { ok: false, error: 'apply_patch requires a string "path".' }
+  if (!diff) {
+    return { ok: false, error: 'apply_patch requires a string "diff" (a unified diff with @@ hunks).' }
+  }
+  try {
+    // Same rollback contract as edit_file: snapshot the pre-image before the
+    // first mutation of this file within a snapshot transaction.
+    await snapshotBeforeWrite(path)
+    const result = await applyPatchToSandboxFile(path, diff)
+    void maybeOpenEditorOnFirstWrite(getWorkspaceDir())
+    onFileMutated(path)
+    const plural = result.hunks === 1 ? '' : 'es'
+    return { ok: true, output: `Applied ${result.hunks} hunk${plural} to ${result.path}.` }
+  } catch (err) {
+    return { ok: false, error: `apply_patch failed: ${err instanceof Error ? err.message : String(err)}` }
   }
 }
 
@@ -117,6 +155,65 @@ async function search_code(args: Record<string, unknown>): Promise<ToolResult> {
     return { ok: true, output: `${matches.length} match${plural}:\n${rendered}` }
   } catch (err) {
     return { ok: false, error: `search_code failed: ${err instanceof Error ? err.message : String(err)}` }
+  }
+}
+
+async function search_codebase_semantic(args: Record<string, unknown>): Promise<ToolResult> {
+  const query = typeof args.query === 'string' ? args.query : ''
+  if (!query.trim()) {
+    return { ok: false, error: 'search_codebase_semantic requires a string "query".' }
+  }
+  const topK = typeof args.top_k === 'number' && args.top_k > 0 ? Math.min(args.top_k, 20) : 6
+  // A red result here is not an error — degrade to the grep baseline so the loop
+  // keeps moving when embeddings/the native index are unavailable.
+  const result = await searchCodebaseSemantic(query, topK)
+  if (!result.ok) {
+    return {
+      ok: true,
+      output:
+        'Semantic codebase search is unavailable ' +
+        `(${result.reason ?? 'not ready'}). Use search_code (regex grep) instead.`
+    }
+  }
+  if (!result.results.length) {
+    return { ok: true, output: `No semantically relevant code for "${query}". Try search_code.` }
+  }
+  const rendered = result.results
+    .map((r) => `${r.source} (score ${r.score})\n${r.text}`)
+    .join('\n\n---\n')
+  return { ok: true, output: `Top ${result.results.length} matches for "${query}":\n\n${rendered}` }
+}
+
+async function find_definition(args: Record<string, unknown>): Promise<ToolResult> {
+  const symbol = typeof args.symbol === 'string' ? args.symbol.trim() : ''
+  if (!symbol) return { ok: false, error: 'find_definition requires a string "symbol".' }
+  try {
+    const result = await findDefinition(symbol)
+    if (!result.ok) {
+      return { ok: true, output: `No declaration of "${symbol}" found in the symbol map. Try search_code.` }
+    }
+    const rendered = result.defs
+      .map((d) => `${d.file}:${d.line} (${d.kind})${d.snippet ? `\n${d.snippet}` : ''}`)
+      .join('\n\n')
+    return { ok: true, output: `Definition(s) of "${symbol}":\n\n${rendered}` }
+  } catch (err) {
+    return { ok: false, error: `find_definition failed: ${err instanceof Error ? err.message : String(err)}` }
+  }
+}
+
+async function find_usages(args: Record<string, unknown>): Promise<ToolResult> {
+  const symbol = typeof args.symbol === 'string' ? args.symbol.trim() : ''
+  if (!symbol) return { ok: false, error: 'find_usages requires a string "symbol".' }
+  try {
+    const result = await findUsages(symbol)
+    const header = result.note ? `${result.note}\n\n` : ''
+    if (!result.usages.length) {
+      return { ok: true, output: `${header}No usages of "${symbol}" found outside its declaration.` }
+    }
+    const rendered = result.usages.map((u) => `${u.file}:${u.line}: ${u.text}`).join('\n')
+    return { ok: true, output: `${header}Usages of "${symbol}" (${result.usages.length}):\n${rendered}` }
+  } catch (err) {
+    return { ok: false, error: `find_usages failed: ${err instanceof Error ? err.message : String(err)}` }
   }
 }
 
@@ -297,6 +394,30 @@ export const codingToolSchemas: ToolSchema[] = [
     }
   },
   {
+    name: 'apply_patch',
+    description:
+      'Apply a unified diff to ONE existing workspace file. Use this instead of several edit_file ' +
+      'calls when a single file needs changes in several places — all the hunks land in one call, ' +
+      'saving turns. "diff" is a standard unified diff: one or more "@@ -old,len +new,len @@" hunks ' +
+      'whose context and removed (" " and "-") lines must still match the file, followed by added ' +
+      '("+") lines. Any "---"/"+++" header lines are ignored (the file comes from "path"). Line ' +
+      'numbers may drift, but if the surrounding context no longer matches the patch is rejected — ' +
+      're-read the file and regenerate the hunk rather than retrying blindly.',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Workspace-relative file path, e.g. "src/index.js".' },
+        diff: {
+          type: 'string',
+          description:
+            'Unified diff body with at least one "@@ ... @@" hunk. Prefix context lines with a space, ' +
+            'removed lines with "-", added lines with "+".'
+        }
+      },
+      required: ['path', 'diff']
+    }
+  },
+  {
     name: 'search_code',
     description:
       'Search the workspace for a regular expression and return matching lines as "file:line: text". ' +
@@ -318,6 +439,56 @@ export const codingToolSchemas: ToolSchema[] = [
         max_results: { type: 'number', description: 'Cap on returned matches (default 100).' }
       },
       required: ['pattern']
+    }
+  },
+  {
+    name: 'search_codebase_semantic',
+    description:
+      'Find code by MEANING, not by literal text. Ask a natural-language question — ' +
+      '"where is the auth token refreshed?", "how are snapshots restored?" — and get back the most ' +
+      'semantically relevant source chunks, ranked. Use this FIRST on an unfamiliar codebase to locate ' +
+      'the right area, then read_file or search_code to zoom in. It complements search_code (exact ' +
+      'regex): reach for this when you know WHAT you want but not the exact identifier. If the index ' +
+      'is unavailable it will tell you to use search_code instead.',
+    parameters: {
+      type: 'object',
+      properties: {
+        query: {
+          type: 'string',
+          description: 'A natural-language description of the code you are looking for.'
+        },
+        top_k: { type: 'number', description: 'How many chunks to return (default 6, max 20).' }
+      },
+      required: ['query']
+    }
+  },
+  {
+    name: 'find_definition',
+    description:
+      'Jump to where a symbol is DECLARED using the prebuilt symbol map — function, class, const, ' +
+      'interface, type or enum. Returns file:line plus a short snippet, without grepping the whole ' +
+      'tree. Use this before editing or renaming a symbol you did not define in this session. Falls ' +
+      'back to a hint to use search_code when the symbol is not in the map.',
+    parameters: {
+      type: 'object',
+      properties: {
+        symbol: { type: 'string', description: 'Exact identifier to locate, e.g. "refreshToken".' }
+      },
+      required: ['symbol']
+    }
+  },
+  {
+    name: 'find_usages',
+    description:
+      'List where a symbol is REFERENCED across the workspace (word-boundary matches, excluding its ' +
+      'own declaration), annotated with which files import the file that defines it. Use this to scope ' +
+      'a multi-file refactor — see every call site before you change a signature.',
+    parameters: {
+      type: 'object',
+      properties: {
+        symbol: { type: 'string', description: 'Exact identifier to find references to.' }
+      },
+      required: ['symbol']
     }
   },
   {
@@ -430,7 +601,11 @@ const registry: Record<string, CodingExecutor> = {
   write_file,
   read_file,
   edit_file,
+  apply_patch,
   search_code,
+  search_codebase_semantic,
+  find_definition,
+  find_usages,
   git,
   list_files,
   run_tests,
@@ -477,7 +652,7 @@ const GIT_TREE_MUTATING = new Set(['checkout', 'switch', 'restore', 'rm', 'mv', 
  * a green run and then declare victory.
  */
 export function mutatesWorkspace(name: string, args: Record<string, unknown>): boolean {
-  if (name === 'write_file' || name === 'edit_file') return true
+  if (name === 'write_file' || name === 'edit_file' || name === 'apply_patch') return true
   if (name === 'git') {
     const sub = typeof args.subcommand === 'string' ? args.subcommand.trim() : ''
     return GIT_TREE_MUTATING.has(sub)
@@ -494,8 +669,16 @@ export function describeCodingToolCall(name: string, args: Record<string, unknow
       return `Read ${String(args.path ?? 'file')}`
     case 'edit_file':
       return `Edit ${String(args.path ?? 'file')}`
+    case 'apply_patch':
+      return `Patch ${String(args.path ?? 'file')}`
     case 'search_code':
       return `Search for "${String(args.pattern ?? '')}"${args.glob ? ` in ${String(args.glob)}` : ''}`
+    case 'search_codebase_semantic':
+      return `Semantic search: "${String(args.query ?? '')}"`
+    case 'find_definition':
+      return `Find definition of ${String(args.symbol ?? '')}`
+    case 'find_usages':
+      return `Find usages of ${String(args.symbol ?? '')}`
     case 'git': {
       const rest = Array.isArray(args.args) ? args.args.filter((a) => typeof a === 'string') : []
       return `git ${String(args.subcommand ?? '')}${rest.length ? ` ${rest.join(' ')}` : ''}`.trim()
