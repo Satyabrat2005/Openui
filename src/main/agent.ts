@@ -6,6 +6,8 @@ import { codingToolSchemas, executeCodingTool, describeCodingToolCall } from './
 import { VerifyGate } from './verifyGate'
 import { detectProjectType, getProjectProfile } from './projectProfiles'
 import { getWorkspaceDir, setActiveProject } from './sandbox'
+import { ensureCodebaseIndexed } from './codebaseIndex'
+import { buildCodebaseMap } from './codebaseMap'
 import { deriveProjectSlug } from './projectName'
 import { armEditorAutoOpen } from './editor'
 import { generatePlan, looksLikeTask, type Plan } from './planner'
@@ -549,6 +551,10 @@ async function runBuilderSession(win: BrowserWindow, tier: Tier, userMessage: st
     detail: getWorkspaceDir()
   } satisfies TaskUpdate)
   armEditorAutoOpen()
+  // Warm the semantic index + symbol map for this project in the background
+  // (the index self-degrades when the native module / Ollama is unavailable).
+  void ensureCodebaseIndexed()
+  void buildCodebaseMap()
 
   // Same project-type branching the unattended runner uses, so "build me a
   // Codeforces solution" is verified with run_cpp rather than `npm test`.
