@@ -5,7 +5,7 @@
  * in Electron, nut-js and Playwright at import time). Pure and dependency-free
  * apart from node:path / node:os.
  */
-import { resolve as resolvePath, join as joinPath, sep } from 'node:path'
+import { resolve as resolvePath, join as joinPath, sep, isAbsolute } from 'node:path'
 import { homedir } from 'node:os'
 
 /**
@@ -43,7 +43,9 @@ export function resolveSafePath(raw: unknown, opts: { mutating: boolean }): stri
   const expanded =
     input === '~' || input.startsWith('~/') || input.startsWith('~\\')
       ? joinPath(homedir(), input.slice(1))
-      : input
+      : isAbsolute(input)
+        ? input
+        : joinPath(homedir(), input)
   const abs = resolvePath(expanded)
   if (SENSITIVE_PATH_RE.test(abs)) {
     throw new Error('that path is off-limits — it holds credentials or secrets.')

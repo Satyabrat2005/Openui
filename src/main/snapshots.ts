@@ -81,6 +81,32 @@ export async function beginTaskSnapshot(taskId: string): Promise<void> {
 }
 
 /**
+ * Re-open an EXISTING snapshot for a task being resumed across sessions (§7).
+ * Unlike beginTaskSnapshot, this does NOT wipe the dir — it loads the saved
+ * manifest so the resumed run keeps its ORIGINAL pre-images and can still roll
+ * back to the true baseline the task started from, not to its half-finished
+ * mid-point. Returns false when no valid manifest exists (caller then begins a
+ * fresh snapshot). Never throws.
+ */
+export async function resumeTaskSnapshot(taskId: string): Promise<boolean> {
+  const dir = join(getSnapshotRoot(), dirNameFor(taskId))
+  try {
+    const manifest = JSON.parse(await readFile(join(dir, MANIFEST_NAME), 'utf8')) as SnapshotManifest
+    if (
+      manifest.taskId !== taskId ||
+      !Array.isArray(manifest.overwritten) ||
+      !Array.isArray(manifest.created)
+    ) {
+      return false
+    }
+    active = manifest
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
  * Record the pre-image of a workspace file about to be (over)written. Safe to
  * call when no snapshot is active (interactive write_file outside a task run) —
  * it is then a no-op. Never throws: snapshot failure must not block the write,

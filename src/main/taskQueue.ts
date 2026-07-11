@@ -11,6 +11,7 @@
  * This queue serialises work into LANES with fixed concurrency caps:
  *   browser: 1   — one shared Playwright context / one visual loop at a time
  *   coding:  1   — the sandbox workspace is a single shared directory
+ *   coding-worker: N — parallel §3 sub-agents, each in its own git worktree
  *   finetune: 1  — GPU + Ollama model registry are exclusive resources
  *   chat:    2   — interactive turns may overlap a background task
  *
@@ -20,15 +21,23 @@
  * restart; the queue only guarantees orderly execution within one app session.
  * Every transition is journalled through runLog so a run can be reconstructed.
  */
+import { cpus } from 'node:os'
 import { startRun, type RunLog } from './runLog'
 
-export type Lane = 'browser' | 'coding' | 'chat' | 'finetune'
+export type Lane = 'browser' | 'coding' | 'chat' | 'finetune' | 'coding-worker'
+
+// Parallel coding sub-agents (§3) each run in an ISOLATED git worktree, so —
+// unlike the single-directory `coding` lane — several can run at once without
+// racing on the workspace. Cap at the core count (min 2, max 4) so a burst of
+// sub-tasks saturates the CPU without oversubscribing it.
+const CODING_WORKER_LIMIT = Math.max(2, Math.min(4, cpus().length || 2))
 
 const LANE_LIMITS: Record<Lane, number> = {
   browser: 1,
   coding: 1,
   chat: 2,
-  finetune: 1
+  finetune: 1,
+  'coding-worker': CODING_WORKER_LIMIT
 }
 
 // Backstop so a bug cannot grow the queue without bound (each entry holds a

@@ -198,6 +198,14 @@ export default function AssistantPopup({
       captionLockedRef.current = false
     })
 
+    // Non-fatal notice for the in-flight turn (e.g. the GPU runner crashed and we
+    // fell back to CPU). The turn keeps streaming, so unlike onError we don't touch
+    // the assistant bubble — just show the notice as a status caption.
+    const offWarning = window.openui.onWarning((warning) => {
+      const text = warning?.message ?? ''
+      if (text) setCaption(`⚠️ ${text}`)
+    })
+
     // Fired by main process after Whisper returns, before the agent streams.
     const offTranscript = window.openui.onTranscript((text) => {
       beginTask(text, 'chat')
@@ -210,6 +218,7 @@ export default function AssistantPopup({
       offChunk()
       offDone()
       offError()
+      offWarning()
       offTranscript()
     }
   }, [setCaption, captionLockedRef, appendToLastAssistant, beginTurn, beginTask])

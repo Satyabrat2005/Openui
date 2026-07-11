@@ -14,12 +14,12 @@ import { readFile, readdir, writeFile } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { join, extname } from 'node:path'
 import { app } from 'electron'
-import { withOllamaLock } from './ollamaLock'
+import { VECTOR_DIM, RAG_UNAVAILABLE_MSG, chunkText, embedText, loadHnsw } from './embeddings'
+import type { ChunkMeta } from './embeddings'
 
-const EMBED_MODEL = 'nomic-embed-text'
-const VECTOR_DIM = 768          // nomic-embed-text output dimension
-const CHUNK_SIZE = 512          // characters per chunk
-const CHUNK_OVERLAP = 64        // overlap between consecutive chunks
+// Re-exported for callers that import it from rag.ts (its original home).
+export { RAG_UNAVAILABLE_MSG }
+
 const MAX_INDEX_ELEMENTS = 10_000
 
 // ── paths ─────────────────────────────────────────────────────────────────────
@@ -34,84 +34,10 @@ function metaPath(): string {
 
 // ── types ─────────────────────────────────────────────────────────────────────
 
-interface ChunkMeta {
-  text: string
-  source: string
-  chunkIndex: number
-}
-
 export interface SearchResult {
   text: string
   source: string
   score: number
-}
-
-// ── text utilities ─────────────────────────────────────────────────────────────
-
-function chunkText(text: string, source: string): ChunkMeta[] {
-  const normalized = text.replace(/\r\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim()
-  const chunks: ChunkMeta[] = []
-  let start = 0
-  let idx = 0
-  while (start < normalized.length) {
-    const end = Math.min(start + CHUNK_SIZE, normalized.length)
-    const chunk = normalized.slice(start, end).trim()
-    if (chunk.length > 20) {
-      chunks.push({ text: chunk, source, chunkIndex: idx++ })
-    }
-    if (end === normalized.length) break
-    start += CHUNK_SIZE - CHUNK_OVERLAP
-  }
-  return chunks
-}
-
-// ── embedding ─────────────────────────────────────────────────────────────────
-
-async function embedText(text: string): Promise<number[]> {
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const mod = require('ollama')
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const client: any = mod.default ?? mod
-  // Embeddings share the GPU with chat/coding generation, so run them through the
-  // same single-flight lock — one local inference on the 8 GB card at a time (see
-  // ollamaLock.ts). The model itself is unchanged: nomic-embed-text stays the
-  // embedder; only concurrency is gated here.
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const res: any = await withOllamaLock(() => client.embeddings({ model: EMBED_MODEL, prompt: text }))
-  const vec: number[] = res.embedding
-  if (!Array.isArray(vec) || vec.length !== VECTOR_DIM) {
-    throw new Error(
-      `Unexpected embedding dimension: got ${Array.isArray(vec) ? vec.length : typeof vec}, ` +
-        `expected ${VECTOR_DIM}. Is Ollama running with the ${EMBED_MODEL} model pulled?`
-    )
-  }
-  return vec
-}
-
-// ── HNSWLIB helpers ───────────────────────────────────────────────────────────
-
-/**
- * Message surfaced when the native vector-index module is missing. The Windows
- * trial build ships without `hnswlib-node` because it cannot be compiled against
- * Electron's ABI on the build runner, so RAG is unavailable there.
- */
-export const RAG_UNAVAILABLE_MSG =
-  'Local knowledge base (RAG) is not available in this build — it currently ships on macOS only.'
-
-/**
- * Returns the `HierarchicalNSW` constructor, or `null` when `hnswlib-node` is
- * not present in this build. Callers must degrade gracefully on `null` rather
- * than crashing the main process.
- */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function loadHnsw(): any | null {
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const mod = require('hnswlib-node')
-    return mod.HierarchicalNSW ?? mod.default?.HierarchicalNSW ?? null
-  } catch {
-    return null
-  }
 }
 
 // ── public API ────────────────────────────────────────────────────────────────

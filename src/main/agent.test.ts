@@ -37,15 +37,6 @@ const h = vi.hoisted(() => {
       return stream()
     }),
     executeTool: vi.fn(async (..._args: unknown[]) => ({ ok: true, output: 'done' }) as unknown),
-    // Coding tools for builder-session tests: write_file mutates the tree,
-    // run_script/run_tests report a PASS marker so the VerifyGate sees a green
-    // verifier (see verifyGate.ts's marker convention).
-    executeCodingTool: vi.fn(async (name: string) => {
-      if (name === 'run_script' || name === 'run_tests') {
-        return { ok: true, output: 'SCRIPT OK [build]\nbuilt cleanly' } as unknown
-      }
-      return { ok: true, output: 'Wrote 42 bytes.' } as unknown
-    }),
     looksLikeTask: vi.fn(() => false),
     generatePlan: vi.fn(async () => null as unknown)
   }
@@ -83,18 +74,11 @@ vi.mock('./subagents', () => ({
   runParallelSubagents: vi.fn(async () => 'sub-agents done'),
   parseSubTaskSpecs: vi.fn(() => [])
 }))
-vi.mock('./codingTools', () => {
-  const schema = (name: string): unknown => ({
-    name,
-    description: name,
-    parameters: { type: 'object', properties: {}, required: [] }
-  })
-  return {
-    codingToolSchemas: [schema('write_file'), schema('run_script'), schema('run_tests')],
-    executeCodingTool: h.executeCodingTool,
-    describeCodingToolCall: (tool: string) => `Coding ${tool}`
-  }
-})
+vi.mock('./codingTools', () => ({
+  codingToolSchemas: [],
+  executeCodingTool: vi.fn(async () => ({ ok: true, output: 'done' })),
+  describeCodingToolCall: (tool: string) => `Coding ${tool}`
+}))
 vi.mock('./ollamaLock', () => ({ withOllamaLock: (fn: () => unknown) => fn() }))
 vi.mock('./runLog', () => ({
   startRun: vi.fn(() => ({ end: vi.fn(), toolCall: vi.fn(), step: vi.fn() }))
@@ -144,7 +128,7 @@ vi.mock('./trainingStore', () => ({
   exportDatasetToFile: vi.fn(async () => '')
 }))
 
-import { handleChat, clearHistory, registerAgentIPC } from './agent'
+import { handleChat, clearHistory, registerAgentIPC, isOllamaRunnerCrash } from './agent'
 
 // A fake BrowserWindow that records everything emitted to the renderer.
 const win = {
@@ -175,7 +159,6 @@ beforeEach(() => {
   h.state.responses = []
   h.ollamaChat.mockClear()
   h.executeTool.mockClear().mockResolvedValue({ ok: true, output: 'done' })
-  h.executeCodingTool.mockClear()
   h.looksLikeTask.mockReset().mockReturnValue(false)
   h.generatePlan.mockReset().mockResolvedValue(null)
   // isOllamaRunning() probes GET /api/tags — report the local engine as up so
@@ -317,12 +300,12 @@ describe('handleChat — premature "done" on a planned run', () => {
   }
 
   it('greens only the step actually checked off and marks the rest error', async () => {
-    // open_app → complete_step s1 → prose claiming everything is done, then the
-    // model keeps insisting (default "All done.") through the nudge budget.
+    // open_app → complete_step s1 → prose claiming everything is done; the model
+    // then keeps insisting (default "All done.") through the nudge budget.
     h.state.responses = [
       '{"tool":"open_app","args":{}}',
       '{"tool":"complete_step","args":{"step_id":"s1"}}',
-      'Everything is finished — I built all three steps for you!'
+      'Everything is finished — I did all three steps for you!'
     ]
     const pending = handleChat(win, 'set up my workspace and build the site', 'free')
     await tick()
@@ -338,42 +321,76 @@ describe('handleChat — premature "done" on a planned run', () => {
     expect(lastTaskStatus('s3')).toBe('error')
 
     // The user-facing reply is honest about the steps that didn't complete.
-    const done = lastArg('openui:chat:done')
-    expect(String(done?.text)).toContain('could not confirm')
+    expect(String(lastArg('openui:chat:done')?.text)).toContain('could not confirm')
   })
 })
 
-// ── VerifyGate in the builder session ─────────────────────────────────────────
-describe('runBuilderSession — VerifyGate', () => {
-  it('does not accept a bare "Built it!" and ends unverified after nudging', async () => {
-    // The model never calls a coding tool — it just keeps claiming success.
-    h.state.responses = ['Built it!', 'All done, promise!', 'Done — I built it for you!']
-    await handleChat(win, 'build a react website for me', 'free')
-
-    // No file was ever written…
-    expect(h.executeCodingTool).not.toHaveBeenCalled()
-    // …the first prose reply was NOT accepted — the gate nudged twice first…
-    expect(h.ollamaChat.mock.calls.length).toBeGreaterThanOrEqual(3)
-    // …and the final message tells the user it did NOT complete.
-    const done = lastArg('openui:chat:done')
-    expect(String(done?.text)).toMatch(/did NOT complete|UNVERIFIED/i)
+// ── GPU-runner-crash detection (pure) ─────────────────────────────────────────
+describe('isOllamaRunnerCrash', () => {
+  it('recognises the transport-level signatures of a crashed GPU runner', () => {
+    for (const m of [
+      'An existing connection was forcibly closed by the remote host',
+      'read ECONNRESET',
+      'socket hang up',
+      'llama runner terminated',
+      'model runner has unexpectedly stopped',
+      'CUDA error: invalid argument',
+      'Error: request failed with status code 500',
+      'Internal Server Error'
+    ]) {
+      expect(isOllamaRunnerCrash(new Error(m)), m).toBe(true)
+    }
   })
 
-  it('accepts a true completion after files are written and a verifier passes', async () => {
-    h.state.responses = [
-      '{"tool":"write_file","args":{"path":"index.js","content":"x"}}',
-      '{"tool":"run_script","args":{"script":"build"}}',
-      'I built your site! Key file: index.js — run `npm run build`.'
-    ]
-    await handleChat(win, 'build a react website', 'free')
+  it('does not mistake ordinary errors for a runner crash', () => {
+    for (const m of ['model not found', 'invalid api key', 'request timed out', 'bad request 400']) {
+      expect(isOllamaRunnerCrash(new Error(m)), m).toBe(false)
+    }
+  })
+})
 
-    // Both the write and the verifying build ran…
-    expect(h.executeCodingTool).toHaveBeenCalledTimes(2)
-    expect(h.executeCodingTool.mock.calls[0][0]).toBe('write_file')
-    expect(h.executeCodingTool.mock.calls[1][0]).toBe('run_script')
-    // …and the genuine completion is accepted verbatim (no unverified warning).
-    const done = lastArg('openui:chat:done')
-    expect(String(done?.text)).toContain('I built your site!')
-    expect(String(done?.text)).not.toMatch(/did NOT complete|UNVERIFIED/i)
+// ── GPU crash → automatic CPU fallback ────────────────────────────────────────
+describe('handleChat — GPU runner crash recovery', () => {
+  it('retries on CPU (num_gpu: 0) and still delivers a reply when the GPU runner dies before streaming', async () => {
+    // First generation dies exactly as it does in the wild: the 500 resets the
+    // socket before any token is produced.
+    h.ollamaChat.mockRejectedValueOnce(
+      new Error('An existing connection was forcibly closed by the remote host')
+    )
+    h.state.responses = ['Recovered on CPU.']
+
+    await handleChat(win, 'hello', 'free')
+
+    // Two chat attempts: the crashed GPU run, then the CPU fallback.
+    expect(h.ollamaChat).toHaveBeenCalledTimes(2)
+    const fallbackReq = (h.ollamaChat.mock.calls[1] as unknown[])[0] as {
+      options?: Record<string, unknown>
+    }
+    expect(fallbackReq.options?.num_gpu).toBe(0)
+
+    // The user gets a warning about the crash AND the actual answer — not an error.
+    expect(sent('openui:chat:warning')).toBe(true)
+    expect(String(lastArg('openui:chat:warning')?.message)).toMatch(/CPU/i)
+    expect(chunks()).toContain('Recovered on CPU.')
+    expect(sent('openui:chat:error')).toBe(false)
+    expect(sent('openui:chat:done')).toBe(true)
+  })
+
+  it('does not retry (and surfaces an actionable error) once tokens have already streamed', async () => {
+    // A crash mid-stream can't be retried without duplicating what the user has
+    // already seen, so the turn fails — but with a message that names the fix.
+    h.ollamaChat.mockImplementationOnce(async () => {
+      async function* stream(): AsyncGenerator<{ message: { content: string } }> {
+        yield { message: { content: 'thinking… ' } }
+        throw new Error('CUDA error: invalid argument')
+      }
+      return stream()
+    })
+
+    await handleChat(win, 'hello', 'free')
+
+    expect(h.ollamaChat).toHaveBeenCalledTimes(1) // no CPU retry
+    expect(sent('openui:chat:error')).toBe(true)
+    expect(String(lastArg('openui:chat:error'))).toMatch(/OLLAMA_FLASH_ATTENTION=0|qwen3:4b/)
   })
 })

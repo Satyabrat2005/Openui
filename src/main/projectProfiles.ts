@@ -28,6 +28,12 @@ export interface ProjectProfile {
   /** Appended to the task prompt — what verification to drive toward. */
   taskHint: string
   /**
+   * The tool names that COUNT as verification for this project type. Same set
+   * the verdict function recognises; named separately so the loop can tell the
+   * model which tool to run when it tries to finish without verifying.
+   */
+  verifiers: readonly string[]
+  /**
    * Classify one tool result for this project type: 'pass'/'fail' when the tool
    * IS this type's verification step, null when it isn't one. The loop keeps
    * the latest non-null verdict as its success signal.
@@ -59,14 +65,23 @@ export function detectProjectType(title: string, description?: string): ProjectT
   return 'node'
 }
 
-/** Verdict helper: PASS when output starts with any of `passMarks`. */
-function markerVerdict(
-  tools: Record<string, { pass: string }>
-): (tool: string, output: string) => 'pass' | 'fail' | null {
-  return (tool, output) => {
-    const spec = tools[tool]
-    if (!spec) return null
-    return output.startsWith(spec.pass) ? 'pass' : 'fail'
+/**
+ * Verdict helper: PASS when the tool's output starts with its pass marker.
+ * Returns BOTH halves of the verification contract from one map, so the list of
+ * verifier names can never drift out of sync with the function that judges them.
+ * Spread into a profile: `...markerVerdict({ run_tests: { pass: 'TESTS PASSED' } })`.
+ */
+function markerVerdict(tools: Record<string, { pass: string }>): {
+  verifiers: readonly string[]
+  verdict: (tool: string, output: string) => 'pass' | 'fail' | null
+} {
+  return {
+    verifiers: Object.keys(tools),
+    verdict: (tool, output) => {
+      const spec = tools[tool]
+      if (!spec) return null
+      return output.startsWith(spec.pass) ? 'pass' : 'fail'
+    }
   }
 }
 
@@ -81,7 +96,7 @@ const PROFILES: Record<ProjectType, ProjectProfile> = {
     label: 'Node.js project',
     promptAddendum: `PROJECT TYPE: Node.js. Standard npm workflow — write package.json with a "test" script, install dependencies, and verify with run_tests until it passes.`,
     taskHint: 'Complete this task in the workspace, then run the tests until they pass.',
-    verdict: markerVerdict({ run_tests: { pass: 'TESTS PASSED' } })
+    ...markerVerdict({ run_tests: { pass: 'TESTS PASSED' } })
   },
   website: {
     type: 'website',
@@ -92,7 +107,7 @@ const PROFILES: Record<ProjectType, ProjectProfile> = {
 - Verify your work: with a package.json, run_script "build" (or "dev" as a boot smoke test) or run_tests if you wrote tests. A plain static site with no package.json cannot be executed here — in that case make read_file/list_files checks and say clearly in your summary that the site is static and was not smoke-run.`,
     taskHint:
       'Build the site in the workspace. Verify it: run the build/dev script (or tests) if it has a package.json.',
-    verdict: markerVerdict({
+    ...markerVerdict({
       run_tests: { pass: 'TESTS PASSED' },
       run_script: { pass: 'SCRIPT OK' }
     })
@@ -106,7 +121,7 @@ const PROFILES: Record<ProjectType, ProjectProfile> = {
 ${PYTHON_ADDENDUM_SHARED}`,
     taskHint:
       'Implement the ML task in Python. Verify with run_pytest and a run_python smoke run of the training script until both pass.',
-    verdict: markerVerdict({
+    ...markerVerdict({
       run_pytest: { pass: 'PYTEST PASSED' },
       run_python: { pass: 'PYTHON RUN OK' }
     })
@@ -120,7 +135,7 @@ ${PYTHON_ADDENDUM_SHARED}`,
 ${PYTHON_ADDENDUM_SHARED}`,
     taskHint:
       'Implement the deep-learning task in Python. Verify with run_pytest and a run_python smoke run of the training script until both pass.',
-    verdict: markerVerdict({
+    ...markerVerdict({
       run_pytest: { pass: 'PYTEST PASSED' },
       run_python: { pass: 'PYTHON RUN OK' }
     })
@@ -135,7 +150,7 @@ ${PYTHON_ADDENDUM_SHARED}`,
 - If the samples don't match, fix main.cpp and re-run. Do not just restate the expected answer; the program must produce it.`,
     taskHint:
       'Solve the problem in a single main.cpp. Verify with run_cpp against the sample input(s) until the output matches.',
-    verdict: markerVerdict({ run_cpp: { pass: 'CPP RUN OK' } })
+    ...markerVerdict({ run_cpp: { pass: 'CPP RUN OK' } })
   }
 }
 

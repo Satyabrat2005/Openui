@@ -23,6 +23,10 @@ describe('resolveSafePath — tilde expansion', () => {
     expect(resolveSafePath('~', { mutating: false })).toBe(HOME)
     expect(resolveSafePath('~/Documents', { mutating: true })).toBe(join(HOME, 'Documents'))
   })
+
+  it('treats plain relative paths as home-relative user paths', () => {
+    expect(resolveSafePath('Downloads/test', { mutating: true })).toBe(join(HOME, 'Downloads', 'test'))
+  })
 })
 
 describe('resolveSafePath — credential blocklist', () => {

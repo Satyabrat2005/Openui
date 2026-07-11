@@ -16,6 +16,7 @@
 import type { BrowserWindow } from 'electron'
 import { callModel, extractFirstJsonObject, type Message } from './agent'
 import type { Tier } from './tools'
+import type { AgentTask } from './tasks'
 
 /** A fully-formed plan: a one-line goal plus an ordered list of step titles. */
 export interface Plan {
@@ -97,4 +98,150 @@ export async function generatePlan(
 
   if (steps.length < 2) return null
   return { summary: summary || 'Task plan', steps }
+}
+
+// --- Coding-task decomposition (§3) ---------------------------------------
+//
+// A large autonomous coding task is split into independent sub-tasks so the loop
+// can run several in parallel (each in its own worktree) instead of grinding one
+// linear 20-turn loop. Independence is expressed structurally: sub-tasks with
+// disjoint `files` and empty `dependsOn` can run concurrently; the rest run in
+// dependency order.
+
+/** Upper bound on sub-tasks — beyond this the coordination cost outweighs the win. */
+export const MAX_SUBTASKS = 6
+
+// Per-task tool-call budget (§3). Coding needs more turns than the interactive
+// assistant (write → test → fix cycles); the budget grows with task complexity
+// from a floor up to a ceiling.
+const CODING_TURN_FLOOR = 20
+const CODING_TURN_CEILING = 48
+const CODING_TURN_PER_STEP = 5
+
+/**
+ * Dynamic per-task turn budget (§3), mirroring the interactive planner's
+ * `min(CEILING, BASE + steps*perStep)`. `steps` is estimated from the task's own
+ * enumerated deliverables (bullet/numbered lines), optionally overridden by a
+ * known sub-task count. Pure and deterministic so it is unit-testable. A plain,
+ * unstructured task yields exactly CODING_TURN_FLOOR — behaviour is unchanged
+ * unless the task is genuinely large.
+ */
+export function computeTurnBudget(
+  task: { title: string; description?: string },
+  subtaskCount = 0
+): number {
+  const text = `${task.title}\n${task.description ?? ''}`
+  const bullets = (text.match(/^[\t ]*(?:[-*]|\d+[.)])[\t ]+\S/gm) ?? []).length
+  const steps = Math.max(0, Math.floor(subtaskCount), bullets)
+  return Math.min(CODING_TURN_CEILING, CODING_TURN_FLOOR + steps * CODING_TURN_PER_STEP)
+}
+
+/** One unit of a decomposed coding task. */
+export interface SubTask {
+  /** Stable id used to express dependencies (`dependsOn`). */
+  id: string
+  /** Short imperative title for the UI / commit message. */
+  title: string
+  /** Full instruction handed to a coding worker as its task prompt. */
+  instruction: string
+  /** Files this sub-task expects to touch; disjoint sets ⇒ safe to parallelise. */
+  files: string[]
+  /** Ids of sub-tasks that must finish first. */
+  dependsOn: string[]
+}
+
+const DECOMPOSE_SYSTEM_PROMPT = `You break a software task into the smallest set of INDEPENDENT sub-tasks that can be built and tested separately.
+
+Rules:
+- Emit 2 to ${MAX_SUBTASKS} sub-tasks. If the task is small and cohesive, emit an empty list instead of forcing a split.
+- Prefer sub-tasks that touch DISJOINT files so they can run in parallel.
+- Use "dependsOn" only when one sub-task genuinely needs another's output; keep the dependency graph shallow.
+- Each "instruction" must be self-contained: a worker sees only that instruction, not the others.
+
+Respond with ONLY a JSON object, no prose:
+{"subtasks":[{"id":"s1","title":"...","instruction":"...","files":["src/a.ts"],"dependsOn":[]}]}`
+
+function asStringArray(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((v): v is string => typeof v === 'string').map((v) => v.trim()).filter(Boolean)
+    : []
+}
+
+/**
+ * Heuristic gate: is this task big/broad enough to be worth decomposing? Pure and
+ * deterministic so it is unit-testable without a model. A task qualifies when it
+ * enumerates several deliverables, or is long AND uses breadth language ("across
+ * all…", "refactor", "each module"). Small focused tasks return false and run on
+ * the normal single loop.
+ */
+export function isLargeTask(task: Pick<AgentTask, 'title' | 'description'>): boolean {
+  const text = `${task.title}\n${task.description ?? ''}`
+  const bulletCount = (text.match(/^[\t ]*(?:[-*]|\d+[.)])[\t ]+\S/gm) ?? []).length
+  const multiDeliverable = bulletCount >= 3
+  const longEnough = text.length >= 600
+  const breadthKeyword =
+    /\b(refactor|migrat(?:e|ion)|rewrite|overhaul|end[- ]to[- ]end)\b|across (?:the |all |multiple )|each (?:file|module|component|page|route)|multiple (?:files|modules|components|pages|routes|places)/i.test(
+      text
+    )
+  return multiDeliverable || (longEnough && breadthKeyword)
+}
+
+/**
+ * Ask the model to decompose a coding task into independent sub-tasks. Returns an
+ * empty array when the task should stay whole (small/cohesive, or the model
+ * declined to split), so the caller falls back to the normal single loop. Invalid
+ * or partial JSON degrades to `[]` rather than throwing — decomposition is an
+ * optimisation, never a hard dependency of the loop.
+ */
+export async function decomposeCodingTask(
+  win: BrowserWindow,
+  tier: Tier,
+  task: Pick<AgentTask, 'title' | 'description'>
+): Promise<SubTask[]> {
+  const prompt = `Task title: ${task.title}\n\nTask details:\n${task.description ?? '(none)'}`
+  const messages: Message[] = [{ role: 'user', content: prompt }]
+
+  let raw: string
+  try {
+    raw = await callModel(win, tier, messages, DECOMPOSE_SYSTEM_PROMPT, () => {}, { coding: true })
+  } catch {
+    return []
+  }
+
+  const jsonText = extractFirstJsonObject(raw)
+  if (!jsonText) return []
+
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(jsonText)
+  } catch {
+    return []
+  }
+  if (typeof parsed !== 'object' || parsed === null) return []
+
+  const rawList = (parsed as Record<string, unknown>).subtasks
+  if (!Array.isArray(rawList)) return []
+
+  const subtasks: SubTask[] = []
+  const seenIds = new Set<string>()
+  for (let i = 0; i < rawList.length && subtasks.length < MAX_SUBTASKS; i++) {
+    const entry = rawList[i]
+    if (typeof entry !== 'object' || entry === null) continue
+    const obj = entry as Record<string, unknown>
+    const instruction = typeof obj.instruction === 'string' ? obj.instruction.trim() : ''
+    if (!instruction) continue
+    let id = typeof obj.id === 'string' && obj.id.trim() ? obj.id.trim() : `s${i + 1}`
+    // Guarantee unique ids so dependsOn resolution and worktree names stay distinct.
+    while (seenIds.has(id)) id = `${id}_${i + 1}`
+    seenIds.add(id)
+    const title = typeof obj.title === 'string' && obj.title.trim() ? obj.title.trim() : instruction.slice(0, 60)
+    subtasks.push({ id, title, instruction, files: asStringArray(obj.files), dependsOn: asStringArray(obj.dependsOn) })
+  }
+
+  // Drop dependencies that point at ids we discarded, so the scheduler never
+  // deadlocks waiting on a sub-task that does not exist.
+  for (const st of subtasks) st.dependsOn = st.dependsOn.filter((d) => seenIds.has(d) && d !== st.id)
+
+  // Fewer than 2 valid sub-tasks ⇒ not worth the parallel machinery.
+  return subtasks.length >= 2 ? subtasks : []
 }
