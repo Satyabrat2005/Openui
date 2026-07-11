@@ -58,6 +58,7 @@ import {
   getAnthropicKey,
   resolveCloudModel,
   isCloudRoutingEnabled,
+  isCloudTierEnabled,
   shouldRouteToCloud,
   streamAnthropic,
   DEFAULT_CLOUD_MODEL
@@ -85,6 +86,9 @@ beforeEach(() => {
   mocks.sdk.lastParams = undefined
   delete process.env.ANTHROPIC_API_KEY
   delete process.env.ANTHROPIC_MODEL
+  // Default to the shipped launch config: cloud tier OFF. Tests that exercise the
+  // cloud path opt in explicitly with OPENUI_ENABLE_CLOUD=1.
+  delete process.env.OPENUI_ENABLE_CLOUD
   vi.spyOn(console, 'warn').mockImplementation(() => {})
 })
 
@@ -92,6 +96,7 @@ afterEach(() => {
   vi.restoreAllMocks()
   delete process.env.ANTHROPIC_API_KEY
   delete process.env.ANTHROPIC_MODEL
+  delete process.env.OPENUI_ENABLE_CLOUD
 })
 
 describe('getAnthropicKey', () => {
@@ -149,18 +154,44 @@ describe('isCloudRoutingEnabled', () => {
   })
 })
 
+describe('isCloudTierEnabled — the launch master switch', () => {
+  it('is off by default (Ollama-only launch)', () => {
+    expect(isCloudTierEnabled()).toBe(false)
+  })
+
+  it('turns on only for OPENUI_ENABLE_CLOUD=1', () => {
+    process.env.OPENUI_ENABLE_CLOUD = '1'
+    expect(isCloudTierEnabled()).toBe(true)
+    process.env.OPENUI_ENABLE_CLOUD = 'true'
+    expect(isCloudTierEnabled()).toBe(false)
+    process.env.OPENUI_ENABLE_CLOUD = '0'
+    expect(isCloudTierEnabled()).toBe(false)
+  })
+})
+
 describe('shouldRouteToCloud — the gate that lets a turn leave the machine', () => {
+  it('stays local when the tier is disabled, even with key AND toggle on', () => {
+    // The shipped launch config: everything configured, but the master switch is
+    // off, so no turn ever leaves the machine.
+    process.env.ANTHROPIC_API_KEY = 'sk-env'
+    setSettings({ cloud_routing_enabled: true })
+    expect(shouldRouteToCloud()).toBe(false)
+  })
+
   it('stays local when routing is off, even with a key', () => {
+    process.env.OPENUI_ENABLE_CLOUD = '1'
     process.env.ANTHROPIC_API_KEY = 'sk-env'
     expect(shouldRouteToCloud()).toBe(false)
   })
 
   it('stays local when routing is on but no key is configured', () => {
+    process.env.OPENUI_ENABLE_CLOUD = '1'
     setSettings({ cloud_routing_enabled: true })
     expect(shouldRouteToCloud()).toBe(false)
   })
 
-  it('routes to cloud only when BOTH the toggle is on and a key exists', () => {
+  it('routes to cloud only when the tier is enabled AND the toggle is on AND a key exists', () => {
+    process.env.OPENUI_ENABLE_CLOUD = '1'
     process.env.ANTHROPIC_API_KEY = 'sk-env'
     setSettings({ cloud_routing_enabled: true })
     expect(shouldRouteToCloud()).toBe(true)
@@ -168,13 +199,23 @@ describe('shouldRouteToCloud — the gate that lets a turn leave the machine', (
 })
 
 describe('getAvailableModels — the pool must only advertise callable models', () => {
-  it('omits the cloud model when no key is configured', async () => {
+  it('omits the cloud model when the tier is disabled, even with a key', async () => {
+    // Launch default: master switch off → Ollama-only pool regardless of the key.
+    process.env.ANTHROPIC_API_KEY = 'sk-env'
     const { getAvailableModels } = await load()
     const models = await getAvailableModels()
     expect(models.some((m) => m.provider === 'anthropic')).toBe(false)
   })
 
-  it('advertises the resolved cloud model, prettified, when a key exists', async () => {
+  it('omits the cloud model when enabled but no key is configured', async () => {
+    process.env.OPENUI_ENABLE_CLOUD = '1'
+    const { getAvailableModels } = await load()
+    const models = await getAvailableModels()
+    expect(models.some((m) => m.provider === 'anthropic')).toBe(false)
+  })
+
+  it('advertises the resolved cloud model, prettified, when enabled and a key exists', async () => {
+    process.env.OPENUI_ENABLE_CLOUD = '1'
     process.env.ANTHROPIC_API_KEY = 'sk-env'
     const { getAvailableModels } = await load()
     const cloud = (await getAvailableModels()).find((m) => m.provider === 'anthropic')
@@ -182,6 +223,7 @@ describe('getAvailableModels — the pool must only advertise callable models', 
   })
 
   it('tracks a model override so the UI tag never lies about what will run', async () => {
+    process.env.OPENUI_ENABLE_CLOUD = '1'
     process.env.ANTHROPIC_API_KEY = 'sk-env'
     process.env.ANTHROPIC_MODEL = 'claude-sonnet-5'
     const { getAvailableModels } = await load()
