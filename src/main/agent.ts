@@ -3,6 +3,7 @@ import { BrowserWindow, ipcMain } from 'electron'
 import { toolSchemas, executeTool, describeToolCall, DESTRUCTIVE_TOOLS, type ToolSchema, type ToolResult, type PendingApprovalResult, type Tier } from './tools'
 import { SPAWN_SUBAGENTS_TOOL, runParallelSubagents, parseSubTaskSpecs } from './subagents'
 import { codingToolSchemas, executeCodingTool, describeCodingToolCall } from './codingTools'
+import { VerifyGate, isGiveUp } from './verifyGate'
 import { generatePlan, looksLikeTask, type Plan } from './planner'
 import { getMcpToolSchemas, callMcpTool } from './mcp-client'
 import { database } from './database'
@@ -435,7 +436,7 @@ Available tools:
 ${codingToolSchemas.map(renderSchema).join('\n')}
 
 Workflow:
-1. Scaffold the WHOLE project with write_file — package.json (correct dependencies + a "scripts" section), all source files, config, and at least one test where it makes sense. Write complete file contents each time.
+1. Scaffold the WHOLE project with write_file — package.json (correct dependencies + a "scripts" section), all source files, config, and at least one test where it makes sense. Write complete file contents each time. NEVER call run_script or run_tests until EVERY file that command depends on has already been written — a build that references a file you have not written yet will just fail. Write the source first, run second.
 2. If the project has dependencies, call install_dependencies once after writing package.json.
 3. Verify it works: call run_script to run the build (e.g. {"tool":"run_script","args":{"script":"build"}}) and/or run_tests. For a web app, running the "dev" script performs a boot smoke test (confirms it starts without crashing).
 4. If verification fails ("INSTALL FAILED" / "SCRIPT FAILED" / "TESTS FAILED"), read the offending file(s) with read_file, fix them with write_file, and re-run the failing step. Iterate until it passes.
@@ -457,15 +458,33 @@ function knownCodingToolNames(): Set<string> {
 async function runBuilderSession(win: BrowserWindow, tier: Tier, userMessage: string): Promise<string> {
   const messages: Message[] = [{ role: 'user', content: userMessage }]
   const codingNames = knownCodingToolNames()
+  // A build ALWAYS implies a side effect, so a prose "done" is only trustworthy
+  // once files were written AND a verifier passed. The gate withholds acceptance
+  // of an unearned "I built it!" and nudges the model to actually do the work.
+  const verify = new VerifyGate({ maxNudges: 2 })
 
   for (let turn = 0; turn < MAX_BUILDER_TURNS; turn++) {
-    const gate = new StreamGate((delta) => emit(win, 'openui:chat:chunk', delta))
-    const responseText = await callModel(win, tier, messages, BUILDER_SYSTEM_PROMPT, gate.push)
+    const streamGate = new StreamGate((delta) => emit(win, 'openui:chat:chunk', delta))
+    // A build is a coding task: prefer the code-tuned model (OLLAMA_CODE_MODEL /
+    // qwen2.5-coder). resolveOllamaModel falls back to the installed general model
+    // when no coder model is pulled, so this is safe on a single-model machine.
+    const responseText = await callModel(win, tier, messages, BUILDER_SYSTEM_PROMPT, streamGate.push, {
+      coding: true
+    })
     messages.push({ role: 'assistant', content: responseText })
 
     const toolCall = parseToolCallCore(responseText, codingNames)
-    gate.finalize(toolCall !== null)
-    if (!toolCall) return responseText.trim() // natural-language reply ⇒ done
+    streamGate.finalize(toolCall !== null)
+    if (!toolCall) {
+      // Natural-language reply. Accept it only when the gate has evidence the
+      // work was done and verified; otherwise push back (capped) or, once the
+      // budget is spent, hand the user an honest "unverified" reply.
+      const decision = verify.onFinalReply(responseText, { nextAction: nextBuilderAction(verify) })
+      if (decision.action === 'accept') return responseText.trim()
+      if (decision.action === 'reject') return `${decision.message}\n\n${responseText.trim()}`
+      messages.push({ role: 'user', content: decision.message! })
+      continue
+    }
 
     const taskId = `b${++taskSeq}`
     const label = describeCodingToolCall(toolCall.tool, toolCall.args)
@@ -473,6 +492,7 @@ async function runBuilderSession(win: BrowserWindow, tier: Tier, userMessage: st
     emit(win, 'openui:task:update', { id: taskId, label, status: 'working', detail: 'Building…' } satisfies TaskUpdate)
 
     const result = await executeCodingTool(toolCall.tool, toolCall.args)
+    verify.recordToolCall(toolCall.tool, result)
     emit(win, 'openui:task:update', {
       id: taskId,
       label,
@@ -484,6 +504,13 @@ async function runBuilderSession(win: BrowserWindow, tier: Tier, userMessage: st
   }
 
   return 'Reached the build-step limit for this request. Tell me if you want me to keep going.'
+}
+
+/** Name the concrete next tool a stalled builder turn should call, for the nudge. */
+function nextBuilderAction(verify: VerifyGate): string {
+  return verify.touchedWorkspace
+    ? 'run_script with {"script":"build"} (or run_tests)'
+    : 'write_file to scaffold the project files'
 }
 
 /**
@@ -579,11 +606,68 @@ function advancePlan(win: BrowserWindow, steps: PlanStepRow[], stepId: string): 
   }
 }
 
-/** Mark every not-yet-finished plan row as done (called when the agent wraps up). */
-function settlePlan(win: BrowserWindow, steps: PlanStepRow[]): void {
+/**
+ * Settle the checklist HONESTLY when the agent wraps up: a step is marked done
+ * ONLY if it was explicitly checked off via complete_step (tracked in
+ * `completedStepIds`). Any step that was never completed is marked `error` —
+ * never silently turned green. This is the core of the false-completion fix:
+ * the old settlePlan marked every row done regardless of what actually ran.
+ */
+function settlePlanHonest(
+  win: BrowserWindow,
+  steps: PlanStepRow[],
+  completedStepIds: Set<string>
+): void {
   for (const s of steps) {
-    emit(win, 'openui:task:update', { id: s.id, label: s.title, status: 'done' } satisfies TaskUpdate)
+    const done = completedStepIds.has(s.id)
+    emit(win, 'openui:task:update', {
+      id: s.id,
+      label: s.title,
+      status: done ? 'done' : 'error',
+      detail: done ? undefined : 'Not completed'
+    } satisfies TaskUpdate)
   }
+}
+
+/**
+ * Verbs that imply the task should have a real side effect (write a file, send a
+ * message, build something). When the request or any plan step matches, a prose
+ * "done" reply is only trusted if a corresponding tool actually ran — see the
+ * VerifyGate wiring in handleChat's loop.
+ */
+const SIDE_EFFECT_RE =
+  /\b(write|create|make|build|scaffold|generate|install|send|save|delete|move|rename|edit|update|add|set\s?up|open[^.!?]{0,30}\b(?:vs\s?code|editor)|download|post|message)\b/i
+
+function taskImpliesSideEffect(userMessage: string, steps: PlanStepRow[] | null): boolean {
+  if (SIDE_EFFECT_RE.test(userMessage)) return true
+  if (steps) return steps.some((s) => SIDE_EFFECT_RE.test(s.title))
+  return false
+}
+
+/**
+ * Build the pushback that keeps a planned/side-effecting run going when the model
+ * declares victory early. It names the exact unfinished steps and the concrete
+ * tool the model should call next, so a weak local model can recover.
+ */
+function buildContinuationNudge(
+  unfinished: PlanStepRow[],
+  unverified: boolean,
+  verify: VerifyGate
+): string {
+  const parts: string[] = []
+  if (unfinished.length > 0) {
+    const list = unfinished.map((s) => `${s.id} ("${s.title}")`).join(', ')
+    parts.push(
+      `Steps ${list} are not yet marked complete. For each, either perform it with the appropriate tool and then emit ` +
+        `{"tool": "${COMPLETE_STEP_TOOL}", "args": {"step_id": "<id>"}}, or call ${COMPLETE_STEP_TOOL} with a note explaining why it does not apply.`
+    )
+  }
+  if (unverified) {
+    const next = unfinished[0] ? `the tool for step ${unfinished[0].id} ("${unfinished[0].title}")` : undefined
+    parts.push(verify.nudgeMessage(next))
+  }
+  parts.push('Do NOT reply that the task is done until every step above is genuinely handled.')
+  return parts.join('\n\n')
 }
 
 /** Turn a tool execution into a message the model can read on the next turn. */
@@ -645,6 +729,11 @@ async function callOllama(
         ...messages.map((m) => ({ role: m.role, content: m.content }))
       ],
       options: { num_ctx: numCtx },
+      // Disable chain-of-thought on thinking-capable local models (Qwen 3.x):
+      // the tool-call protocol wants ONLY a raw JSON object, and a <think> block
+      // both delays the first useful token and pollutes the parse. Measured ~2×
+      // faster / half the tokens on qwen3.5 with no quality loss for this task.
+      think: false,
       stream: true
     })
     let full = ''
@@ -895,6 +984,16 @@ export async function handleChat(win: BrowserWindow, userMessage: string, tier: 
       }
     }
 
+    // False-completion guard for the general loop. `completedStepIds` records
+    // which plan steps were EXPLICITLY checked off via complete_step so wrap-up
+    // only greens those; `verify` tracks real tool evidence so a prose "done"
+    // that wrote/sent nothing is caught. Both are capped by `continuationNudges`.
+    const completedStepIds = new Set<string>()
+    const verify = new VerifyGate({ maxNudges: 2 })
+    const sideEffectExpected = taskImpliesSideEffect(userMessage, planSteps)
+    let continuationNudges = 0
+    const MAX_CONTINUATION_NUDGES = 2
+
     for (let turn = 0; turn < maxTurns; turn++) {
       trackEvent(Events.MODEL_ROUTE_SELECTED, {
         tier: effectiveTier,
@@ -923,11 +1022,34 @@ export async function handleChat(win: BrowserWindow, userMessage: string, tier: 
         `[agent] turn ${turn}: ${toolCall ? `tool=${toolCall.tool}` : 'natural-language reply'} (${responseText.length} chars)`
       )
       if (!toolCall) {
-        finalText = responseText // natural-language answer ⇒ turn complete
+        // The model wants to end the turn in prose. Before trusting that as
+        // "task complete", check for unfinished plan steps (never checked off via
+        // complete_step) and for a completion claim with no real tool evidence.
+        const unfinished = planSteps ? planSteps.filter((s) => !completedStepIds.has(s.id)) : []
+        const unverified = verify.hasUnverifiedWork(responseText, { sideEffectExpected })
+        const needsMore = unfinished.length > 0 || unverified
+
+        // Give a weak model a bounded chance to actually finish: nudge it,
+        // naming the exact steps/tool it still owes, instead of accepting the
+        // premature "done". A GIVE UP reply is honest and ends the turn as-is.
+        if (needsMore && !isGiveUp(responseText) && continuationNudges < MAX_CONTINUATION_NUDGES) {
+          continuationNudges++
+          history.push({ role: 'user', content: buildContinuationNudge(unfinished, unverified, verify) })
+          continue
+        }
+
+        // Wrap up. Steps are greened only if actually completed; the rest go to
+        // error. The user-facing reply is honest about anything left undone.
+        if (planSteps) settlePlanHonest(win, planSteps, completedStepIds)
+        if (unfinished.length > 0) {
+          const names = unfinished.map((s) => `“${s.title}”`).join(', ')
+          finalText = `${responseText.trim()}\n\n⚠️ I could not confirm these step(s) actually completed: ${names}. They may not have been done — please check.`
+        } else if (unverified) {
+          finalText = `${verify.rejectMessage()}\n\n${responseText.trim()}`
+        } else {
+          finalText = responseText // genuine natural-language answer ⇒ done
+        }
         database.messages.addMessage(convId, 'assistant', finalText)
-        // The agent considers the task done: tick off any steps it didn't
-        // explicitly check so the checklist reads complete.
-        if (planSteps) settlePlan(win, planSteps)
         break
       }
 
@@ -938,6 +1060,7 @@ export async function handleChat(win: BrowserWindow, userMessage: string, tier: 
         const stepId = String(
           (toolCall.args.step_id ?? toolCall.args.id ?? toolCall.args.stepId) || ''
         )
+        if (stepId) completedStepIds.add(stepId)
         if (planSteps) advancePlan(win, planSteps, stepId)
         history.push({
           role: 'user',
@@ -1044,6 +1167,10 @@ export async function handleChat(win: BrowserWindow, userMessage: string, tier: 
         result = await callMcpTool(toolCall.tool, toolCall.args)
       }
 
+      // Feed the finalised result to the false-completion guard: a successful
+      // mutating tool is the evidence that lets a later prose "done" be trusted.
+      verify.recordToolCall(toolCall.tool, result)
+
       // If a tool detected a missing OS permission, notify the renderer so it
       // can show a modal guiding the user to System Settings.
       if (result.permissionDenied) {
@@ -1096,6 +1223,9 @@ export async function handleChat(win: BrowserWindow, userMessage: string, tier: 
       if (turn === maxTurns - 1) {
         finalText = 'Reached the tool-call limit for this request.'
         reachedLimit = true
+        // Don't leave the checklist half-lit: green only the steps actually
+        // checked off, mark the rest error rather than stranded "working".
+        if (planSteps) settlePlanHonest(win, planSteps, completedStepIds)
         database.messages.addMessage(convId, 'assistant', finalText)
       }
     }
