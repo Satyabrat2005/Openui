@@ -5,6 +5,96 @@ the newest work lands under **Unreleased** until the next version bump.
 
 ## [Unreleased]
 
+## v7.1.1 — 2026-07-12
+
+A security fix plus a large expansion of the autonomous coding agent:
+semantic codebase indexing, parallel worktree agents, a structured debug/verify
+loop, new productivity tools (spreadsheets, Calendar, interactive Python, web
+research, WhatsApp), an Ollama-only launch path, and a first unit-test safety
+net for the tool-execution and persistence layers. 19 PRs, 78 commits since
+v7.1.0.
+
+### Security
+
+- **Fixed broken object-level authorization (IDOR) on billing endpoints.**
+  The `create-checkout`, `check-subscription`, and `customer-portal` Supabase
+  Edge Functions read `userId` straight from the unauthenticated request body
+  and trusted it, so any caller with a valid session — or, for
+  `customer-portal`, no session at all — could act on another user's Stripe
+  account by supplying their id. Brought in line with `chat-proxy`'s existing
+  `supabase.auth.getUser(token)` check. (#96)
+
+### Added — Agent capability
+
+- **Semantic codebase index + symbol map** (`codebaseIndex.ts`,
+  `embeddings.ts`): a per-project HNSW vector index, `.gitignore`-aware,
+  with incremental content-hash re-embedding and a
+  `search_codebase_semantic` tool. Adds parallel worktree agents, patch
+  application, and run resume. (#113)
+- **Structured debug loop + full-suite verify gate** for autonomous coding
+  on larger codebases; fixes a shipped bug where `lastVerificationPassed`
+  stayed set from a stale run. (#110)
+- **Coding-partner upgrade**: `edit_file`, `search_code`, and local `git`
+  tools; a verify loop that refuses to report success on code it never ran;
+  an opt-in bring-your-own-key cloud tier with local Ollama as the private
+  default. (#107)
+- **Native spreadsheet automation** (`read_spreadsheet`, `write_spreadsheet`,
+  `update_cells`, `add_formula`, `list_sheets`) via exceljs, confined through
+  the existing `resolveSafePath`; Google Calendar invite creation; and an
+  interactive `run_python`. (#98)
+- **`research_web`**: read-only, no-API-key web research over the connected
+  Playwright browser (DuckDuckGo search, cited multi-page synthesis); plus
+  WhatsApp message send and a fix for the WhatsApp connect error. (#109)
+- **Practice/learning coach mode**, shipped alongside the Ollama-only launch
+  path. (#108)
+- Autonomous builds now write to a visible `~/OpenUI Projects` directory
+  instead of a buried `userData` path, and VS Code opens automatically on
+  the first write. (#106)
+
+### Fixed — Reliability
+
+- **Build automation now runs and reports honestly.** The general agent loop
+  previously marked every plan step "done" on any prose reply with no
+  verification, and multi-line tool calls (local models emitting literal
+  newlines inside JSON strings) were silently dropped instead of executed.
+  Both are fixed. (#114)
+- **Ollama GPU-runner crash recovery**, and qwen3.5 support on 8 GB GPUs;
+  builds no longer go invisible when the runner restarts mid-request.
+  (#111, #112)
+- **Ollama model resolution against the actually-installed set**, fixing
+  `model 'qwen3.5:9b' not found` when the installed tag was
+  `qwen3.5:latest`. (#104)
+- **`.env` now loads in the main process during dev.** Bare `process.env.*`
+  reads (Ollama host/model, GitHub/Figma tokens, Google OAuth, Whisper path)
+  were previously always `undefined` outside of the vars baked in at build
+  time. (#105)
+- **Native modules rebuilt against the Electron ABI on install**, fixing a
+  startup crash from a `better-sqlite3` `NODE_MODULE_VERSION` mismatch.
+  (#103)
+- **GitHub token now read from Settings**, not an undefined `GITHUB_TOKEN`
+  env var — PR review and the autonomous coding issue source were silently
+  broken in every installed build. (#97)
+
+### Changed
+
+- **Ollama-only launch**: cloud API access and billing are off by default
+  for the initial self-hosted release (kept, not deleted, behind
+  `OPENUI_ENABLE_CLOUD`). (#108)
+- Removed ~730 lines of dead cloud-proxy chat path left behind by the
+  Ollama-only migration. (#102)
+- Landed the schema-migration mechanism (repo-hygiene Phase 2.4): a
+  testable migration runner plus the first real migration (archived flag).
+  (#100, #101)
+
+### Testing
+
+- **Phase 1 safety net**: unit coverage added for `tools.ts`, `agent.ts`,
+  and the DB repository layer — the tool-execution trust boundary, agent
+  loop, and persistence tier had zero tests before this. 136 tests passing
+  (was 72); `npm run typecheck` clean. (#99)
+
+**Full Changelog**: https://github.com/Satyabrat2005/Openui/compare/v7.1.0...v7.1.1
+
 ## v7.1.0 — 2026-07-09
 
 Production-readiness hardening ahead of the first cross-platform (Windows +
