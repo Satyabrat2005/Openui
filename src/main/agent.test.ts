@@ -128,7 +128,7 @@ vi.mock('./trainingStore', () => ({
   exportDatasetToFile: vi.fn(async () => '')
 }))
 
-import { handleChat, clearHistory, registerAgentIPC } from './agent'
+import { handleChat, clearHistory, registerAgentIPC, isOllamaRunnerCrash } from './agent'
 
 // A fake BrowserWindow that records everything emitted to the renderer.
 const win = {
@@ -270,5 +270,75 @@ describe('handleChat — plan approval gate', () => {
     expect(h.ollamaChat).not.toHaveBeenCalled()
     expect(chunks().toLowerCase()).toContain('cancelled')
     expect(sent('openui:chat:done')).toBe(true)
+  })
+})
+
+// ── GPU-runner-crash detection (pure) ─────────────────────────────────────────
+describe('isOllamaRunnerCrash', () => {
+  it('recognises the transport-level signatures of a crashed GPU runner', () => {
+    for (const m of [
+      'An existing connection was forcibly closed by the remote host',
+      'read ECONNRESET',
+      'socket hang up',
+      'llama runner terminated',
+      'model runner has unexpectedly stopped',
+      'CUDA error: invalid argument',
+      'Error: request failed with status code 500',
+      'Internal Server Error'
+    ]) {
+      expect(isOllamaRunnerCrash(new Error(m)), m).toBe(true)
+    }
+  })
+
+  it('does not mistake ordinary errors for a runner crash', () => {
+    for (const m of ['model not found', 'invalid api key', 'request timed out', 'bad request 400']) {
+      expect(isOllamaRunnerCrash(new Error(m)), m).toBe(false)
+    }
+  })
+})
+
+// ── GPU crash → automatic CPU fallback ────────────────────────────────────────
+describe('handleChat — GPU runner crash recovery', () => {
+  it('retries on CPU (num_gpu: 0) and still delivers a reply when the GPU runner dies before streaming', async () => {
+    // First generation dies exactly as it does in the wild: the 500 resets the
+    // socket before any token is produced.
+    h.ollamaChat.mockRejectedValueOnce(
+      new Error('An existing connection was forcibly closed by the remote host')
+    )
+    h.state.responses = ['Recovered on CPU.']
+
+    await handleChat(win, 'hello', 'free')
+
+    // Two chat attempts: the crashed GPU run, then the CPU fallback.
+    expect(h.ollamaChat).toHaveBeenCalledTimes(2)
+    const fallbackReq = (h.ollamaChat.mock.calls[1] as unknown[])[0] as {
+      options?: Record<string, unknown>
+    }
+    expect(fallbackReq.options?.num_gpu).toBe(0)
+
+    // The user gets a warning about the crash AND the actual answer — not an error.
+    expect(sent('openui:chat:warning')).toBe(true)
+    expect(String(lastArg('openui:chat:warning')?.message)).toMatch(/CPU/i)
+    expect(chunks()).toContain('Recovered on CPU.')
+    expect(sent('openui:chat:error')).toBe(false)
+    expect(sent('openui:chat:done')).toBe(true)
+  })
+
+  it('does not retry (and surfaces an actionable error) once tokens have already streamed', async () => {
+    // A crash mid-stream can't be retried without duplicating what the user has
+    // already seen, so the turn fails — but with a message that names the fix.
+    h.ollamaChat.mockImplementationOnce(async () => {
+      async function* stream(): AsyncGenerator<{ message: { content: string } }> {
+        yield { message: { content: 'thinking… ' } }
+        throw new Error('CUDA error: invalid argument')
+      }
+      return stream()
+    })
+
+    await handleChat(win, 'hello', 'free')
+
+    expect(h.ollamaChat).toHaveBeenCalledTimes(1) // no CPU retry
+    expect(sent('openui:chat:error')).toBe(true)
+    expect(String(lastArg('openui:chat:error'))).toMatch(/OLLAMA_FLASH_ATTENTION=0|qwen3:4b/)
   })
 })

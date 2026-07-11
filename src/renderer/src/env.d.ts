@@ -308,6 +308,8 @@ export interface OpenUIApi {
   onToolCall: (cb: (tool: ToolCallPayload) => void) => () => void
   onDone: (cb: (result: ChatDonePayload) => void) => () => void
   onError: (cb: (error: string) => void) => () => void
+  /** Non-fatal notice for the current turn (e.g. GPU→CPU fallback). Turn continues. */
+  onWarning: (cb: (warning: { message: string }) => void) => () => void
   onTask: (cb: (task: TaskUpdatePayload) => void) => () => void
   onTaskReset: (cb: () => void) => () => void
   /** Real model the backend is using this turn (never a model it isn't running). */

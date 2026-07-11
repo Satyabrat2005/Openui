@@ -500,6 +500,10 @@ function classifyChatError(err: unknown): string {
   const msg = (err instanceof Error ? err.message : String(err)).toLowerCase()
   if (msg.includes('api key') || msg.includes('unauthorized') || msg.includes('401')) return 'auth_error'
   if (msg.includes('timeout') || msg.includes('timed out')) return 'timeout_error'
+  // Check the runner crash before the generic network branch: a crashed GPU
+  // runner resets the socket, which would otherwise be miscounted as a plain
+  // network blip and hide how often the CUDA bug actually bites.
+  if (isOllamaRunnerCrash(err)) return 'runner_crash'
   if (msg.includes('network') || msg.includes('connect') || msg.includes('fetch')) return 'network_error'
   return 'unknown_error'
 }
@@ -605,6 +609,67 @@ async function isOllamaRunning(): Promise<boolean> {
   }
 }
 
+/**
+ * True when `err` is a local Ollama GPU-runner crash rather than an ordinary API
+ * error. When the CUDA runner dies mid-request — most commonly the
+ * `ggml_cuda_cpy` "invalid argument" bug that hits Qwen3 + flash attention on a
+ * card too small to fully offload — Ollama returns a 500 and the socket is reset,
+ * so it reaches us as one of these transport-level errors instead of a clean
+ * message. Any of them means "the GPU runner died; a CPU retry can still succeed."
+ * Kept pure and exported so it can be unit-tested and reused by the outer catch.
+ */
+export function isOllamaRunnerCrash(err: unknown): boolean {
+  const msg = (err instanceof Error ? err.message : String(err)).toLowerCase()
+  return (
+    msg.includes('forcibly closed') || // Windows wsarecv socket reset
+    msg.includes('econnreset') ||
+    msg.includes('socket hang up') ||
+    msg.includes('runner terminated') ||
+    msg.includes('runner has unexpectedly stopped') ||
+    msg.includes('cuda error') ||
+    msg.includes('status code 500') ||
+    msg.includes('status 500') ||
+    msg.includes('internal server error')
+  )
+}
+
+/** One streaming Ollama generation. `extraOptions` lets the CPU fallback force `num_gpu: 0`. */
+async function streamOllamaChat(
+  ollama: Ollama,
+  model: string,
+  messages: Message[],
+  systemPrompt: string,
+  numCtx: number,
+  onDelta: (delta: string) => void,
+  extraOptions: Record<string, unknown> = {}
+): Promise<string> {
+  const stream = await ollama.chat({
+    model,
+    messages: [
+      { role: 'system', content: systemPrompt },
+      ...messages.map((m) => ({ role: m.role, content: m.content }))
+    ],
+    // Qwen3 (our default family) enables "thinking" by default: it streams a long
+    // <think>…</think> reasoning block before the real reply. On an 8 GB card that
+    // means tens of seconds of tokens the user shouldn't see AND that the tool-call
+    // parser must skip. This agent already structures its own reasoning via the
+    // tool loop, so we ask for direct answers. Harmlessly ignored by non-thinking
+    // models. (Measured: a short reply went from ~166 s of thinking to ~4 s.)
+    think: false,
+    options: { num_ctx: numCtx, ...extraOptions },
+    stream: true
+  })
+  let full = ''
+  for await (const part of stream) {
+    const delta = part.message?.content ?? ''
+    if (delta) {
+      full += delta
+      onDelta(delta)
+    }
+  }
+  return full
+}
+
 async function callOllama(
   _win: BrowserWindow,
   messages: Message[],
@@ -638,24 +703,37 @@ async function callOllama(
   // card (see ollamaLock.ts). The whole stream is drained inside the lock so the
   // model stays resident for the full generation before the next call starts.
   return withOllamaLock(async () => {
-    const stream = await ollama.chat({
-      model,
-      messages: [
-        { role: 'system', content: systemPrompt },
-        ...messages.map((m) => ({ role: m.role, content: m.content }))
-      ],
-      options: { num_ctx: numCtx },
-      stream: true
-    })
-    let full = ''
-    for await (const part of stream) {
-      const delta = part.message?.content ?? ''
-      if (delta) {
-        full += delta
-        onDelta(delta)
-      }
+    // Count streamed bytes so we know whether a mid-flight crash is safe to retry:
+    // if the GPU runner already streamed tokens to the UI, a fresh CPU retry would
+    // duplicate them, so we only fall back when nothing has been shown yet.
+    let streamed = 0
+    const tracked = (delta: string): void => {
+      streamed += delta.length
+      onDelta(delta)
     }
-    return full
+
+    try {
+      return await streamOllamaChat(ollama, model, messages, systemPrompt, numCtx, tracked)
+    } catch (err) {
+      // Not a runner crash, or we already streamed output → can't cleanly recover.
+      if (!isOllamaRunnerCrash(err) || streamed > 0) throw err
+
+      // The GPU runner died before producing any output — almost always the CUDA
+      // device-to-device copy bug (Qwen3 + flash attention on a card that can only
+      // partially offload). Retry once on CPU (`num_gpu: 0`), which avoids that code
+      // path entirely: slower, but it actually completes. Tell the user how to make
+      // the GPU path stick so they aren't stuck on the slow fallback forever.
+      const warn =
+        'The local GPU model runner crashed (a known CUDA / flash-attention bug on ' +
+        '8 GB cards). Retrying on CPU — this reply will be slower. To fix it permanently, ' +
+        'restart Ollama with OLLAMA_FLASH_ATTENTION=0, or use a model that fully fits your ' +
+        'VRAM (e.g. `ollama pull qwen3:4b`).'
+      console.warn('[agent] ' + warn)
+      emit(_win, 'openui:chat:warning', { message: warn })
+      return await streamOllamaChat(ollama, model, messages, systemPrompt, numCtx, onDelta, {
+        num_gpu: 0
+      })
+    }
   })
 }
 
@@ -1116,7 +1194,17 @@ export async function handleChat(win: BrowserWindow, userMessage: string, tier: 
   } catch (err) {
     history.length = rollbackLen // roll back the entire failed turn
     trackEvent(Events.CHAT_ERROR, { tier: effectiveTier, model, error_type: classifyChatError(err) })
-    const message = err instanceof Error ? err.message : String(err)
+    // A runner crash that even the CPU fallback couldn't recover from would
+    // otherwise reach the user as a cryptic "connection forcibly closed"; give
+    // an actionable message that names the fix instead of the raw socket error.
+    const message = isOllamaRunnerCrash(err)
+      ? 'The local AI model runner crashed and could not recover (a known CUDA / ' +
+        'flash-attention bug on 8 GB GPUs). Restart Ollama with OLLAMA_FLASH_ATTENTION=0, ' +
+        'or switch to a smaller model that fully fits your VRAM (e.g. `ollama pull qwen3:4b`), ' +
+        'then try again.'
+      : err instanceof Error
+        ? err.message
+        : String(err)
     runLog.end('failure', message.slice(0, 300))
     emit(win, 'openui:chat:error', message)
   }

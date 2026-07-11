@@ -176,6 +176,11 @@ export async function callModelById(
   const res = await ollama.chat({
     model: model.id,
     messages: [{ role: 'system', content: systemPrompt }, ...messages],
+    // Qwen3 (our default family) ships with "thinking" on, which emits a long
+    // <think> reasoning block before the answer — slow, and noise the tool-call
+    // parser has to wade through. We drive the reasoning ourselves, so turn it
+    // off for direct answers. Ignored by models that don't support thinking.
+    think: false,
     stream: false
   })
   return res.message?.content ?? ''

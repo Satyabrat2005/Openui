@@ -164,6 +164,15 @@ const api = {
     return (): void => { ipcRenderer.removeListener('openui:chat:error', fn) }
   },
 
+  // Non-fatal notices for the current turn (e.g. the GPU runner crashed and we
+  // fell back to CPU, or the prompt is nearing the context limit). The turn keeps
+  // going — this is informational, distinct from onError which ends it.
+  onWarning: (cb: (warning: { message: string }) => void): (() => void) => {
+    const fn = wrap<{ message: string }>(cb)
+    ipcRenderer.on('openui:chat:warning', fn)
+    return (): void => { ipcRenderer.removeListener('openui:chat:warning', fn) }
+  },
+
   onTask: (cb: (task: TaskUpdate) => void): (() => void) => {
     const fn = wrap<TaskUpdate>(cb)
     ipcRenderer.on('openui:task:update', fn)
