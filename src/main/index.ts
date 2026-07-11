@@ -1,3 +1,5 @@
+// Must be the first import — see loadEnv.ts for why the ordering matters.
+import './loadEnv'
 import { app, BrowserWindow, Tray, Menu, ipcMain, nativeImage, session, shell, desktopCapturer } from 'electron'
 import { join } from 'path'
 import { registerAgentIPC, registerConversationIPC } from './agent'

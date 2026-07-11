@@ -130,7 +130,7 @@ export class VerifyGate {
     return (
       'You replied with a summary, but you have changed files since the last passing ' +
       'verification — nothing yet shows the project still works. Do not summarise yet.\n' +
-      `Call ${named} now, read the output, and fix any failure with write_file before finishing.\n` +
+      `Call ${named} now, read the output, and fix any failure with edit_file before finishing.\n` +
       'If the task genuinely cannot be made to pass, reply in plain text starting with "GIVE UP:" ' +
       'and explain why. Never claim a result you did not observe in this workspace.'
     )
