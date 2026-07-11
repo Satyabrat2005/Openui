@@ -17,7 +17,10 @@ import {
   rejectGitInvocation,
   runGit,
   readSandboxFile,
-  writeSandboxFile
+  writeSandboxFile,
+  setActiveProject,
+  resetActiveProject,
+  stripRedundantProjectPrefix
 } from './sandbox'
 
 let ws: string
@@ -28,8 +31,25 @@ beforeEach(async () => {
 })
 
 afterEach(async () => {
+  resetActiveProject()
   delete process.env.OPENUI_WORKSPACE
   await rm(ws, { recursive: true, force: true })
+})
+
+describe('stripRedundantProjectPrefix', () => {
+  it('strips a leading "<project>/" so the model cannot double-nest', () => {
+    setActiveProject('demo-counter')
+    expect(stripRedundantProjectPrefix('demo-counter/package.json')).toBe('package.json')
+    expect(stripRedundantProjectPrefix('demo-counter/src/App.jsx')).toBe('src/App.jsx')
+    expect(stripRedundantProjectPrefix('demo-counter\\src\\App.jsx')).toBe('src/App.jsx')
+    expect(stripRedundantProjectPrefix('package.json')).toBe('package.json')
+    expect(stripRedundantProjectPrefix('src/demo-counter/x.js')).toBe('src/demo-counter/x.js')
+  })
+
+  it('is a no-op when no project is active', () => {
+    resetActiveProject()
+    expect(stripRedundantProjectPrefix('demo-counter/package.json')).toBe('demo-counter/package.json')
+  })
 })
 
 describe('globToRegExp', () => {

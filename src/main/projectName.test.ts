@@ -19,6 +19,12 @@ describe('deriveProjectSlug', () => {
     expect(deriveProjectSlug('todo list app')).toBe('todo-list-app')
   })
 
+  it('honours an explicitly named folder or project', () => {
+    expect(deriveProjectSlug('build a react app and make a folder called todo-app')).toBe('todo-app')
+    expect(deriveProjectSlug('make a snake game, name it snake-classic')).toBe('snake-classic')
+    expect(deriveProjectSlug('create a project named "Cool Dashboard"')).toBe('cool-dashboard')
+  })
+
   it('never ends on a trailing noise word', () => {
     // "for" would otherwise survive as the 5th word.
     expect(deriveProjectSlug('create a snake game for')).toBe('snake-game')

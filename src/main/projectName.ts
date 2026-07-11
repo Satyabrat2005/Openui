@@ -78,6 +78,21 @@ export function isSafeProjectSlug(slug: string): boolean {
   return typeof slug === 'string' && /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(slug) && slug.length <= MAX_LENGTH
 }
 
+function finaliseSlug(slug: string): string {
+  const cleaned = slug.slice(0, MAX_LENGTH).replace(/^-+|-+$/g, '')
+  if (!cleaned) return FALLBACK
+  if (WINDOWS_RESERVED.has(cleaned)) return `${cleaned}-${FALLBACK}`
+  return cleaned
+}
+
+function slugifyName(name: string): string {
+  return finaliseSlug(
+    String(name ?? '')
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+  )
+}
+
 /**
  * Turn a free-text build request into a short folder name.
  *
@@ -87,7 +102,14 @@ export function isSafeProjectSlug(slug: string): boolean {
  * Always returns a slug satisfying `isSafeProjectSlug`.
  */
 export function deriveProjectSlug(message: string): string {
-  const words = String(message ?? '')
+  const raw = String(message ?? '')
+  const explicit =
+    raw.match(/folder\s+(?:called|named)\s+["'`]?([\w .-]{1,40}?)["'`]?(?=[.,!?]|$|\s+(?:and|with|that|to|for)\b)/i) ||
+    raw.match(/(?:call|name)\s+it\s+["'`]?([\w .-]{1,40}?)["'`]?(?=[.,!?]|$|\s+(?:and|with|that|to|for)\b)/i) ||
+    raw.match(/(?:called|named)\s+["'`]?([\w .-]{1,40}?)["'`]?(?=[.,!?]|$|\s+(?:and|with|that|to|for)\b)/i)
+  if (explicit) return slugifyName(explicit[1])
+
+  const words = raw
     .toLowerCase()
     // Anything outside the whitelist becomes a separator, so punctuation,
     // quotes, slashes and dots can never survive into the path segment.
@@ -101,13 +123,5 @@ export function deriveProjectSlug(message: string): string {
   const picked = words.slice(start, start + MAX_WORDS)
   while (picked.length > 0 && NOISE_WORDS.has(picked[picked.length - 1])) picked.pop()
 
-  const slug = picked
-    .join('-')
-    .slice(0, MAX_LENGTH)
-    // A mid-word truncation at MAX_LENGTH can leave a trailing hyphen.
-    .replace(/^-+|-+$/g, '')
-
-  if (!slug) return FALLBACK
-  if (WINDOWS_RESERVED.has(slug)) return `${slug}-${FALLBACK}`
-  return slug
+  return finaliseSlug(picked.join('-'))
 }

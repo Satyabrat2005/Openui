@@ -5,7 +5,7 @@ import { SPAWN_SUBAGENTS_TOOL, runParallelSubagents, parseSubTaskSpecs } from '.
 import { codingToolSchemas, executeCodingTool, describeCodingToolCall } from './codingTools'
 import { VerifyGate } from './verifyGate'
 import { detectProjectType, getProjectProfile } from './projectProfiles'
-import { setActiveProject } from './sandbox'
+import { getWorkspaceDir, setActiveProject } from './sandbox'
 import { deriveProjectSlug } from './projectName'
 import { armEditorAutoOpen } from './editor'
 import { generatePlan, looksLikeTask, type Plan } from './planner'
@@ -223,6 +223,7 @@ ${allSchemas.map(renderSchema).join('\n')}
 
 Examples — map the request to a single tool-call message (emit ONLY the JSON):
 - "open the OpenUI folder" / "open Downloads" → {"tool": "open_app", "args": {"appName": "C:\\\\Users\\\\You\\\\Downloads"}}
+- "open Downloads/test in VS Code" → {"tool": "open_folder_in_editor", "args": {"path": "Downloads/test", "editor": "vscode"}}
 - "open Spotify" / "launch Chrome" → {"tool": "open_app", "args": {"appName": "Spotify"}}
 - "open Edge" / "open Microsoft Edge" / "open my browser" → {"tool": "open_app", "args": {"appName": "Microsoft Edge"}}
 - "find a file named report" / "search my files for budget" → {"tool": "search_files", "args": {"query": "report"}}
@@ -233,6 +234,13 @@ Examples — map the request to a single tool-call message (emit ONLY the JSON):
 CRITICAL — opening an app or browser vs. automating a web page. These are DIFFERENT tools; do not confuse them:
 - When the user asks to OPEN or LAUNCH an application or a browser for THEM to use ("open Edge", "open Chrome", "open my browser", "open WhatsApp"), ALWAYS use open_app. This launches their REAL installed app with their normal profile, logins and extensions.
 - NEVER use browser_navigate just to "open a browser". browser_navigate opens a SEPARATE automation window (the user's installed browser driven by OpenUI in a dedicated profile) — use it ONLY when YOU need to read or interact with a web page to complete a task the user asked you to do.
+
+Local folder coding workflow — use this when the user asks to open a local folder (Downloads/test, Desktop/project, etc.) in VS Code and write code there:
+1. Resolve the folder path from the user's words. A path like "Downloads/test" means the user's home folder: "~/Downloads/test".
+2. If you need to confirm the folder exists, call list_directory on its parent (for Downloads/test, list_directory("Downloads")).
+3. Call open_folder_in_editor(path, editor:"vscode") to open that exact folder in VS Code. Do NOT call open_app("Visual Studio Code") by itself for this workflow.
+4. Actually create or edit files with write_file using paths inside that same folder, e.g. "Downloads/test/index.html". Opening VS Code does not write code.
+5. When writing is complete, reply with the file path(s) you wrote.
 
 Browser automation workflow — use this ONLY when you must drive a web page yourself to complete a task (booking flights, scraping a site, filling web forms, reading prices, cancelling subscriptions, logging into a site on the user's behalf). It opens the user's installed browser (Edge/Chrome) in an OpenUI-controlled profile; it is NOT the way to simply hand the user their browser. Playwright targets elements directly by CSS selector: faster and more precise than pixel clicking:
 1. Call connect_browser() once — the user approves attaching OpenUI to the automation browser (their logins persist in it between sessions).
@@ -532,7 +540,14 @@ async function runBuilderSession(win: BrowserWindow, tier: Tier, userMessage: st
   // don't overwrite each other) and arm the editor to open on the first write.
   // Only the interactive session arms it; the unattended runner in autonomous.ts
   // must never steal focus.
-  setActiveProject(deriveProjectSlug(userMessage))
+  const projectSlug = deriveProjectSlug(userMessage)
+  setActiveProject(projectSlug)
+  emit(win, 'openui:task:update', {
+    id: 'project-folder',
+    label: `Project folder: ${projectSlug}`,
+    status: 'done',
+    detail: getWorkspaceDir()
+  } satisfies TaskUpdate)
   armEditorAutoOpen()
 
   // Same project-type branching the unattended runner uses, so "build me a

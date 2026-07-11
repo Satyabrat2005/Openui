@@ -120,6 +120,23 @@ export function getWorkspaceDir(): string {
   return join(getProjectsRoot(), activeProject ?? DEFAULT_PROJECT)
 }
 
+/**
+ * Strip a leading "<project-slug>/" the model sometimes prepends. It sees the
+ * request ("make a folder called demo-counter") and helpfully nests every file
+ * under demo-counter/ — but we've ALREADY made that the project folder, so the
+ * prefix would double-nest (demo-counter/demo-counter/package.json). Applied to
+ * both reads and writes so a nested write and a top-level read still agree.
+ */
+export function stripRedundantProjectPrefix(relPath: string): string {
+  if (!activeProject) return relPath
+  const norm = relPath.replace(/\\/g, '/').replace(/^\.\//, '')
+  const prefix = `${activeProject}/`
+  if (norm.toLowerCase().startsWith(prefix.toLowerCase()) && norm.length > prefix.length) {
+    return norm.slice(prefix.length)
+  }
+  return relPath
+}
+
 /** Ensure the workspace directory exists; returns its absolute path. */
 export async function ensureWorkspace(): Promise<string> {
   const dir = getWorkspaceDir()
@@ -139,7 +156,7 @@ function resolveInSandbox(workspace: string, relPath: string): string {
   if (isAbsolute(relPath)) {
     throw new Error('path must be relative to the workspace, not absolute')
   }
-  const abs = resolve(workspace, relPath)
+  const abs = resolve(workspace, stripRedundantProjectPrefix(relPath))
   const rel = relative(workspace, abs)
   // rel starting with ".." (or being absolute) means abs is outside workspace.
   if (rel === '' || rel.startsWith('..') || isAbsolute(rel)) {
