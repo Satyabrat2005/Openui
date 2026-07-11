@@ -4,9 +4,17 @@
  * These are deliberately SEPARATE from the OS-automation tools in tools.ts. The
  * interactive desktop assistant can move the mouse, launch apps and read the
  * screen; the unattended coding agent must not. It only ever touches files
- * inside the sandbox workspace and runs the workspace test suite. Keeping the
- * two registries apart means a task/issue that tries to steer the coding agent
- * into clicking around the desktop simply has no such tool to call.
+ * inside the sandbox workspace, searches them, commits them to a local git repo,
+ * and runs the workspace's own test/build scripts. Keeping the two registries
+ * apart means a task/issue that tries to steer the coding agent into clicking
+ * around the desktop simply has no such tool to call.
+ *
+ * There is deliberately NO general "run this shell command" tool. sandbox.ts
+ * holds its containment guarantee because every command it runs is either
+ * static (`npm test`) or an allowlisted argv array launched without a shell. A
+ * free-form command tool would hand arbitrary code execution to whatever text
+ * steers this agent — which, for the autonomous runner, is a task description or
+ * a GitHub issue body written by someone else.
  *
  * Schemas reuse the ToolSchema/ToolResult shapes from tools.ts so they render
  * into the system prompt with the same renderer the interactive agent uses.
@@ -14,14 +22,19 @@
 import {
   writeSandboxFile,
   readSandboxFile,
+  editSandboxFile,
+  searchSandbox,
   listSandboxFiles,
+  getWorkspaceDir,
   runTests,
   runInstall,
   runScript,
   runPytest,
   runPythonScript,
-  runCppProgram
+  runCppProgram,
+  runGit
 } from './sandbox'
+import { maybeOpenEditorOnFirstWrite } from './editor'
 import { snapshotBeforeWrite } from './snapshots'
 import type { ToolSchema, ToolResult } from './tools'
 
@@ -37,6 +50,10 @@ async function write_file(args: Record<string, unknown>): Promise<ToolResult> {
     // snapshot transaction (interactive writes).
     await snapshotBeforeWrite(path)
     const written = await writeSandboxFile(path, content)
+    // Bring the project up in an editor the first time a session writes, so the
+    // user watches the files land. Not awaited: launching a GUI must not sit in
+    // front of the write's result.
+    void maybeOpenEditorOnFirstWrite(getWorkspaceDir())
     return { ok: true, output: `Wrote ${Buffer.byteLength(content, 'utf8')} bytes to ${written}.` }
   } catch (err) {
     return { ok: false, error: `write_file failed: ${err instanceof Error ? err.message : String(err)}` }
@@ -53,6 +70,71 @@ async function read_file(args: Record<string, unknown>): Promise<ToolResult> {
     return { ok: true, output: capped }
   } catch (err) {
     return { ok: false, error: `read_file failed: ${err instanceof Error ? err.message : String(err)}` }
+  }
+}
+
+async function edit_file(args: Record<string, unknown>): Promise<ToolResult> {
+  const path = typeof args.path === 'string' ? args.path : ''
+  if (!path) return { ok: false, error: 'edit_file requires a string "path".' }
+  if (typeof args.old_string !== 'string' || args.old_string === '') {
+    return { ok: false, error: 'edit_file requires a non-empty string "old_string".' }
+  }
+  if (typeof args.new_string !== 'string') {
+    return {
+      ok: false,
+      error: 'edit_file requires a string "new_string" (pass "" to delete the matched text).'
+    }
+  }
+  const replaceAll = args.replace_all === true
+  try {
+    // Same rollback contract as write_file: capture the pre-image before the
+    // first mutation of this file within a snapshot transaction.
+    await snapshotBeforeWrite(path)
+    const result = await editSandboxFile(path, args.old_string, args.new_string, replaceAll)
+    void maybeOpenEditorOnFirstWrite(getWorkspaceDir())
+    const plural = result.replacements === 1 ? '' : 's'
+    return { ok: true, output: `Replaced ${result.replacements} occurrence${plural} in ${result.path}.` }
+  } catch (err) {
+    return { ok: false, error: `edit_file failed: ${err instanceof Error ? err.message : String(err)}` }
+  }
+}
+
+async function search_code(args: Record<string, unknown>): Promise<ToolResult> {
+  const pattern = typeof args.pattern === 'string' ? args.pattern : ''
+  if (!pattern) {
+    return { ok: false, error: 'search_code requires a string "pattern" (a regular expression).' }
+  }
+  const glob = typeof args.glob === 'string' && args.glob.trim() ? args.glob : undefined
+  const maxResults = typeof args.max_results === 'number' ? args.max_results : undefined
+  const ignoreCase = args.ignore_case === true
+  try {
+    const matches = await searchSandbox(pattern, { glob, maxResults, ignoreCase })
+    if (!matches.length) {
+      return { ok: true, output: `No matches for /${pattern}/${glob ? ` in ${glob}` : ''}.` }
+    }
+    const rendered = matches.map((m) => `${m.file}:${m.line}: ${m.text}`).join('\n')
+    const plural = matches.length === 1 ? '' : 'es'
+    return { ok: true, output: `${matches.length} match${plural}:\n${rendered}` }
+  } catch (err) {
+    return { ok: false, error: `search_code failed: ${err instanceof Error ? err.message : String(err)}` }
+  }
+}
+
+async function git(args: Record<string, unknown>): Promise<ToolResult> {
+  const subcommand = typeof args.subcommand === 'string' ? args.subcommand : ''
+  if (!subcommand) return { ok: false, error: 'git requires a string "subcommand".' }
+  // runGit re-validates every element; this only shapes the value for its signature.
+  const gitArgs = Array.isArray(args.args) ? (args.args as string[]) : []
+  try {
+    // Like run_tests: a refused or failing git call is information for the model,
+    // not a tool error to blindly retry.
+    const result = await runGit(subcommand, gitArgs)
+    return {
+      ok: true,
+      output: `${result.passed ? 'GIT OK' : 'GIT FAILED'} [${subcommand}]\n${result.output || '(no output)'}`
+    }
+  } catch (err) {
+    return { ok: false, error: `git failed: ${err instanceof Error ? err.message : String(err)}` }
   }
 }
 
@@ -189,6 +271,83 @@ export const codingToolSchemas: ToolSchema[] = [
     }
   },
   {
+    name: 'edit_file',
+    description:
+      'Change part of an existing workspace file by replacing an exact snippet of text. ' +
+      'PREFER THIS OVER write_file for any change to a file that already exists — write_file ' +
+      'overwrites the whole file, so using it to tweak a few lines silently deletes everything ' +
+      'you did not retype. "old_string" is matched literally (not as a regex) and must appear ' +
+      'exactly once: include the surrounding lines needed to make it unique, and reproduce the ' +
+      'indentation byte-for-byte. To delete text, pass an empty "new_string".',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Workspace-relative file path, e.g. "src/index.js".' },
+        old_string: {
+          type: 'string',
+          description: 'Exact existing text to replace, including indentation. Must be unique in the file.'
+        },
+        new_string: { type: 'string', description: 'Replacement text. Empty string deletes the match.' },
+        replace_all: {
+          type: 'boolean',
+          description: 'Replace every occurrence instead of requiring a unique match (default false).'
+        }
+      },
+      required: ['path', 'old_string', 'new_string']
+    }
+  },
+  {
+    name: 'search_code',
+    description:
+      'Search the workspace for a regular expression and return matching lines as "file:line: text". ' +
+      'Use this to find where something is defined or used BEFORE reading or editing files — it is how ' +
+      'you navigate code you did not write in this session, instead of guessing at paths. ' +
+      'Binary files, node_modules and dot-directories are skipped.',
+    parameters: {
+      type: 'object',
+      properties: {
+        pattern: {
+          type: 'string',
+          description: 'JavaScript regular expression, e.g. "function\\\\s+createUser" or "TODO".'
+        },
+        glob: {
+          type: 'string',
+          description: 'Optional path filter, e.g. "src/**/*.ts" or "*.py". Supports *, ** and ?.'
+        },
+        ignore_case: { type: 'boolean', description: 'Case-insensitive match (default false).' },
+        max_results: { type: 'number', description: 'Cap on returned matches (default 100).' }
+      },
+      required: ['pattern']
+    }
+  },
+  {
+    name: 'git',
+    description:
+      'Run a local git command in the workspace repository. Use it to initialise a repo ("init"), ' +
+      'stage and commit your work as you go ("add", "commit"), inspect what you changed ("status", ' +
+      '"diff", "log"), and work on branches ("branch", "checkout", "switch", "restore"). ' +
+      'Commit after each coherent, verified change so the work is reviewable and revertable. ' +
+      'Network commands (push, pull, fetch, clone, remote) are NOT available — publishing is a ' +
+      'separate, human-approved step.',
+    parameters: {
+      type: 'object',
+      properties: {
+        subcommand: {
+          type: 'string',
+          description:
+            'One of: init, status, add, commit, diff, log, show, branch, checkout, switch, restore, rev-parse, stash, tag, mv, rm.'
+        },
+        args: {
+          type: 'array',
+          description:
+            'Arguments passed to git verbatim, e.g. ["-m", "Add user login"] for commit, or ["--oneline", "-n", "10"] for log. ' +
+            'No shell is involved, so quoting is unnecessary — pass each argument as its own element.'
+        }
+      },
+      required: ['subcommand']
+    }
+  },
+  {
     name: 'list_files',
     description: 'List all files currently in the workspace (relative paths).',
     parameters: { type: 'object', properties: {}, required: [] }
@@ -270,6 +429,9 @@ export const codingToolSchemas: ToolSchema[] = [
 const registry: Record<string, CodingExecutor> = {
   write_file,
   read_file,
+  edit_file,
+  search_code,
+  git,
   list_files,
   run_tests,
   install_dependencies,
@@ -299,6 +461,30 @@ export async function executeCodingTool(
   }
 }
 
+/**
+ * git subcommands that rewrite the working tree. `add` and `commit` only move
+ * content into the index/history, so they leave the files the verifier ran
+ * against exactly as they were.
+ */
+const GIT_TREE_MUTATING = new Set(['checkout', 'switch', 'restore', 'rm', 'mv', 'stash'])
+
+/**
+ * True when a SUCCESSFUL call to this tool changed the workspace source tree.
+ *
+ * A passing verifier is a statement about the tree as it stood when the verifier
+ * ran. The moment a file changes, that statement expires — so the coding loop
+ * uses this to drop a stale "tests passed" rather than let the model edit after
+ * a green run and then declare victory.
+ */
+export function mutatesWorkspace(name: string, args: Record<string, unknown>): boolean {
+  if (name === 'write_file' || name === 'edit_file') return true
+  if (name === 'git') {
+    const sub = typeof args.subcommand === 'string' ? args.subcommand.trim() : ''
+    return GIT_TREE_MUTATING.has(sub)
+  }
+  return false
+}
+
 /** Short human-readable label for a coding tool call, shown in the task UI. */
 export function describeCodingToolCall(name: string, args: Record<string, unknown>): string {
   switch (name) {
@@ -306,6 +492,14 @@ export function describeCodingToolCall(name: string, args: Record<string, unknow
       return `Write ${String(args.path ?? 'file')}`
     case 'read_file':
       return `Read ${String(args.path ?? 'file')}`
+    case 'edit_file':
+      return `Edit ${String(args.path ?? 'file')}`
+    case 'search_code':
+      return `Search for "${String(args.pattern ?? '')}"${args.glob ? ` in ${String(args.glob)}` : ''}`
+    case 'git': {
+      const rest = Array.isArray(args.args) ? args.args.filter((a) => typeof a === 'string') : []
+      return `git ${String(args.subcommand ?? '')}${rest.length ? ` ${rest.join(' ')}` : ''}`.trim()
+    }
     case 'list_files':
       return 'List workspace files'
     case 'run_tests':

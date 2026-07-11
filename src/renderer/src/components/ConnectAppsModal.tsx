@@ -48,6 +48,13 @@ interface SourceDef {
   command?: string
   args?: string[]
   url?: string
+  /**
+   * Built-in sources need no MCP connection: OpenUI drives the app directly with
+   * its own tools (e.g. WhatsApp via keyboard automation). The row renders as
+   * "Ready — built in" with no command to launch, so it can never surface a
+   * failed-to-connect error for a bridge that was never meant to run.
+   */
+  builtin?: boolean
   /** A tag field, e.g. browser choice or profile, appended to args as `flag value`. */
   tag?: { label: string; flag: string; placeholder: string; default?: string }
   /** A secret captured into env (e.g. bot token). */
@@ -69,10 +76,11 @@ const CATALOG: SourceDef[] = [
     id: 'whatsapp',
     name: 'WhatsApp',
     kind: 'whatsapp',
-    blurb: 'Read and send WhatsApp messages through a local WhatsApp MCP bridge.',
+    blurb:
+      'Built in — no setup needed. OpenUI opens chats and sends messages through WhatsApp Desktop directly, ' +
+      'and always asks before sending. Just make sure WhatsApp Desktop is installed and signed in.',
     transport: 'stdio',
-    command: 'npx',
-    args: ['whatsapp-mcp-server']
+    builtin: true
   },
   {
     id: 'slack',
@@ -127,6 +135,10 @@ export function subscribeConnections(fn: () => void): () => void {
 /** Snapshot every connectable source with its current live state. */
 export function getConnections(): ConnectableApp[] {
   return CATALOG.map((s) => {
+    // Built-in sources are always available — no connection to make or fail.
+    if (s.builtin) {
+      return { id: s.id, name: s.name, kind: s.kind, state: 'connected' as ConnectionState, message: 'Built in' }
+    }
     const st = statusStore.get(s.id) ?? { state: 'disconnected' as ConnectionState }
     return { id: s.id, name: s.name, kind: s.kind, state: st.state, message: st.message }
   })
@@ -207,13 +219,14 @@ function SourceRow({ src }: { src: SourceDef }): JSX.Element {
       <div className="ou-conn-main">
         <div className="ou-conn-titlerow">
           <span className="ou-conn-name">{src.name}</span>
-          <span className={`ou-conn-status ${status.state}`}>
-            <StatusDot state={status.state} />
-            {statusLabel(status.state, status.message)}
+          <span className={`ou-conn-status ${src.builtin ? 'connected' : status.state}`}>
+            <StatusDot state={src.builtin ? 'connected' : status.state} />
+            {src.builtin ? 'Ready — built in' : statusLabel(status.state, status.message)}
           </span>
         </div>
         <p className="ou-conn-blurb">{src.blurb}</p>
 
+        {src.builtin ? null : (
         <div className="ou-conn-fields">
           {src.transport === 'sse' && (
             <input
@@ -258,6 +271,7 @@ function SourceRow({ src }: { src: SourceDef }): JSX.Element {
             {status.state === 'connected' ? 'Reconnect' : busy ? 'Connecting…' : 'Connect'}
           </button>
         </div>
+        )}
       </div>
     </div>
   )

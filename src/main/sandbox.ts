@@ -4,9 +4,9 @@
  *
  * The agent runs UNATTENDED: it writes code and runs tests without a human in
  * the loop. To bound the blast radius of a model that is buggy or steered by a
- * malicious task/issue, every file operation is confined to a single workspace
- * directory under the app's userData folder, and the only command it may run is
- * the project's test script.
+ * malicious task/issue, every file operation is confined to a single project
+ * directory under `~/OpenUI Projects`, and the only command it may run is the
+ * project's test script.
  *
  * TRUST MODEL — running `npm test` executes whatever the workspace's
  * package.json defines, which is arbitrary code by design (that is the point of
@@ -23,13 +23,12 @@
  * intentionally keeps a zero-dependency local-folder backend so the feature
  * works out of the box.
  */
-import { app, shell } from 'electron'
+import { app } from 'electron'
 import { execFile, spawn } from 'node:child_process'
 import { promisify } from 'node:util'
-import { existsSync } from 'node:fs'
 import { mkdir, writeFile, readFile, readdir, stat } from 'node:fs/promises'
-import { homedir } from 'node:os'
 import { join, resolve, relative, isAbsolute, dirname, basename } from 'node:path'
+import { isSafeProjectSlug } from './projectName'
 
 const execFileAsync = promisify(execFile)
 
@@ -62,127 +61,63 @@ const LONG_RUNNING_SCRIPT_RE = /^(dev|start|serve|watch|preview|serve:.*|dev:.*)
 const MAX_FILE_BYTES = 512 * 1024
 
 /**
- * Root that holds every OpenUI project. A VISIBLE folder under the user's home
- * (`~/OpenUI Projects`) — not the hidden userData dir it used to use — because a
- * build the user can't see reads as "it did nothing". Overridable via
- * OPENUI_WORKSPACE (the tests point it at a temp dir).
+ * Folder name used when no project has been named — unattended runs (the
+ * autonomous task runner) and any caller that never calls setActiveProject.
  */
-export function getWorkspaceRoot(): string {
-  const override = process.env.OPENUI_WORKSPACE?.trim()
-  if (override) return resolve(override)
-  return join(homedir(), 'OpenUI Projects')
+const DEFAULT_PROJECT = 'workspace'
+
+/**
+ * Where generated projects live: `~/OpenUI Projects`. Deliberately a directory
+ * the user actually browses to. It used to be the app's userData folder, which
+ * meant a successful build was invisible — the files were real but nobody could
+ * find them.
+ */
+export function getProjectsRoot(): string {
+  return join(app.getPath('home'), 'OpenUI Projects')
 }
 
 /**
- * The current project's folder name under the root. Empty means "use the root
- * directly" (the default, and what the tests rely on). A builder session sets
- * this once via setActiveProject so each build gets its OWN named folder
- * (`~/OpenUI Projects/<name>`) that we can open in VS Code. Module-level state is
- * safe here because all local inference — and therefore all builds — is
- * serialized one-at-a-time by ollamaLock.
+ * The project the current build session writes into, as a single path segment.
+ * Module state rather than a parameter because every sandbox entry point
+ * resolves against "the workspace"; threading a project through all of them
+ * would touch every tool signature for no gain.
  */
-let activeProjectSlug = ''
+let activeProject: string | null = null
 
-/** File-system-safe slug from an arbitrary name ("My Todo App!" → "my-todo-app"). */
-export function slugifyProject(name: string): string {
-  return (name ?? '')
-    .toLowerCase()
-    .trim()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 40)
+/**
+ * Point the sandbox at `~/OpenUI Projects/<slug>`. Rejects anything that is not
+ * a bare slug — this is the boundary where a name derived from a user message
+ * becomes a path, so a separator or `..` here would defeat resolveInSandbox by
+ * moving the root itself rather than escaping it.
+ */
+export function setActiveProject(slug: string): void {
+  activeProject = isSafeProjectSlug(slug) ? slug : DEFAULT_PROJECT
+}
+
+/** The active project slug, or null when none has been set this session. */
+export function getActiveProject(): string | null {
+  return activeProject
 }
 
 /**
- * Choose a project folder name from the user's request. Prefers a name the user
- * states explicitly ("a folder called todo-app", "name it snake"); otherwise
- * slugifies the meaningful words of the request ("build a react counter app" →
- * "react-counter-app"); falls back to a timestamped name when nothing usable is
- * left. Pure and exported so it can be unit-tested.
+ * Return to the shared default workspace. Unattended runs call this so they
+ * never inherit — and write into — whatever project the last interactive build
+ * happened to name.
  */
-export function deriveProjectSlug(message: string): string {
-  const text = (message ?? '').trim()
-
-  const explicit =
-    text.match(/folder\s+(?:called|named)\s+["'`]?([\w .-]{1,40}?)["'`]?(?=[.,!?]|$|\s+(?:and|with|that|to|for)\b)/i) ||
-    text.match(/(?:call|name)\s+it\s+["'`]?([\w .-]{1,40}?)["'`]?(?=[.,!?]|$|\s+(?:and|with|that|to|for)\b)/i) ||
-    text.match(/(?:called|named)\s+["'`]?([\w .-]{1,40}?)["'`]?(?=[.,!?]|$|\s+(?:and|with|that|to|for)\b)/i)
-  if (explicit) {
-    const s = slugifyProject(explicit[1])
-    if (s) return s
-  }
-
-  // Note: "app"/"project" are deliberately NOT filtered — they make for natural
-  // folder names ("todo-app", "weather-project") rather than being stripped.
-  const stop = new Set([
-    'build', 'make', 'create', 'a', 'an', 'the', 'me', 'please', 'my',
-    'folder', 'directory', 'and', 'do', 'this', 'that',
-    'coding', 'code', 'with', 'for', 'in', 'into', 'new', 'using', 'use', 'of', 'to', 'add'
-  ])
-  const words = text
-    .toLowerCase()
-    .replace(/[^a-z0-9\s-]/g, ' ')
-    .split(/\s+/)
-    .filter((w) => w && !stop.has(w))
-  const slug = slugifyProject(words.slice(0, 5).join('-'))
-  if (slug) return slug
-
-  return `project-${Date.now().toString(36)}`
+export function resetActiveProject(): void {
+  activeProject = null
 }
 
 /**
- * Point the sandbox at a named project folder under the root and return its
- * absolute path. Call once at the start of a build. Pass '' to reset to the root.
- */
-export function setActiveProject(name: string): string {
-  activeProjectSlug = slugifyProject(name)
-  return getWorkspaceDir()
-}
-
-/**
- * Absolute path to the ACTIVE workspace — the current project's folder if one is
- * set, otherwise the root. Everything the coding tools read/write is confined
- * here (resolveInSandbox pins every path inside it).
+ * Absolute path to the agent's workspace: the active project's folder under
+ * `~/OpenUI Projects`. Created lazily on first use. Overridable for power users
+ * (and for tests, which must not write to a real home directory) via
+ * OPENUI_WORKSPACE.
  */
 export function getWorkspaceDir(): string {
-  const root = getWorkspaceRoot()
-  return activeProjectSlug ? join(root, activeProjectSlug) : root
-}
-
-/**
- * Best-effort: open the workspace in the user's editor so they SEE the project
- * being built. Prefers VS Code (launched from Code.exe directly — never the
- * code.cmd shim, whose shell quoting mangles the spaced workspace path), and
- * falls back to revealing the folder in the OS file manager, which always works.
- * Never throws — a build must not fail just because no editor is installed.
- */
-export function openWorkspaceInEditor(): void {
-  const dir = getWorkspaceDir()
-  try {
-    const candidates = IS_WIN
-      ? [
-          join(process.env.LOCALAPPDATA ?? '', 'Programs', 'Microsoft VS Code', 'Code.exe'),
-          join(process.env.PROGRAMFILES ?? '', 'Microsoft VS Code', 'Code.exe'),
-          join(process.env['PROGRAMFILES(X86)'] ?? '', 'Microsoft VS Code', 'Code.exe')
-        ]
-      : ['/usr/local/bin/code', '/usr/bin/code', '/snap/bin/code']
-    const code = candidates.find((p) => p && existsSync(p))
-    if (code) {
-      spawn(code, [dir], { detached: true, stdio: 'ignore', windowsHide: true }).unref()
-      return
-    }
-  } catch {
-    /* fall through to the file manager */
-  }
-  // No VS Code found (or the spawn failed) — at least reveal the folder.
-  void shell.openPath(dir)
-}
-
-/** Ensure the workspace directory exists; returns its absolute path. */
-export async function ensureWorkspace(): Promise<string> {
-  const dir = getWorkspaceDir()
-  await mkdir(dir, { recursive: true })
-  return dir
+  const override = process.env.OPENUI_WORKSPACE?.trim()
+  if (override) return resolve(override)
+  return join(getProjectsRoot(), activeProject ?? DEFAULT_PROJECT)
 }
 
 /**
@@ -191,16 +126,22 @@ export async function ensureWorkspace(): Promise<string> {
  * under demo-counter/ — but we've ALREADY made that the project folder, so the
  * prefix would double-nest (demo-counter/demo-counter/package.json). Applied to
  * both reads and writes so a nested write and a top-level read still agree.
- * Exported for unit testing.
  */
 export function stripRedundantProjectPrefix(relPath: string): string {
-  if (!activeProjectSlug) return relPath
+  if (!activeProject) return relPath
   const norm = relPath.replace(/\\/g, '/').replace(/^\.\//, '')
-  const prefix = `${activeProjectSlug}/`
+  const prefix = `${activeProject}/`
   if (norm.toLowerCase().startsWith(prefix.toLowerCase()) && norm.length > prefix.length) {
     return norm.slice(prefix.length)
   }
   return relPath
+}
+
+/** Ensure the workspace directory exists; returns its absolute path. */
+export async function ensureWorkspace(): Promise<string> {
+  const dir = getWorkspaceDir()
+  await mkdir(dir, { recursive: true })
+  return dir
 }
 
 /**
@@ -275,6 +216,74 @@ export async function listSandboxFiles(limit = 200): Promise<string[]> {
   return out
 }
 
+/**
+ * Map a path as it appeared in verifier output to a workspace-relative path, or
+ * null when it does not live inside the sandbox. Handles both the relative paths
+ * tsc/vitest print (cwd is the workspace) and the absolute paths stack traces
+ * carry. Any `..`/outside-the-tree result is rejected so a stack frame pointing
+ * at a system file can never be read back.
+ */
+function toWorkspaceRelative(workspace: string, p: string): string | null {
+  if (typeof p !== 'string' || !p.trim()) return null
+  const abs = isAbsolute(p) ? resolve(p) : resolve(workspace, p)
+  const rel = relative(workspace, abs)
+  if (rel === '' || rel.startsWith('..') || isAbsolute(rel)) return null
+  return rel
+}
+
+/** A window of source around a failing line, ready to show the model. */
+export interface CodeRegion {
+  ok: boolean
+  /** Workspace-relative path when resolved. */
+  path?: string
+  /** Line-numbered snippet with a '>' marker on the failing line. */
+  snippet?: string
+  /** Why no snippet was produced (outside sandbox, dependency, missing). */
+  reason?: string
+}
+
+/**
+ * Read the source around a failing `file:line` from inside the sandbox so the
+ * debug loop can show the model the offending code without spending a turn on a
+ * manual read_file. Paths outside the workspace and dependency files
+ * (node_modules) are refused; a missing file returns ok:false rather than throw.
+ */
+export async function readSandboxRegion(
+  rawPath: string,
+  line: number,
+  radius = 10
+): Promise<CodeRegion> {
+  const workspace = await ensureWorkspace()
+  const rel = toWorkspaceRelative(workspace, rawPath)
+  if (rel === null) return { ok: false, reason: 'path is outside the workspace' }
+  if (rel.split(/[\\/]/).includes('node_modules')) {
+    return { ok: false, path: rel, reason: 'dependency file — not shown' }
+  }
+  let abs: string
+  try {
+    abs = resolveInSandbox(workspace, rel)
+  } catch (err) {
+    return { ok: false, reason: err instanceof Error ? err.message : String(err) }
+  }
+  let content: string
+  try {
+    content = await readFile(abs, 'utf8')
+  } catch {
+    return { ok: false, path: rel, reason: 'file not found in the workspace' }
+  }
+  const lines = content.split(/\r?\n/)
+  const target = Number.isFinite(line) && line > 0 ? Math.floor(line) : 1
+  const from = Math.max(1, target - radius)
+  const to = Math.min(lines.length, target + radius)
+  const width = String(to).length
+  const numbered: string[] = []
+  for (let n = from; n <= to; n++) {
+    const marker = n === target ? '>' : ' '
+    numbered.push(`${marker} ${String(n).padStart(width)} | ${lines[n - 1] ?? ''}`)
+  }
+  return { ok: true, path: rel, snippet: numbered.join('\n') }
+}
+
 export interface TestRunResult {
   /** True when the test command exited 0. */
   passed: boolean
@@ -289,6 +298,14 @@ export interface TestRunResult {
  * argument-injection surface. On Windows the npm shim is `npm.cmd`, which
  * requires a shell to launch via execFile — acceptable here because the command
  * string is static. Execution is time-bounded and output-capped.
+ *
+ * REGRESSION SAFETY (§5): this deliberately runs the WHOLE suite (`npm test`),
+ * never a single test file. A fix that is locally correct but breaks a module
+ * three files away is exactly the failure mode a touched-file-only run misses,
+ * and VerifyGate keys the run's "verified" flag off this full-suite result. The
+ * tradeoff is speed — the whole suite runs every verification turn — which the
+ * per-run wall-clock bound (TEST_TIMEOUT_MS) keeps in check for the small
+ * projects this sandbox scaffolds.
  */
 export async function runTests(): Promise<TestRunResult> {
   const cwd = await ensureWorkspace()
@@ -535,12 +552,13 @@ function runBoundedProcess(
   argv: string[],
   cwd: string,
   timeoutMs: number,
-  stdinText?: string
+  stdinText?: string,
+  env?: NodeJS.ProcessEnv
 ): Promise<TestRunResult> {
   return new Promise((resolvePromise) => {
     let child: ReturnType<typeof spawn>
     try {
-      child = spawn(file, argv, { cwd, windowsHide: true, detached: !IS_WIN })
+      child = spawn(file, argv, { cwd, windowsHide: true, detached: !IS_WIN, env })
     } catch (err) {
       resolvePromise({
         passed: false,
@@ -738,4 +756,367 @@ export async function runCppProgram(relPath: string, stdinText: string): Promise
 
   const run = await runBoundedProcess(exeAbs, [], workspace, CPP_RUN_TIMEOUT_MS, stdinText)
   return { passed: run.passed, output: run.output || '(program produced no output)' }
+}
+
+// ── surgical edit, code search, git ──────────────────────────────────────────
+//
+// The three primitives that separate "a model that writes files" from "a model
+// that works on a codebase". Each keeps the module's existing guarantees:
+// every path goes through resolveInSandbox, every child process is spawned
+// WITHOUT a shell and is wall-clock bounded and output-capped.
+
+/** Result of a surgical edit: how many occurrences were swapped, and where. */
+export interface EditResult {
+  /** Number of occurrences of oldString that were replaced. */
+  replacements: number
+  /** Workspace-relative path that was edited. */
+  path: string
+}
+
+/**
+ * Replace an exact substring inside an existing workspace file.
+ *
+ * Why this exists alongside writeSandboxFile: rewriting a whole file to change
+ * three lines forces the model to reproduce the untouched remainder from
+ * memory. On anything longer than a page it silently drops code — the classic
+ * whole-file-rewrite failure. A literal find/replace makes the edit's blast
+ * radius exactly the text the model actually named.
+ *
+ * `oldString` is matched LITERALLY (never as a regex), and must appear exactly
+ * once unless `replaceAll` is set. A zero-match or an ambiguous multi-match is
+ * an error rather than a guess: the model must come back with more surrounding
+ * context, which is also what makes the edit reviewable.
+ */
+export async function editSandboxFile(
+  relPath: string,
+  oldString: string,
+  newString: string,
+  replaceAll = false
+): Promise<EditResult> {
+  const workspace = await ensureWorkspace()
+  const abs = resolveInSandbox(workspace, relPath)
+
+  if (typeof oldString !== 'string' || oldString === '') {
+    throw new Error('old_string must be a non-empty string')
+  }
+  if (typeof newString !== 'string') {
+    throw new Error('new_string must be a string')
+  }
+  if (oldString === newString) {
+    throw new Error('old_string and new_string are identical — nothing to change')
+  }
+
+  let original: string
+  try {
+    original = await readFile(abs, 'utf8')
+  } catch {
+    throw new Error(`"${relPath}" does not exist in the workspace. Write it first.`)
+  }
+
+  // Literal occurrence count — split/join avoids the regex-escaping problem and
+  // the "$&" substitution footgun in String.replace.
+  const occurrences = original.split(oldString).length - 1
+  if (occurrences === 0) {
+    throw new Error(
+      `old_string was not found in "${relPath}". It must match the file byte-for-byte, ` +
+        'including indentation and line endings.'
+    )
+  }
+  if (occurrences > 1 && !replaceAll) {
+    throw new Error(
+      `old_string appears ${occurrences} times in "${relPath}". Include more surrounding ` +
+        'context to make it unique, or set replace_all to change every occurrence.'
+    )
+  }
+
+  const updated = replaceAll
+    ? original.split(oldString).join(newString)
+    : original.replace(oldString, newString)
+
+  if (Buffer.byteLength(updated, 'utf8') > MAX_FILE_BYTES) {
+    throw new Error(`edit would push the file past the ${Math.round(MAX_FILE_BYTES / 1024)} KB limit`)
+  }
+
+  await writeFile(abs, updated, 'utf8')
+  return { replacements: replaceAll ? occurrences : 1, path: relative(workspace, abs) }
+}
+
+/** One matching line found by searchSandbox. */
+export interface SearchMatch {
+  /** Workspace-relative path, always with forward slashes. */
+  file: string
+  /** 1-indexed line number. */
+  line: number
+  /** The matching line, trimmed and length-capped. */
+  text: string
+}
+
+/** How long a whole search may run before it gives up and returns what it has. */
+const SEARCH_DEADLINE_MS = 10_000
+/** Files larger than this are skipped — they're data, not source. */
+const MAX_SEARCH_FILE_BYTES = 2 * 1024 * 1024
+/** Matching is capped at this line length (see the ReDoS note below). */
+const MAX_SEARCH_LINE_CHARS = 1000
+/** Longest regex a caller may supply. */
+const MAX_PATTERN_CHARS = 500
+/** Default cap on returned matches, so a broad pattern can't flood the context. */
+const DEFAULT_MAX_MATCHES = 100
+
+/** Regex metacharacters that must be escaped when they appear literally in a glob. */
+const GLOB_META = '.+^${}()|[]\\'
+
+/**
+ * Translate a shell-style glob into an anchored RegExp. Supports `*` (within a
+ * path segment), `**` (across segments), `?` (one non-separator char). Paths are
+ * normalised to forward slashes before matching, so this behaves the same on
+ * Windows as on POSIX.
+ */
+export function globToRegExp(glob: string): RegExp {
+  let out = ''
+  for (let i = 0; i < glob.length; i++) {
+    const ch = glob[i]
+    if (ch === '*') {
+      if (glob[i + 1] === '*') {
+        i++
+        // A `**/` also matches zero directories, so src/**/*.ts finds src/a.ts.
+        if (glob[i + 1] === '/') {
+          i++
+          out += '(?:.*/)?'
+        } else {
+          out += '.*'
+        }
+      } else {
+        out += '[^/]*'
+      }
+    } else if (ch === '?') {
+      out += '[^/]'
+    } else if (GLOB_META.includes(ch)) {
+      out += '\\' + ch
+    } else {
+      out += ch
+    }
+  }
+  return new RegExp(`^${out}$`)
+}
+
+/** True when a buffer looks binary (a NUL byte in the first 8 KB). */
+function looksBinary(buf: Buffer): boolean {
+  return buf.subarray(0, 8192).includes(0)
+}
+
+/**
+ * Regex-search the text files of the workspace and return matching lines.
+ *
+ * This is what lets the agent work on code it did not write in this session —
+ * without it, `read_file` is only useful when the model already knows the path.
+ * Implemented in pure Node rather than shelling out to ripgrep/grep so the
+ * module keeps its zero-dependency, no-shell local backend.
+ *
+ * ReDoS: `pattern` is model-supplied, so a catastrophic-backtracking regex could
+ * in principle wedge one `.test()` call, which no timer can interrupt on this
+ * thread. Bounded, not eliminated: the pattern length is capped, each candidate
+ * line is truncated to MAX_SEARCH_LINE_CHARS before matching, and the walk stops
+ * at SEARCH_DEADLINE_MS. That makes a hang cost milliseconds rather than the
+ * process. Do not lift the line cap without moving this onto a worker thread.
+ */
+export async function searchSandbox(
+  pattern: string,
+  opts: { glob?: string; maxResults?: number; ignoreCase?: boolean } = {}
+): Promise<SearchMatch[]> {
+  const workspace = await ensureWorkspace()
+
+  if (typeof pattern !== 'string' || !pattern.trim()) {
+    throw new Error('pattern must be a non-empty string')
+  }
+  if (pattern.length > MAX_PATTERN_CHARS) {
+    throw new Error(`pattern exceeds the ${MAX_PATTERN_CHARS}-character limit`)
+  }
+
+  let re: RegExp
+  try {
+    re = new RegExp(pattern, opts.ignoreCase ? 'i' : '')
+  } catch (err) {
+    throw new Error(`invalid regex: ${err instanceof Error ? err.message : String(err)}`)
+  }
+
+  let globRe: RegExp | null = null
+  if (opts.glob?.trim()) {
+    try {
+      globRe = globToRegExp(opts.glob.trim())
+    } catch {
+      throw new Error(`invalid glob: ${opts.glob}`)
+    }
+  }
+
+  const limit = opts.maxResults && opts.maxResults > 0 ? opts.maxResults : DEFAULT_MAX_MATCHES
+  const deadline = Date.now() + SEARCH_DEADLINE_MS
+  const matches: SearchMatch[] = []
+
+  async function walk(dir: string): Promise<void> {
+    if (matches.length >= limit || Date.now() > deadline) return
+    // Unreadable directory → skip it rather than fail the whole search.
+    const entries = await readdir(dir, { withFileTypes: true }).catch(() => null)
+    if (!entries) return
+    for (const entry of entries) {
+      if (matches.length >= limit || Date.now() > deadline) return
+      // Same exclusions as listSandboxFiles: dependency trees and dot-dirs are
+      // noise the model should never be reading.
+      if (entry.name === 'node_modules' || entry.name.startsWith('.')) continue
+      const abs = join(dir, entry.name)
+      if (entry.isDirectory()) {
+        await walk(abs)
+        continue
+      }
+
+      const rel = relative(workspace, abs).split('\\').join('/')
+      if (globRe && !globRe.test(rel)) continue
+
+      let buf: Buffer
+      try {
+        const info = await stat(abs)
+        if (info.size > MAX_SEARCH_FILE_BYTES) continue
+        buf = await readFile(abs)
+      } catch {
+        continue
+      }
+      if (looksBinary(buf)) continue
+
+      const lines = buf.toString('utf8').split(/\r?\n/)
+      for (let i = 0; i < lines.length; i++) {
+        if (matches.length >= limit) return
+        // Check the clock per line: a pathological pattern can't be interrupted
+        // mid-test, but it also can't run away across a whole tree.
+        if ((i & 0xff) === 0 && Date.now() > deadline) return
+        const line = lines[i].slice(0, MAX_SEARCH_LINE_CHARS)
+        if (re.test(line)) {
+          matches.push({ file: rel, line: i + 1, text: line.trim() })
+        }
+      }
+    }
+  }
+
+  await walk(workspace)
+  return matches
+}
+
+// ── git ──────────────────────────────────────────────────────────────────────
+
+const GIT_TIMEOUT_MS = 30_000
+
+/**
+ * Git subcommands the coding agent may run. Everything here is LOCAL: it reads
+ * or rewrites the sandbox repo and nothing else.
+ *
+ * Network subcommands (clone/fetch/pull/push/remote/submodule) are absent on
+ * purpose — they would let a hostile task exfiltrate the workspace to a remote
+ * the model chose. Pushing is a deliberate, human-approved act that already has
+ * its own path through github.ts.
+ *
+ * `config` is absent because `git config alias.x '!sh -c ...'` and
+ * `core.sshCommand` turn config into arbitrary command execution. Commit
+ * identity is supplied through the environment instead (see gitEnv).
+ */
+const GIT_ALLOWED_SUBCOMMANDS = new Set([
+  'init',
+  'status',
+  'add',
+  'commit',
+  'diff',
+  'log',
+  'show',
+  'branch',
+  'checkout',
+  'switch',
+  'restore',
+  'rev-parse',
+  'stash',
+  'tag',
+  'mv',
+  'rm'
+])
+
+/**
+ * Arguments rejected wherever they appear. Each of these either relocates git
+ * outside the sandbox (-C, --git-dir, --work-tree) or is a documented execution
+ * vector (-c sets config inline; --exec-path, --upload-pack, --receive-pack and
+ * --config-env all name a program or config to run). The subcommand allowlist
+ * alone would not stop `git -c core.pager='!sh' log`.
+ */
+const GIT_FORBIDDEN_ARG_RE =
+  /^(-c|-C|--exec-path|--git-dir|--work-tree|--namespace|--upload-pack|--receive-pack|--config-env)(=|$)/i
+
+/**
+ * Environment for every git invocation. Blocks credential/passphrase prompts
+ * (which would hang a bounded, unattended child forever), ignores system-level
+ * config we don't control, and attributes commits to the agent rather than
+ * silently forging the user's identity.
+ */
+function gitEnv(): NodeJS.ProcessEnv {
+  return {
+    ...process.env,
+    GIT_TERMINAL_PROMPT: '0',
+    GIT_CONFIG_NOSYSTEM: '1',
+    GIT_ASKPASS: '',
+    GIT_AUTHOR_NAME: 'OpenUI Agent',
+    GIT_AUTHOR_EMAIL: 'agent@openui.local',
+    GIT_COMMITTER_NAME: 'OpenUI Agent',
+    GIT_COMMITTER_EMAIL: 'agent@openui.local'
+  }
+}
+
+/**
+ * Validate a git invocation against the allowlist. Exported for direct unit
+ * testing — this is a trust boundary, so it is tested without spawning git.
+ * Returns null when the call is permitted, or the reason it was refused.
+ */
+export function rejectGitInvocation(subcommand: unknown, args: unknown): string | null {
+  if (typeof subcommand !== 'string' || !subcommand.trim()) {
+    return 'git requires a non-empty subcommand.'
+  }
+  const sub = subcommand.trim()
+  if (!GIT_ALLOWED_SUBCOMMANDS.has(sub)) {
+    return (
+      `git subcommand "${sub}" is not allowed. Permitted: ` +
+      `${[...GIT_ALLOWED_SUBCOMMANDS].sort().join(', ')}. ` +
+      'Network operations (push/pull/fetch/clone/remote) are intentionally unavailable here.'
+    )
+  }
+  if (!Array.isArray(args)) return 'git args must be an array of strings.'
+  for (const arg of args) {
+    if (typeof arg !== 'string') return 'every git arg must be a string.'
+    if (GIT_FORBIDDEN_ARG_RE.test(arg)) {
+      return `git argument "${arg}" is not allowed (it can redirect git outside the workspace or execute a program).`
+    }
+  }
+  return null
+}
+
+/**
+ * Run one allowlisted git subcommand inside the workspace.
+ *
+ * There is no shell: `args` become argv entries verbatim, so a commit message
+ * containing `;` or `$(...)` is inert data. Combined with rejectGitInvocation,
+ * the only thing a model can express here is a local git operation on its own
+ * sandbox repo.
+ */
+export async function runGit(subcommand: string, args: string[] = []): Promise<TestRunResult> {
+  const cwd = await ensureWorkspace()
+
+  const refusal = rejectGitInvocation(subcommand, args)
+  if (refusal) return { passed: false, output: refusal }
+
+  // Every subcommand but `init` needs a repo; say so plainly instead of letting
+  // the model puzzle over git's "not a git repository" error.
+  if (subcommand !== 'init') {
+    try {
+      await stat(join(cwd, '.git'))
+    } catch {
+      return {
+        passed: false,
+        output: 'The workspace is not a git repository yet. Run git with subcommand "init" first.'
+      }
+    }
+  }
+
+  return runBoundedProcess('git', [subcommand, ...args], cwd, GIT_TIMEOUT_MS, undefined, gitEnv())
 }

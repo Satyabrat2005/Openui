@@ -16,7 +16,12 @@
 import type { BrowserWindow } from 'electron'
 import { callModel, parseToolCall, emit, StreamGate, type Message } from './agent'
 import { codingToolSchemas, executeCodingTool, describeCodingToolCall } from './codingTools'
+import { VerifyGate } from './verifyGate'
+import { parseFailures, failureSignature } from './errorParser'
+import { FixTracker } from './fixTracker'
 import { getNextTask, recordTaskOutcome, type TaskSource, type AgentTask } from './tasks'
+import { resetActiveProject, readSandboxRegion } from './sandbox'
+import { disarmEditorAutoOpen } from './editor'
 import { detectProjectType, getProjectProfile, type ProjectProfile } from './projectProfiles'
 import { startRun, type RunLog } from './runLog'
 import {
@@ -82,15 +87,20 @@ Available tools:
 ${codingToolSchemas.map(renderSchema).join('\n')}
 
 Workflow:
-1. If unsure of the current state, call list_files / read_file to inspect the workspace.
-2. Implement the task with write_file (write complete file contents each time). To scaffold a new project, write the WHOLE file tree — package.json (with the right dependencies and "scripts"), source files, config, and tests.
-3. If the project has dependencies, call install_dependencies once after writing package.json.
-4. Verify your work with the verifier that fits the project (the PROJECT TYPE section below tells you which):
+1. Orient before changing anything. Call list_files to see the tree, search_code to locate a symbol or string (it returns "file:line: text"), and read_file to read what you are about to touch. Never edit a file you have not read this session.
+2. Create NEW files with write_file. To scaffold a new project, write the WHOLE file tree — package.json (with the right dependencies and "scripts"), source files, config, and tests.
+3. Change EXISTING files with edit_file, never write_file. write_file replaces the entire file, so using it for a small change silently deletes every line you did not retype. edit_file swaps one exact snippet and leaves the rest untouched. If edit_file reports that old_string is ambiguous, add surrounding lines to make it unique — do not fall back to write_file.
+4. If the project has dependencies, call install_dependencies once after writing package.json.
+5. Verify your work with the verifier that fits the project (the PROJECT TYPE section below tells you which):
    - Call run_tests to run an npm test suite, and/or
    - Call run_script to run a build/train/lint script you defined (e.g. {"tool":"run_script","args":{"script":"build"}}). A dev server ("dev"/"start") is run as a boot smoke test — it confirms the app starts without crashing.
    - For Python work, call run_pytest and/or run_python; for single-file C++, call run_cpp with the sample input.
-5. Read the output carefully. If it starts with "TESTS FAILED" / "SCRIPT FAILED" / "INSTALL FAILED", read the offending file(s) with read_file, fix the code with write_file, and re-run the failing step. Iterate.
-6. When verification passes, reply in plain natural language summarising what you built/changed. Do NOT wrap the final summary in JSON.
+6. Read the output carefully. If it starts with "TESTS FAILED" / "SCRIPT FAILED" / "INSTALL FAILED", a "DEBUG CONTEXT" block is appended below the output showing the exact failing file:line and the surrounding source — use it directly (only call read_file if you need more of the file), then fix the CAUSE with edit_file and re-run the failing step. If the same failure returns after your fix, it is not at that line: look at the caller and the values flowing in rather than re-patching the same spot. Iterate.
+7. Commit each coherent, VERIFIED change so the work is reviewable and revertable. On a fresh workspace run {"tool":"git","args":{"subcommand":"init"}} first, then add and commit:
+   {"tool":"git","args":{"subcommand":"add","args":["."]}}
+   {"tool":"git","args":{"subcommand":"commit","args":["-m","Short summary of the change"]}}
+   Commit only after the relevant verifier passed — never commit a red build. git here cannot push, pull, fetch or reach any network; publishing is a separate step a human approves.
+8. When verification passes, reply in plain natural language summarising what you built/changed. Do NOT wrap the final summary in JSON. If you edit ANY file after the last passing run, you must re-run the verifier before summarising — a green run only describes the tree as it was when it ran.
 
 If after several honest attempts you cannot make it pass, reply in plain text beginning with "GIVE UP:" followed by a short explanation. Never fake a pass or delete tests to make them pass.`
 
@@ -107,6 +117,71 @@ function taskPrompt(task: AgentTask, profile: ProjectProfile): string {
 function formatToolResult(tool: string, result: ToolResult): string {
   if (result.ok) return `TOOL RESULT [${tool}] success: ${result.output ?? '(no output)'}`
   return `TOOL RESULT [${tool}] error: ${result.error ?? 'unknown error'}`
+}
+
+// How many distinct failing locations to auto-fetch source for per red run. A
+// bound keeps the injected context from blowing the model's window when a build
+// prints dozens of errors — the model fixes the first few and re-runs.
+const MAX_DEBUG_LOCATIONS = 3
+
+/**
+ * Structured error handling for a red verifier (Task §4). Parses the failure
+ * output into file:line locations, auto-fetches the surrounding source from the
+ * sandbox (so the model does not spend a turn reading it back), journals each
+ * failure signature, and — when the FixTracker shows the same failure recurring
+ * after an edit — appends escalation guidance (widen the view / find the caller-
+ * side root cause). Returns text to append to the tool result, or '' when the
+ * output held no recognisable failure location.
+ */
+async function buildDebugContext(
+  output: string,
+  tracker: FixTracker,
+  runLog: RunLog
+): Promise<string> {
+  const failures = parseFailures(output)
+  if (failures.length === 0) return ''
+
+  tracker.observeFailures(failures.map(failureSignature))
+
+  const sections: string[] = []
+  const escalations = new Set<string>()
+  const seenLocations = new Set<string>()
+
+  for (const f of failures) {
+    const sig = failureSignature(f)
+    runLog.event('failure', {
+      sig,
+      file: f.file,
+      line: f.line,
+      type: f.errorType,
+      attempts: tracker.attempts(sig)
+    })
+
+    const guidance = tracker.guidanceFor(sig)
+    if (guidance) escalations.add(guidance)
+
+    // One snippet per distinct location, capped — the log may repeat a line.
+    const locKey = `${f.file.replace(/\\/g, '/')}:${f.line}`
+    if (seenLocations.has(locKey) || sections.length >= MAX_DEBUG_LOCATIONS) continue
+    seenLocations.add(locKey)
+
+    const head = `${f.file}:${f.line}${f.errorType ? ` — ${f.errorType}` : ''}${
+      f.message ? `: ${f.message}` : ''
+    }`
+    const region = await readSandboxRegion(f.file, f.line, tracker.readRadiusFor(sig))
+    sections.push(
+      region.ok && region.snippet
+        ? `${head}\n${region.snippet}`
+        : `${head}\n(could not show source: ${region.reason})`
+    )
+  }
+
+  if (sections.length === 0 && escalations.size === 0) return ''
+  const parts = ['\n\n--- DEBUG CONTEXT (auto-fetched at the failing lines) ---']
+  if (sections.length) parts.push(sections.join('\n\n'))
+  if (escalations.size) parts.push([...escalations].join('\n'))
+  parts.push('Fix the cause shown above with write_file, then re-run the verifier.')
+  return parts.join('\n')
 }
 
 interface TaskOutcome {
@@ -128,7 +203,11 @@ async function workOnTask(
 ): Promise<TaskOutcome> {
   const messages: Message[] = [{ role: 'user', content: taskPrompt(task, profile) }]
   const systemPrompt = `${CODING_SYSTEM_PROMPT}\n\n${profile.promptAddendum}`
-  let lastVerificationPassed = false
+  // §5: refuses to let the agent finish on unverified work — a passing verifier
+  // marks the tree verified, any later edit expires that pass.
+  const verifyGate = new VerifyGate(profile)
+  // §4: tracks recurring failures across the run to drive escalation.
+  const fixTracker = new FixTracker()
 
   for (let turn = 0; turn < MAX_CODING_TURNS; turn++) {
     if (stopRequested) {
@@ -146,8 +225,19 @@ async function workOnTask(
     gate.finalize(toolCall !== null)
     if (!toolCall) {
       // Plain-language reply ⇒ the agent considers the task finished (or gave up).
-      const gaveUp = /^\s*GIVE UP:/i.test(responseText)
-      return { success: lastVerificationPassed && !gaveUp, summary: responseText.trim() }
+      const decision = verifyGate.onFinalReply(responseText)
+      if (decision === 'nudge') {
+        // It wrote code and never proved it works. Say so and keep the loop alive.
+        emit(win, 'openui:task:update', {
+          id: `a${++taskSeq}`,
+          label: verifyGate.nudgeLabel,
+          status: 'working',
+          detail: `Summarised without running ${profile.verifiers.join(' / ')} — asking it to verify.`
+        })
+        messages.push({ role: 'user', content: verifyGate.nudgeMessage() })
+        continue
+      }
+      return { success: verifyGate.isVerified && decision !== 'give_up', summary: responseText.trim() }
     }
 
     const taskId = `a${++taskSeq}`
@@ -163,11 +253,17 @@ async function workOnTask(
       argsSummary: label,
       error: result.ok ? undefined : result.error?.slice(0, 300)
     })
-    // Success signal is project-type-aware: only THIS profile's verification
-    // tool(s) count, and a later failed re-run clears an earlier pass.
-    if (result.ok) {
-      const verdict = profile.verdict(toolCall.tool, result.output ?? '')
-      if (verdict !== null) lastVerificationPassed = verdict === 'pass'
+    // §5 success signal: only THIS profile's verifier counts, a later red run
+    // clears an earlier pass, and any successful edit expires a pass that
+    // described the tree as it used to be.
+    verifyGate.observe(toolCall.tool, toolCall.args, result.ok, result.output ?? '')
+
+    // §4: when a verifier came back red, attach the parsed failure locations +
+    // their surrounding source (and escalation guidance for recurring failures)
+    // so the model can fix the cause without spending a turn reading it back.
+    let debugContext = ''
+    if (result.ok && profile.verdict(toolCall.tool, result.output ?? '') === 'fail') {
+      debugContext = await buildDebugContext(result.output ?? '', fixTracker, runLog)
     }
 
     emit(win, 'openui:task:update', {
@@ -177,7 +273,7 @@ async function workOnTask(
       detail: result.ok ? result.output?.slice(0, 200) : result.error
     })
 
-    messages.push({ role: 'user', content: formatToolResult(toolCall.tool, result) })
+    messages.push({ role: 'user', content: formatToolResult(toolCall.tool, result) + debugContext })
   }
 
   return { success: false, summary: 'Reached the coding-turn limit before verification passed.' }
@@ -196,6 +292,12 @@ export async function runAutonomousCoding(
   if (running) return
   running = true
   stopRequested = false
+
+  // Unattended work goes to the shared default workspace, never into the folder
+  // a previous interactive build named, and never pops an editor window over
+  // whatever the user is currently doing.
+  resetActiveProject()
+  disarmEditorAutoOpen()
 
   try {
     let worked = 0
