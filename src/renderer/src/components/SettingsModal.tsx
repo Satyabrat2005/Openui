@@ -8,6 +8,13 @@ const AUTONOMY_OPTIONS: { value: AutonomyLevel; label: string; hint: string }[] 
   { value: 'full-auto', label: 'Full auto', hint: 'Run everything without asking. Highest risk.' }
 ]
 
+// Launch switch for the bring-your-own-key Cloud AI section. OFF for the
+// Ollama-only launch — the shipped app shows no API-key field and no cloud
+// toggle, so it presents as fully local. Mirrors isCloudTierEnabled() /
+// OPENUI_ENABLE_CLOUD in the main process (models.ts). Flip both back to restore
+// the frontier tier (built under PR #107).
+const CLOUD_TIER_ENABLED = false
+
 interface Props {
   onClose: () => void
   appVersion?: string
@@ -415,7 +422,9 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
           />
         </div>
 
-        {/* Cloud AI: bring-your-own-key frontier model (opt-in) */}
+        {/* Cloud AI: bring-your-own-key frontier model (opt-in). Hidden for the
+            Ollama-only launch; see CLOUD_TIER_ENABLED above. */}
+        {CLOUD_TIER_ENABLED && (
         <div
           style={{
             borderTop: '1px solid rgba(0,0,0,0.06)',
@@ -472,6 +481,7 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
             }}
           />
         </div>
+        )}
 
         {/* Integrations: GitHub personal access token */}
         <div

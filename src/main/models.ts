@@ -90,10 +90,12 @@ export async function getAvailableModels(): Promise<AvailableModel[]> {
     // Ollama not running — fall through; the pool may still get a cloud entry.
   }
 
-  // Only advertise a cloud model when a key is genuinely present (env OR the
-  // Settings value), so the UI tag reflects a model we can actually call. The id
-  // and label track resolveCloudModel, so overriding the model updates the tag.
-  if (getAnthropicKey()) {
+  // Only advertise a cloud model when the tier is enabled for this build AND a key
+  // is genuinely present (env OR the Settings value), so the UI tag reflects a
+  // model we can actually call. The id and label track resolveCloudModel, so
+  // overriding the model updates the tag. With the launch switch off (default),
+  // the pool is Ollama-only.
+  if (isCloudTierEnabled() && getAnthropicKey()) {
     const id = resolveCloudModel()
     models.push({ id, label: prettifyCloud(id), provider: 'anthropic' })
   }
@@ -160,8 +162,26 @@ export async function resolveGeneralModel(): Promise<string> {
 // facts gate it: a key must exist, AND the user must have flipped the routing
 // toggle on. Either alone routes nowhere near the cloud.
 //
+// LAUNCH SWITCH: the whole tier sits behind isCloudTierEnabled(), OFF by default,
+// so the shipped app is Ollama-only — no API key, no cloud routing, no billing.
+// This is deliberate for the initial launch (self-hosted on the user's own Ollama
+// server). Set OPENUI_ENABLE_CLOUD=1 to bring the BYOK tier back with zero code
+// changes; the renderer mirrors the same switch in SettingsModal.tsx.
+//
 // Key resolution mirrors github.ts's getToken(): env first (dev-only override),
 // then the value pasted into Settings.
+
+/**
+ * Master switch for the entire bring-your-own-key cloud tier. OFF unless
+ * OPENUI_ENABLE_CLOUD=1, so by default nothing about the cloud path is reachable:
+ * shouldRouteToCloud() is always false and getAvailableModels() never advertises
+ * a cloud model. Kept as an env flag (not a deletion) so the tier — built and
+ * reviewed under PR #107 — can be re-enabled for a future release without a code
+ * change. Read at call time, like the other predicates here.
+ */
+export function isCloudTierEnabled(): boolean {
+  return process.env.OPENUI_ENABLE_CLOUD === '1'
+}
 
 /** Resolved Anthropic API key: ANTHROPIC_API_KEY env, else the Settings value, else null. */
 export function getAnthropicKey(): string | null {
@@ -202,9 +222,14 @@ export function isCloudRoutingEnabled(): boolean {
   }
 }
 
-/** True only when the user turned cloud routing on AND a key is actually configured. */
+/**
+ * True only when the cloud tier is enabled for this build (launch switch, off by
+ * default) AND the user turned routing on AND a key is actually configured. All
+ * three are required, so the shipped Ollama-only app never routes a turn off the
+ * machine no matter what settings say.
+ */
 export function shouldRouteToCloud(): boolean {
-  return isCloudRoutingEnabled() && getAnthropicKey() !== null
+  return isCloudTierEnabled() && isCloudRoutingEnabled() && getAnthropicKey() !== null
 }
 
 /** Longest single response we'll request from the cloud model (bounds BYOK cost per turn). */
