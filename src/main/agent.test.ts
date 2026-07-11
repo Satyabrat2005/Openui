@@ -145,6 +145,13 @@ const lastArg = (channel: string): Record<string, unknown> | undefined => {
   const found = [...h.sends].reverse().find((s) => s.channel === channel)
   return found?.args[0] as Record<string, unknown> | undefined
 }
+/** The most recent status pushed for a given task-list row id (or undefined). */
+const lastTaskStatus = (id: string): string | undefined => {
+  const found = [...h.sends]
+    .reverse()
+    .find((s) => s.channel === 'openui:task:update' && (s.args[0] as { id?: string })?.id === id)
+  return (found?.args[0] as { status?: string } | undefined)?.status
+}
 
 beforeEach(() => {
   clearHistory()
@@ -270,6 +277,51 @@ describe('handleChat — plan approval gate', () => {
     expect(h.ollamaChat).not.toHaveBeenCalled()
     expect(chunks().toLowerCase()).toContain('cancelled')
     expect(sent('openui:chat:done')).toBe(true)
+  })
+})
+
+// ── False-completion guard: planned OS run ────────────────────────────────────
+// Regression for the core bug: the model opens an app, then declares a 3-step
+// plan "done" in prose without ever checking off steps 2 & 3. The checklist must
+// NOT green those steps, and the reply must own up to what didn't complete.
+describe('handleChat — premature "done" on a planned run', () => {
+  const plan = { summary: 'Set things up', steps: ['open the app', 'write the file', 'send the message'] }
+
+  beforeEach(() => {
+    h.looksLikeTask.mockReturnValue(true)
+    h.generatePlan.mockResolvedValue(plan)
+    registerAgentIPC(win)
+  })
+
+  function approvePlan(): void {
+    const req = lastArg('openui:plan:request')
+    const handler = h.ipc.get('openui:plan:response')
+    handler?.(null, { id: req?.id, approved: true })
+  }
+
+  it('greens only the step actually checked off and marks the rest error', async () => {
+    // open_app → complete_step s1 → prose claiming everything is done; the model
+    // then keeps insisting (default "All done.") through the nudge budget.
+    h.state.responses = [
+      '{"tool":"open_app","args":{}}',
+      '{"tool":"complete_step","args":{"step_id":"s1"}}',
+      'Everything is finished — I did all three steps for you!'
+    ]
+    const pending = handleChat(win, 'set up my workspace and build the site', 'free')
+    await tick()
+    await tick()
+    approvePlan()
+    await pending
+
+    // s1 was explicitly completed; s2 and s3 never were → must not be 'done'.
+    expect(lastTaskStatus('s1')).toBe('done')
+    expect(lastTaskStatus('s2')).not.toBe('done')
+    expect(lastTaskStatus('s3')).not.toBe('done')
+    expect(lastTaskStatus('s2')).toBe('error')
+    expect(lastTaskStatus('s3')).toBe('error')
+
+    // The user-facing reply is honest about the steps that didn't complete.
+    expect(String(lastArg('openui:chat:done')?.text)).toContain('could not confirm')
   })
 })
 

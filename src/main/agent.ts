@@ -700,11 +700,42 @@ function advancePlan(win: BrowserWindow, steps: PlanStepRow[], stepId: string): 
   }
 }
 
-/** Mark every not-yet-finished plan row as done (called when the agent wraps up). */
-function settlePlan(win: BrowserWindow, steps: PlanStepRow[]): void {
+/**
+ * Settle the checklist HONESTLY when the agent wraps up: a step is marked done
+ * ONLY if it was explicitly checked off via complete_step (tracked in
+ * `completedStepIds`). Any step never completed is marked `error` — never
+ * silently turned green. The old settlePlan greened every row on any prose
+ * reply, so a model that opened one app then said "done" produced an all-green
+ * checklist with nothing actually finished.
+ */
+function settlePlanHonest(
+  win: BrowserWindow,
+  steps: PlanStepRow[],
+  completedStepIds: Set<string>
+): void {
   for (const s of steps) {
-    emit(win, 'openui:task:update', { id: s.id, label: s.title, status: 'done' } satisfies TaskUpdate)
+    const done = completedStepIds.has(s.id)
+    emit(win, 'openui:task:update', {
+      id: s.id,
+      label: s.title,
+      status: done ? 'done' : 'error',
+      detail: done ? undefined : 'Not completed'
+    } satisfies TaskUpdate)
   }
+}
+
+/**
+ * Pushback that keeps a planned run going when the model declares victory before
+ * checking every step off. Names the exact unfinished steps and the tool to use,
+ * so a weak local model can recover instead of leaving steps stranded.
+ */
+function buildContinuationNudge(unfinished: PlanStepRow[]): string {
+  const list = unfinished.map((s) => `${s.id} ("${s.title}")`).join(', ')
+  return (
+    `Steps ${list} are not yet marked complete. For each, either perform it with the appropriate tool and then emit ` +
+    `{"tool": "${COMPLETE_STEP_TOOL}", "args": {"step_id": "<id>"}}, or call ${COMPLETE_STEP_TOOL} with a note explaining why it does not apply. ` +
+    `Do NOT reply that the task is done until every step above is genuinely handled.`
+  )
 }
 
 /** Turn a tool execution into a message the model can read on the next turn. */
@@ -1120,6 +1151,14 @@ export async function handleChat(win: BrowserWindow, userMessage: string, tier: 
       }
     }
 
+    // False-completion guard for the general loop: `completedStepIds` records
+    // which plan steps were EXPLICITLY checked off via complete_step, so wrap-up
+    // greens only those. `continuationNudges` gives a model that declares victory
+    // early a bounded chance to actually finish the outstanding steps.
+    const completedStepIds = new Set<string>()
+    let continuationNudges = 0
+    const MAX_CONTINUATION_NUDGES = 2
+
     for (let turn = 0; turn < maxTurns; turn++) {
       trackEvent(Events.MODEL_ROUTE_SELECTED, {
         tier: effectiveTier,
@@ -1148,11 +1187,25 @@ export async function handleChat(win: BrowserWindow, userMessage: string, tier: 
         `[agent] turn ${turn}: ${toolCall ? `tool=${toolCall.tool}` : 'natural-language reply'} (${responseText.length} chars)`
       )
       if (!toolCall) {
-        finalText = responseText // natural-language answer ⇒ turn complete
+        // The model wants to end the turn in prose. Before trusting that as
+        // "task complete", check for plan steps it never checked off. Give it a
+        // bounded chance to finish them, then settle HONESTLY — greening only the
+        // steps actually completed and owning up to the rest.
+        const unfinished = planSteps ? planSteps.filter((s) => !completedStepIds.has(s.id)) : []
+        if (unfinished.length > 0 && continuationNudges < MAX_CONTINUATION_NUDGES) {
+          continuationNudges++
+          history.push({ role: 'user', content: buildContinuationNudge(unfinished) })
+          continue
+        }
+
+        if (planSteps) settlePlanHonest(win, planSteps, completedStepIds)
+        finalText =
+          unfinished.length > 0
+            ? `${responseText.trim()}\n\n⚠️ I could not confirm these step(s) actually completed: ${unfinished
+                .map((s) => `“${s.title}”`)
+                .join(', ')}. They may not have been done — please check.`
+            : responseText // genuine natural-language answer ⇒ done
         database.messages.addMessage(convId, 'assistant', finalText)
-        // The agent considers the task done: tick off any steps it didn't
-        // explicitly check so the checklist reads complete.
-        if (planSteps) settlePlan(win, planSteps)
         break
       }
 
@@ -1163,6 +1216,7 @@ export async function handleChat(win: BrowserWindow, userMessage: string, tier: 
         const stepId = String(
           (toolCall.args.step_id ?? toolCall.args.id ?? toolCall.args.stepId) || ''
         )
+        if (stepId) completedStepIds.add(stepId)
         if (planSteps) advancePlan(win, planSteps, stepId)
         history.push({
           role: 'user',
@@ -1321,6 +1375,9 @@ export async function handleChat(win: BrowserWindow, userMessage: string, tier: 
       if (turn === maxTurns - 1) {
         finalText = 'Reached the tool-call limit for this request.'
         reachedLimit = true
+        // Don't strand the checklist half-lit: green only the steps actually
+        // checked off, mark the rest error rather than leaving them "working".
+        if (planSteps) settlePlanHonest(win, planSteps, completedStepIds)
         database.messages.addMessage(convId, 'assistant', finalText)
       }
     }

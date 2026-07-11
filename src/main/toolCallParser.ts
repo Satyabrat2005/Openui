@@ -44,6 +44,71 @@ export function extractFirstJsonObject(text: string): string | null {
 }
 
 /**
+ * Repair the one thing local models break most often: raw (unescaped) control
+ * characters — newlines, tabs, carriage returns — inside a JSON string value.
+ *
+ * A model writing a multi-line file with write_file routinely emits the LITERAL
+ * newline instead of "\n", e.g.  {"tool":"write_file","args":{"content":"line1
+ * line2"}}  — which is invalid JSON, so JSON.parse throws and the tool call is
+ * silently dropped, stalling the whole automation. We re-scan and escape only
+ * control chars that sit INSIDE a string (structural whitespace between tokens
+ * is left untouched), so the caller can re-parse. Valid JSON is returned
+ * unchanged, so this is a safe second attempt, never a first-choice parser.
+ */
+export function repairLooseJson(src: string): string {
+  let out = ''
+  let inString = false
+  let escaped = false
+  for (let i = 0; i < src.length; i++) {
+    const ch = src[i]
+    if (inString) {
+      if (escaped) {
+        out += ch
+        escaped = false
+        continue
+      }
+      if (ch === '\\') {
+        out += ch
+        escaped = true
+        continue
+      }
+      if (ch === '"') {
+        out += ch
+        inString = false
+        continue
+      }
+      // Escape control characters that are illegal unescaped inside a JSON string.
+      if (ch === '\n') out += '\\n'
+      else if (ch === '\r') out += '\\r'
+      else if (ch === '\t') out += '\\t'
+      else out += ch
+      continue
+    }
+    if (ch === '"') inString = true
+    out += ch
+  }
+  return out
+}
+
+/**
+ * Parse a candidate JSON object, tolerating the raw-control-char breakage above.
+ * Strict parse first (the common case); on failure, retry once on the repaired
+ * text. Returns undefined when neither parse succeeds.
+ */
+function tryParseJson(jsonText: string): unknown {
+  try {
+    return JSON.parse(jsonText)
+  } catch {
+    /* fall through to the lenient repair */
+  }
+  try {
+    return JSON.parse(repairLooseJson(jsonText))
+  } catch {
+    return undefined
+  }
+}
+
+/**
  * Coerce a parsed JSON object into a ToolCall, accepting the field aliases real
  * models emit (tool/name/tool_name, args/arguments/parameters/input). Returns
  * null when it isn't tool-shaped. When `requireKnown` is set, the tool name must
@@ -103,11 +168,10 @@ export function parseToolCall(text: string, knownTools: Set<string> = new Set())
   if (candidate.startsWith('{')) {
     const jsonText = extractFirstJsonObject(candidate)
     if (jsonText) {
-      try {
-        const call = objToToolCall(JSON.parse(jsonText), false, knownTools)
+      const parsed = tryParseJson(jsonText)
+      if (parsed !== undefined) {
+        const call = objToToolCall(parsed, false, knownTools)
         if (call) return call
-      } catch {
-        /* fall through to the embedded scan */
       }
     }
   }
@@ -118,12 +182,8 @@ export function parseToolCall(text: string, knownTools: Set<string> = new Set())
   for (let start = text.indexOf('{'); start !== -1; start = text.indexOf('{', start + 1)) {
     const jsonText = extractFirstJsonObject(text.slice(start))
     if (!jsonText) continue
-    let parsed: unknown
-    try {
-      parsed = JSON.parse(jsonText)
-    } catch {
-      continue // unbalanced or invalid here — try the next `{`
-    }
+    const parsed = tryParseJson(jsonText)
+    if (parsed === undefined) continue // unbalanced or invalid here — try the next `{`
     const call = objToToolCall(parsed, true, knownTools)
     if (call) return call
   }

@@ -3,6 +3,7 @@ import {
   extractFirstJsonObject,
   objToToolCall,
   parseToolCall,
+  repairLooseJson,
   StreamGate
 } from './toolCallParser'
 
@@ -164,6 +165,47 @@ describe('parseToolCall — pass 2 (embedded recovery, known-tool gated)', () =>
     expect(parseToolCall('do it: {"tool":"open_app","args":{}}')).toBeNull()
     // ...but a clean leading object still parses (pass 1 does not require known).
     expect(parseToolCall('{"tool":"open_app","args":{}}')).toEqual({ tool: 'open_app', args: {} })
+  })
+})
+
+// Regression: local models writing a multi-line file with write_file routinely
+// put LITERAL newlines inside the JSON string instead of "\n". That is invalid
+// JSON, so a strict JSON.parse threw and the whole tool call was silently
+// dropped — the builder wrote a couple of files then stalled. The parser now
+// repairs raw control chars inside strings before giving up.
+describe('parseToolCall — tolerates raw control chars in string values', () => {
+  const KNOWN_BUILD = new Set(['write_file', 'run_script'])
+
+  it('recovers a write_file whose content has raw (unescaped) newlines', () => {
+    const raw = '{"tool":"write_file","args":{"path":"build.js","content":"const x=1;\nconsole.log(x);\n"}}'
+    // Precondition: this really is invalid JSON as-is.
+    expect(() => JSON.parse(raw)).toThrow()
+
+    const call = parseToolCall(raw, KNOWN_BUILD)
+    expect(call?.tool).toBe('write_file')
+    expect(call?.args.path).toBe('build.js')
+    expect(call?.args.content).toBe('const x=1;\nconsole.log(x);\n')
+  })
+
+  it('recovers raw newlines/tabs when the call is embedded in prose (pass 2)', () => {
+    const raw = 'Sure!\n{"tool":"write_file","args":{"path":"a.py","content":"def f():\n\treturn 1"}}'
+    const call = parseToolCall(raw, KNOWN_BUILD)
+    expect(call?.tool).toBe('write_file')
+    expect(call?.args.content).toBe('def f():\n\treturn 1')
+  })
+
+  it('leaves already-valid JSON untouched', () => {
+    const valid = JSON.stringify({ tool: 'run_script', args: { script: 'build' } })
+    expect(repairLooseJson(valid)).toBe(valid)
+    expect(parseToolCall(valid, KNOWN_BUILD)).toEqual({ tool: 'run_script', args: { script: 'build' } })
+  })
+
+  it('repairLooseJson only escapes control chars INSIDE strings, not structural whitespace', () => {
+    // The newline between key/value is structural and must stay a real newline;
+    // the newline inside the value must become \n.
+    const src = '{\n  "k": "a\nb"\n}'
+    const repaired = repairLooseJson(src)
+    expect(JSON.parse(repaired)).toEqual({ k: 'a\nb' })
   })
 })
 
