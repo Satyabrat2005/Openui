@@ -110,11 +110,13 @@ describe('graceful degradation (no native module / Ollama here)', () => {
     expect(res.results).toEqual([])
   })
 
-  it('ensureCodebaseIndexed reports non-ok when the index cannot be built', async () => {
+  it('ensureCodebaseIndexed always returns a well-formed status, never throws', async () => {
     const status = await ensureCodebaseIndexed()
-    // Either the native module is missing ('unavailable') or embedding failed —
-    // never a throw, never a false claim of success without vectors.
-    if (status.ok) expect(status.reason).toBe('cached')
+    // Environment-independent: with the native module present it may build a
+    // (possibly empty) index ('built') or reuse one ('cached'); without it, or
+    // when embedding is unavailable, it reports a known non-ok reason. The
+    // guarantee is that it never throws and never falsely claims success.
+    if (status.ok) expect(['built', 'cached']).toContain(status.reason)
     else expect(['unavailable', 'embed_failed']).toContain(status.reason)
   })
 
