@@ -20,8 +20,9 @@
  * installed. A missing or unsupported package surfaces as a friendly
  * ToolResult error instead of crashing the agent loop.
  */
-import { execFile } from 'node:child_process'
+import { execFile, spawn } from 'node:child_process'
 import { promisify } from 'node:util'
+import { existsSync } from 'node:fs'
 import { readFile, writeFile, mkdir, rename, copyFile, unlink, readdir, stat } from 'node:fs/promises'
 import { resolve as resolvePath, join as joinPath, dirname, sep } from 'node:path'
 import { homedir } from 'node:os'
@@ -137,6 +138,7 @@ export const STATE_CHANGING_TOOLS = new Set<string>([
   'left_click',
   'type_text',
   'open_app',
+  'open_folder_in_editor',
   'open_whatsapp_chat',
   'move_mouse',
   // computer_use hands the loop autonomous mouse/keyboard control; the whole loop
@@ -369,6 +371,50 @@ async function runPowerShellScript(
  * rejecting anything else is defence-in-depth on top of the per-platform escaping.
  */
 const APP_NAME_RE = /^[A-Za-z0-9 ._+()&'-]{1,128}$/
+
+function looksLikeFilesystemTarget(value: string): boolean {
+  return (
+    value === '~' ||
+    value.startsWith('~/') ||
+    value.startsWith('~\\') ||
+    /^[A-Za-z]:[\\/]/.test(value) ||
+    value.includes('/') ||
+    value.includes('\\')
+  )
+}
+
+async function openPathWithShell(rawPath: string): Promise<ToolResult> {
+  let target: string
+  try {
+    target = resolveSafePath(rawPath, { mutating: false })
+  } catch (err) {
+    return { ok: false, error: `open path: ${errText(err)}` }
+  }
+
+  try {
+    const error = await shell.openPath(target)
+    if (error) return { ok: false, error: `Could not open ${target}: ${error}` }
+    return { ok: true, output: `Opened ${target}.` }
+  } catch (err) {
+    return { ok: false, error: `Could not open ${target}: ${errText(err)}` }
+  }
+}
+
+function findWindowsVSCode(): string | null {
+  const candidates = [
+    joinPath(process.env.LOCALAPPDATA ?? '', 'Programs', 'Microsoft VS Code', 'Code.exe'),
+    joinPath(process.env.PROGRAMFILES ?? '', 'Microsoft VS Code', 'Code.exe'),
+    joinPath(process.env['PROGRAMFILES(X86)'] ?? '', 'Microsoft VS Code', 'Code.exe')
+  ]
+  return candidates.find((p) => p && existsSync(p)) ?? null
+}
+
+function openVSCodeOnWindows(dir: string): boolean {
+  const code = findWindowsVSCode()
+  if (!code) return false
+  spawn(code, [dir], { detached: true, stdio: 'ignore', windowsHide: true }).unref()
+  return true
+}
 
 /**
  * Windows executables open_app refuses to launch. Pairing open_app with
@@ -815,6 +861,9 @@ async function open_app(args: Record<string, unknown>): Promise<ToolResult> {
     typeof args.appName === 'string' ? args.appName : typeof args.name === 'string' ? args.name : ''
   const appName = raw.trim()
   if (!appName) return { ok: false, error: 'open_app requires a string "appName".' }
+  if (looksLikeFilesystemTarget(appName)) {
+    return openPathWithShell(appName)
+  }
   if (!APP_NAME_RE.test(appName)) {
     return {
       ok: false,
@@ -896,6 +945,63 @@ async function open_app(args: Record<string, unknown>): Promise<ToolResult> {
       ok: false,
       error: `open_app could not launch "${appName}": ${detail}`
     }
+  }
+}
+
+async function open_folder_in_editor(args: Record<string, unknown>): Promise<ToolResult> {
+  const raw =
+    typeof args.path === 'string'
+      ? args.path
+      : typeof args.folder === 'string'
+        ? args.folder
+        : typeof args.directory === 'string'
+          ? args.directory
+          : ''
+  const editor = typeof args.editor === 'string' ? args.editor.toLowerCase().trim() : 'auto'
+  if (!raw.trim()) return { ok: false, error: 'open_folder_in_editor requires a string "path".' }
+  if (editor && !['auto', 'vscode', 'code', 'visual studio code'].includes(editor)) {
+    return { ok: false, error: 'open_folder_in_editor supports editor "auto" or "vscode".' }
+  }
+
+  let dir: string
+  try {
+    dir = resolveSafePath(raw, { mutating: false })
+    const info = await stat(dir)
+    if (!info.isDirectory()) {
+      return { ok: false, error: `open_folder_in_editor: "${dir}" is not a folder.` }
+    }
+  } catch (err) {
+    return { ok: false, error: `open_folder_in_editor: ${errText(err)}` }
+  }
+
+  try {
+    if (IS_WIN && openVSCodeOnWindows(dir)) {
+      return { ok: true, output: `Opened ${dir} in Visual Studio Code.` }
+    }
+    if (IS_MAC) {
+      try {
+        await execFileAsync('open', ['-a', 'Visual Studio Code', dir], {
+          timeout: AS_TIMEOUT_MS,
+          maxBuffer: AS_MAX_BUFFER
+        })
+        return { ok: true, output: `Opened ${dir} in Visual Studio Code.` }
+      } catch {
+        // Fall back to the file manager below.
+      }
+    } else if (!IS_WIN) {
+      try {
+        await execFileAsync('code', [dir], { timeout: 5_000, maxBuffer: PS_MAX_BUFFER })
+        return { ok: true, output: `Opened ${dir} in Visual Studio Code.` }
+      } catch {
+        // Fall back to the file manager below.
+      }
+    }
+
+    const error = await shell.openPath(dir)
+    if (error) return { ok: false, error: `Could not open ${dir}: ${error}` }
+    return { ok: true, output: `VS Code was not found, so opened ${dir} in the file manager.` }
+  } catch (err) {
+    return { ok: false, error: `open_folder_in_editor failed: ${errText(err)}` }
   }
 }
 
@@ -2379,11 +2485,33 @@ export const toolSchemas: ToolSchema[] = [
       'On Windows, use the name as it appears in the Start menu — friendly names ' +
       'work for Store and desktop apps alike (e.g. "WhatsApp", "Spotify", "Notepad", ' +
       '"Microsoft Edge"), as do bare executable names on PATH ("notepad", "msedge", "code") ' +
-      'and full paths to an .exe.',
+      'and full paths to an .exe. For folders and files, pass an absolute path, "~"-relative path, ' +
+      'or home-relative path such as "Downloads/test".',
     parameters: {
       type: 'object',
       properties: { appName: { type: 'string', description: 'The application name to open.' } },
       required: ['appName']
+    }
+  },
+  {
+    name: 'open_folder_in_editor',
+    description:
+      'Open a local folder in Visual Studio Code when available, falling back to the OS file manager. ' +
+      'Use this when the user asks to open a folder/project in VS Code or an editor. Paths may be ' +
+      'absolute, "~"-relative, or home-relative, e.g. "Downloads/test". After opening the folder, ' +
+      'use write_file with paths inside that same folder to create or edit code; opening VS Code alone ' +
+      'does not write files.',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Folder path to open.' },
+        editor: {
+          type: 'string',
+          description: 'Editor preference. Use "vscode" or omit for auto.',
+          enum: ['auto', 'vscode']
+        }
+      },
+      required: ['path']
     }
   },
   {
@@ -2788,6 +2916,7 @@ async function run_workflow(args: Record<string, unknown>): Promise<ToolResult> 
 
 const registry: Record<string, Executor> = {
   open_app,
+  open_folder_in_editor,
   open_whatsapp_chat,
   list_apps,
   search_files,
@@ -2932,6 +3061,8 @@ export function describeToolCall(name: string, args: Record<string, unknown>): s
   switch (name) {
     case 'open_app':
       return `Open ${String(args.appName ?? args.name ?? 'app')}`
+    case 'open_folder_in_editor':
+      return `Open folder ${String(args.path ?? args.folder ?? args.directory ?? '')} in VS Code`
     case 'open_whatsapp_chat':
       return `Open WhatsApp chat with ${String(args.contact ?? args.name ?? args.query ?? '')}`
     case 'list_apps':

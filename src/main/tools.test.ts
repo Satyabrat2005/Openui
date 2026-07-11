@@ -12,7 +12,7 @@ vi.mock('electron', () => ({
   app: { getPath: () => homedir(), getName: () => 'OpenUI' },
   desktopCapturer: {},
   clipboard: {},
-  shell: {},
+  shell: { openPath: vi.fn(async () => ''), trashItem: vi.fn(async () => undefined) },
   systemPreferences: {},
   dialog: {},
   BrowserWindow: class {}
@@ -156,6 +156,18 @@ describe('open_app — launch boundary', () => {
     )
     expect(r).toMatchObject({ ok: false })
     expect((r as { error: string }).error).toMatch(/invalid application name/)
+  })
+
+  it('opens filesystem paths instead of validating them as app names', async () => {
+    const dir = await mkdtemp(join(homedir(), 'openui-open-path-'))
+    createdTempDirs.push(dir)
+    const r = await executeTool(
+      'open_app',
+      { appName: dir },
+      { tier: 'free', bypassHitl: true }
+    )
+    expect(r).toMatchObject({ ok: true })
+    expect((r as { output: string }).output).toMatch(/Opened/)
   })
 
   it.runIf(IS_WIN)('refuses to launch shells/registry tools on Windows', async () => {
