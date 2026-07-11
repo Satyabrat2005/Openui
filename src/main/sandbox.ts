@@ -62,20 +62,91 @@ const LONG_RUNNING_SCRIPT_RE = /^(dev|start|serve|watch|preview|serve:.*|dev:.*)
 const MAX_FILE_BYTES = 512 * 1024
 
 /**
- * Absolute path to the agent's workspace. Created lazily on first use.
- *
- * This lives in a VISIBLE folder under the user's home (`~/OpenUI Projects`) —
- * not the hidden userData dir it used to use — because a builder run that writes
- * files somewhere the user can't see reads as "it did nothing". A visible folder
- * (plus opening it in an editor on first write, see openWorkspaceInEditor) is
- * what makes the build tangible. Overridable via OPENUI_WORKSPACE (the tests set
- * it to a temp dir). Confinement is unchanged: resolveInSandbox still pins every
- * path inside this directory.
+ * Root that holds every OpenUI project. A VISIBLE folder under the user's home
+ * (`~/OpenUI Projects`) — not the hidden userData dir it used to use — because a
+ * build the user can't see reads as "it did nothing". Overridable via
+ * OPENUI_WORKSPACE (the tests point it at a temp dir).
  */
-export function getWorkspaceDir(): string {
+export function getWorkspaceRoot(): string {
   const override = process.env.OPENUI_WORKSPACE?.trim()
   if (override) return resolve(override)
   return join(homedir(), 'OpenUI Projects')
+}
+
+/**
+ * The current project's folder name under the root. Empty means "use the root
+ * directly" (the default, and what the tests rely on). A builder session sets
+ * this once via setActiveProject so each build gets its OWN named folder
+ * (`~/OpenUI Projects/<name>`) that we can open in VS Code. Module-level state is
+ * safe here because all local inference — and therefore all builds — is
+ * serialized one-at-a-time by ollamaLock.
+ */
+let activeProjectSlug = ''
+
+/** File-system-safe slug from an arbitrary name ("My Todo App!" → "my-todo-app"). */
+export function slugifyProject(name: string): string {
+  return (name ?? '')
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 40)
+}
+
+/**
+ * Choose a project folder name from the user's request. Prefers a name the user
+ * states explicitly ("a folder called todo-app", "name it snake"); otherwise
+ * slugifies the meaningful words of the request ("build a react counter app" →
+ * "react-counter-app"); falls back to a timestamped name when nothing usable is
+ * left. Pure and exported so it can be unit-tested.
+ */
+export function deriveProjectSlug(message: string): string {
+  const text = (message ?? '').trim()
+
+  const explicit =
+    text.match(/folder\s+(?:called|named)\s+["'`]?([\w .-]{1,40}?)["'`]?(?=[.,!?]|$|\s+(?:and|with|that|to|for)\b)/i) ||
+    text.match(/(?:call|name)\s+it\s+["'`]?([\w .-]{1,40}?)["'`]?(?=[.,!?]|$|\s+(?:and|with|that|to|for)\b)/i) ||
+    text.match(/(?:called|named)\s+["'`]?([\w .-]{1,40}?)["'`]?(?=[.,!?]|$|\s+(?:and|with|that|to|for)\b)/i)
+  if (explicit) {
+    const s = slugifyProject(explicit[1])
+    if (s) return s
+  }
+
+  // Note: "app"/"project" are deliberately NOT filtered — they make for natural
+  // folder names ("todo-app", "weather-project") rather than being stripped.
+  const stop = new Set([
+    'build', 'make', 'create', 'a', 'an', 'the', 'me', 'please', 'my',
+    'folder', 'directory', 'and', 'do', 'this', 'that',
+    'coding', 'code', 'with', 'for', 'in', 'into', 'new', 'using', 'use', 'of', 'to', 'add'
+  ])
+  const words = text
+    .toLowerCase()
+    .replace(/[^a-z0-9\s-]/g, ' ')
+    .split(/\s+/)
+    .filter((w) => w && !stop.has(w))
+  const slug = slugifyProject(words.slice(0, 5).join('-'))
+  if (slug) return slug
+
+  return `project-${Date.now().toString(36)}`
+}
+
+/**
+ * Point the sandbox at a named project folder under the root and return its
+ * absolute path. Call once at the start of a build. Pass '' to reset to the root.
+ */
+export function setActiveProject(name: string): string {
+  activeProjectSlug = slugifyProject(name)
+  return getWorkspaceDir()
+}
+
+/**
+ * Absolute path to the ACTIVE workspace — the current project's folder if one is
+ * set, otherwise the root. Everything the coding tools read/write is confined
+ * here (resolveInSandbox pins every path inside it).
+ */
+export function getWorkspaceDir(): string {
+  const root = getWorkspaceRoot()
+  return activeProjectSlug ? join(root, activeProjectSlug) : root
 }
 
 /**
@@ -115,6 +186,24 @@ export async function ensureWorkspace(): Promise<string> {
 }
 
 /**
+ * Strip a leading "<project-slug>/" the model sometimes prepends. It sees the
+ * request ("make a folder called demo-counter") and helpfully nests every file
+ * under demo-counter/ — but we've ALREADY made that the project folder, so the
+ * prefix would double-nest (demo-counter/demo-counter/package.json). Applied to
+ * both reads and writes so a nested write and a top-level read still agree.
+ * Exported for unit testing.
+ */
+export function stripRedundantProjectPrefix(relPath: string): string {
+  if (!activeProjectSlug) return relPath
+  const norm = relPath.replace(/\\/g, '/').replace(/^\.\//, '')
+  const prefix = `${activeProjectSlug}/`
+  if (norm.toLowerCase().startsWith(prefix.toLowerCase()) && norm.length > prefix.length) {
+    return norm.slice(prefix.length)
+  }
+  return relPath
+}
+
+/**
  * Resolve a model-supplied relative path against the workspace and verify it
  * cannot escape. Throws on any path that resolves outside the workspace (the
  * `..`/absolute-path/breakout trust boundary). Returns the safe absolute path.
@@ -126,7 +215,7 @@ function resolveInSandbox(workspace: string, relPath: string): string {
   if (isAbsolute(relPath)) {
     throw new Error('path must be relative to the workspace, not absolute')
   }
-  const abs = resolve(workspace, relPath)
+  const abs = resolve(workspace, stripRedundantProjectPrefix(relPath))
   const rel = relative(workspace, abs)
   // rel starting with ".." (or being absolute) means abs is outside workspace.
   if (rel === '' || rel.startsWith('..') || isAbsolute(rel)) {

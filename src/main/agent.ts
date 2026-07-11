@@ -16,7 +16,7 @@ import { classifyFeedbackSignal, getCustomSystemPrompt } from './improvement'
 import { startRun } from './runLog'
 import { grantOrigin } from './browser/consent'
 import { resolveOllamaModel, resolveGeneralModel, DEFAULT_CODE_MODEL } from './models'
-import { openWorkspaceInEditor } from './sandbox'
+import { openWorkspaceInEditor, setActiveProject, deriveProjectSlug } from './sandbox'
 import {
   TrajectoryRecorder,
   applyQualitySignal,
@@ -432,6 +432,8 @@ To call a tool, respond with ONLY a raw JSON object and nothing else (no prose, 
 
 The very first character of a tool-call message MUST be "{". After each tool runs you receive a message starting with "TOOL RESULT". Use it to decide the next step. Call exactly one tool per message.
 
+You are ALREADY working inside the project folder the user asked for — it has been created for you and opened in their editor. Write files at the TOP LEVEL of it: "package.json", "src/App.jsx", "index.html". Do NOT create a wrapper folder or prefix paths with the project's name (write "package.json", never "my-app/package.json").
+
 Available tools:
 ${codingToolSchemas.map(renderSchema).join('\n')}
 
@@ -458,6 +460,21 @@ function knownCodingToolNames(): Set<string> {
 async function runBuilderSession(win: BrowserWindow, tier: Tier, userMessage: string): Promise<string> {
   const messages: Message[] = [{ role: 'user', content: userMessage }]
   const codingNames = knownCodingToolNames()
+
+  // Give this build its OWN named folder under ~/OpenUI Projects, taken from the
+  // user's request ("a folder called todo-app" → todo-app; otherwise a slug of
+  // the description). Every coding tool below now writes into this folder, and
+  // the editor opens on it — so "build X and make a folder" produces a real,
+  // visible, self-contained project instead of files piling into a shared dir.
+  const projectSlug = deriveProjectSlug(userMessage)
+  const projectDir = setActiveProject(projectSlug)
+  emit(win, 'openui:task:update', {
+    id: 'project-folder',
+    label: `Project folder: ${projectSlug}`,
+    status: 'done',
+    detail: projectDir
+  } satisfies TaskUpdate)
+
   // Whether we've already opened the workspace in the editor (on first write) and
   // whether we've already nudged a rambling model to start emitting tool calls.
   let editorOpened = false
