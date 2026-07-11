@@ -17,8 +17,10 @@ import type { BrowserWindow } from 'electron'
 import { callModel, parseToolCall, emit, StreamGate, type Message } from './agent'
 import { codingToolSchemas, executeCodingTool, describeCodingToolCall } from './codingTools'
 import { VerifyGate } from './verifyGate'
+import { parseFailures, failureSignature } from './errorParser'
+import { FixTracker } from './fixTracker'
 import { getNextTask, recordTaskOutcome, type TaskSource, type AgentTask } from './tasks'
-import { resetActiveProject } from './sandbox'
+import { resetActiveProject, readSandboxRegion } from './sandbox'
 import { disarmEditorAutoOpen } from './editor'
 import { detectProjectType, getProjectProfile, type ProjectProfile } from './projectProfiles'
 import { startRun, type RunLog } from './runLog'
@@ -93,12 +95,12 @@ Workflow:
    - Call run_tests to run an npm test suite, and/or
    - Call run_script to run a build/train/lint script you defined (e.g. {"tool":"run_script","args":{"script":"build"}}). A dev server ("dev"/"start") is run as a boot smoke test — it confirms the app starts without crashing.
    - For Python work, call run_pytest and/or run_python; for single-file C++, call run_cpp with the sample input.
-6. Read the output carefully. If it starts with "TESTS FAILED" / "SCRIPT FAILED" / "INSTALL FAILED", read the offending file(s) with read_file, fix them with edit_file, and re-run the failing step. Iterate.
+6. Read the output carefully. If it starts with "TESTS FAILED" / "SCRIPT FAILED" / "INSTALL FAILED", a "DEBUG CONTEXT" block is appended below the output showing the exact failing file:line and the surrounding source — use it directly (only call read_file if you need more of the file), then fix the CAUSE with edit_file and re-run the failing step. If the same failure returns after your fix, it is not at that line: look at the caller and the values flowing in rather than re-patching the same spot. Iterate.
 7. Commit each coherent, VERIFIED change so the work is reviewable and revertable. On a fresh workspace run {"tool":"git","args":{"subcommand":"init"}} first, then add and commit:
    {"tool":"git","args":{"subcommand":"add","args":["."]}}
    {"tool":"git","args":{"subcommand":"commit","args":["-m","Short summary of the change"]}}
    Commit only after the relevant verifier passed — never commit a red build. git here cannot push, pull, fetch or reach any network; publishing is a separate step a human approves.
-8. When verification passes, reply in plain natural language summarising what you built/changed. Do NOT wrap the final summary in JSON.
+8. When verification passes, reply in plain natural language summarising what you built/changed. Do NOT wrap the final summary in JSON. If you edit ANY file after the last passing run, you must re-run the verifier before summarising — a green run only describes the tree as it was when it ran.
 
 If after several honest attempts you cannot make it pass, reply in plain text beginning with "GIVE UP:" followed by a short explanation. Never fake a pass or delete tests to make them pass.`
 
@@ -115,6 +117,71 @@ function taskPrompt(task: AgentTask, profile: ProjectProfile): string {
 function formatToolResult(tool: string, result: ToolResult): string {
   if (result.ok) return `TOOL RESULT [${tool}] success: ${result.output ?? '(no output)'}`
   return `TOOL RESULT [${tool}] error: ${result.error ?? 'unknown error'}`
+}
+
+// How many distinct failing locations to auto-fetch source for per red run. A
+// bound keeps the injected context from blowing the model's window when a build
+// prints dozens of errors — the model fixes the first few and re-runs.
+const MAX_DEBUG_LOCATIONS = 3
+
+/**
+ * Structured error handling for a red verifier (Task §4). Parses the failure
+ * output into file:line locations, auto-fetches the surrounding source from the
+ * sandbox (so the model does not spend a turn reading it back), journals each
+ * failure signature, and — when the FixTracker shows the same failure recurring
+ * after an edit — appends escalation guidance (widen the view / find the caller-
+ * side root cause). Returns text to append to the tool result, or '' when the
+ * output held no recognisable failure location.
+ */
+async function buildDebugContext(
+  output: string,
+  tracker: FixTracker,
+  runLog: RunLog
+): Promise<string> {
+  const failures = parseFailures(output)
+  if (failures.length === 0) return ''
+
+  tracker.observeFailures(failures.map(failureSignature))
+
+  const sections: string[] = []
+  const escalations = new Set<string>()
+  const seenLocations = new Set<string>()
+
+  for (const f of failures) {
+    const sig = failureSignature(f)
+    runLog.event('failure', {
+      sig,
+      file: f.file,
+      line: f.line,
+      type: f.errorType,
+      attempts: tracker.attempts(sig)
+    })
+
+    const guidance = tracker.guidanceFor(sig)
+    if (guidance) escalations.add(guidance)
+
+    // One snippet per distinct location, capped — the log may repeat a line.
+    const locKey = `${f.file.replace(/\\/g, '/')}:${f.line}`
+    if (seenLocations.has(locKey) || sections.length >= MAX_DEBUG_LOCATIONS) continue
+    seenLocations.add(locKey)
+
+    const head = `${f.file}:${f.line}${f.errorType ? ` — ${f.errorType}` : ''}${
+      f.message ? `: ${f.message}` : ''
+    }`
+    const region = await readSandboxRegion(f.file, f.line, tracker.readRadiusFor(sig))
+    sections.push(
+      region.ok && region.snippet
+        ? `${head}\n${region.snippet}`
+        : `${head}\n(could not show source: ${region.reason})`
+    )
+  }
+
+  if (sections.length === 0 && escalations.size === 0) return ''
+  const parts = ['\n\n--- DEBUG CONTEXT (auto-fetched at the failing lines) ---']
+  if (sections.length) parts.push(sections.join('\n\n'))
+  if (escalations.size) parts.push([...escalations].join('\n'))
+  parts.push('Fix the cause shown above with write_file, then re-run the verifier.')
+  return parts.join('\n')
 }
 
 interface TaskOutcome {
@@ -136,9 +203,11 @@ async function workOnTask(
 ): Promise<TaskOutcome> {
   const messages: Message[] = [{ role: 'user', content: taskPrompt(task, profile) }]
   const systemPrompt = `${CODING_SYSTEM_PROMPT}\n\n${profile.promptAddendum}`
-  // Tracks whether a verifier passed and nothing has changed since; refuses to
-  // let the agent finish on unverified work.
+  // §5: refuses to let the agent finish on unverified work — a passing verifier
+  // marks the tree verified, any later edit expires that pass.
   const verifyGate = new VerifyGate(profile)
+  // §4: tracks recurring failures across the run to drive escalation.
+  const fixTracker = new FixTracker()
 
   for (let turn = 0; turn < MAX_CODING_TURNS; turn++) {
     if (stopRequested) {
@@ -184,10 +253,18 @@ async function workOnTask(
       argsSummary: label,
       error: result.ok ? undefined : result.error?.slice(0, 300)
     })
-    // Success signal is project-type-aware: only THIS profile's verification
-    // tool(s) count, a later failed re-run clears an earlier pass, and any edit
-    // to the tree expires a pass that described the tree as it used to be.
+    // §5 success signal: only THIS profile's verifier counts, a later red run
+    // clears an earlier pass, and any successful edit expires a pass that
+    // described the tree as it used to be.
     verifyGate.observe(toolCall.tool, toolCall.args, result.ok, result.output ?? '')
+
+    // §4: when a verifier came back red, attach the parsed failure locations +
+    // their surrounding source (and escalation guidance for recurring failures)
+    // so the model can fix the cause without spending a turn reading it back.
+    let debugContext = ''
+    if (result.ok && profile.verdict(toolCall.tool, result.output ?? '') === 'fail') {
+      debugContext = await buildDebugContext(result.output ?? '', fixTracker, runLog)
+    }
 
     emit(win, 'openui:task:update', {
       id: taskId,
@@ -196,7 +273,7 @@ async function workOnTask(
       detail: result.ok ? result.output?.slice(0, 200) : result.error
     })
 
-    messages.push({ role: 'user', content: formatToolResult(toolCall.tool, result) })
+    messages.push({ role: 'user', content: formatToolResult(toolCall.tool, result) + debugContext })
   }
 
   return { success: false, summary: 'Reached the coding-turn limit before verification passed.' }
