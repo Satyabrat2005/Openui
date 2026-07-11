@@ -150,6 +150,74 @@ export async function listSandboxFiles(limit = 200): Promise<string[]> {
   return out
 }
 
+/**
+ * Map a path as it appeared in verifier output to a workspace-relative path, or
+ * null when it does not live inside the sandbox. Handles both the relative paths
+ * tsc/vitest print (cwd is the workspace) and the absolute paths stack traces
+ * carry. Any `..`/outside-the-tree result is rejected so a stack frame pointing
+ * at a system file can never be read back.
+ */
+function toWorkspaceRelative(workspace: string, p: string): string | null {
+  if (typeof p !== 'string' || !p.trim()) return null
+  const abs = isAbsolute(p) ? resolve(p) : resolve(workspace, p)
+  const rel = relative(workspace, abs)
+  if (rel === '' || rel.startsWith('..') || isAbsolute(rel)) return null
+  return rel
+}
+
+/** A window of source around a failing line, ready to show the model. */
+export interface CodeRegion {
+  ok: boolean
+  /** Workspace-relative path when resolved. */
+  path?: string
+  /** Line-numbered snippet with a '>' marker on the failing line. */
+  snippet?: string
+  /** Why no snippet was produced (outside sandbox, dependency, missing). */
+  reason?: string
+}
+
+/**
+ * Read the source around a failing `file:line` from inside the sandbox so the
+ * debug loop can show the model the offending code without spending a turn on a
+ * manual read_file. Paths outside the workspace and dependency files
+ * (node_modules) are refused; a missing file returns ok:false rather than throw.
+ */
+export async function readSandboxRegion(
+  rawPath: string,
+  line: number,
+  radius = 10
+): Promise<CodeRegion> {
+  const workspace = await ensureWorkspace()
+  const rel = toWorkspaceRelative(workspace, rawPath)
+  if (rel === null) return { ok: false, reason: 'path is outside the workspace' }
+  if (rel.split(/[\\/]/).includes('node_modules')) {
+    return { ok: false, path: rel, reason: 'dependency file — not shown' }
+  }
+  let abs: string
+  try {
+    abs = resolveInSandbox(workspace, rel)
+  } catch (err) {
+    return { ok: false, reason: err instanceof Error ? err.message : String(err) }
+  }
+  let content: string
+  try {
+    content = await readFile(abs, 'utf8')
+  } catch {
+    return { ok: false, path: rel, reason: 'file not found in the workspace' }
+  }
+  const lines = content.split(/\r?\n/)
+  const target = Number.isFinite(line) && line > 0 ? Math.floor(line) : 1
+  const from = Math.max(1, target - radius)
+  const to = Math.min(lines.length, target + radius)
+  const width = String(to).length
+  const numbered: string[] = []
+  for (let n = from; n <= to; n++) {
+    const marker = n === target ? '>' : ' '
+    numbered.push(`${marker} ${String(n).padStart(width)} | ${lines[n - 1] ?? ''}`)
+  }
+  return { ok: true, path: rel, snippet: numbered.join('\n') }
+}
+
 export interface TestRunResult {
   /** True when the test command exited 0. */
   passed: boolean
@@ -164,6 +232,14 @@ export interface TestRunResult {
  * argument-injection surface. On Windows the npm shim is `npm.cmd`, which
  * requires a shell to launch via execFile — acceptable here because the command
  * string is static. Execution is time-bounded and output-capped.
+ *
+ * REGRESSION SAFETY (§5): this deliberately runs the WHOLE suite (`npm test`),
+ * never a single test file. A fix that is locally correct but breaks a module
+ * three files away is exactly the failure mode a touched-file-only run misses,
+ * and VerifyGate keys the run's "verified" flag off this full-suite result. The
+ * tradeoff is speed — the whole suite runs every verification turn — which the
+ * per-run wall-clock bound (TEST_TIMEOUT_MS) keeps in check for the small
+ * projects this sandbox scaffolds.
  */
 export async function runTests(): Promise<TestRunResult> {
   const cwd = await ensureWorkspace()
