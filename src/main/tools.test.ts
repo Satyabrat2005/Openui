@@ -21,6 +21,7 @@ vi.mock('./telemetry/posthog', () => ({ trackEvent: () => {} }))
 
 import {
   executeTool,
+  parseDuckDuckGoResults,
   STATE_CHANGING_TOOLS,
   DESTRUCTIVE_TOOLS,
   TIER_TOOL_REQUIREMENTS
@@ -201,7 +202,8 @@ describe('browser tools — require an approved connect_browser first', () => {
     ['browser_click', { selector: '#pay' }],
     ['browser_fill_input', { selector: '#q', text: 'hi' }],
     ['browser_extract_text', {}],
-    ['browser_vision_act', { goal: 'dismiss the cookie banner' }]
+    ['browser_vision_act', { goal: 'dismiss the cookie banner' }],
+    ['research_web', { query: 'weather in tokyo' }]
   ] as const
 
   for (const [name, args] of needsConnect) {
@@ -221,6 +223,68 @@ describe('browser tools — require an approved connect_browser first', () => {
   it('connect_browser is state-changing: pending approval without bypassHitl', async () => {
     const r = await executeTool('connect_browser', {}, { tier: 'free' })
     expect(r).toMatchObject({ status: 'pending_approval', tool: 'connect_browser' })
+  })
+
+  it('research_web runs on the free tier (no cloud vision / no API key)', () => {
+    // Read-only web research must NOT be Pro-gated — it powers the Ollama-only
+    // launch. It is state-changing (one approval) but never tier-restricted.
+    expect(TIER_TOOL_REQUIREMENTS.research_web).toBeUndefined()
+    expect(STATE_CHANGING_TOOLS.has('research_web')).toBe(true)
+    expect(DESTRUCTIVE_TOOLS.has('research_web')).toBe(false)
+  })
+})
+
+// ── send_whatsapp_message — outward-facing message send ───────────────────────
+describe('send_whatsapp_message', () => {
+  it('is state-changing AND destructive (always confirms, never auto-runs)', () => {
+    expect(STATE_CHANGING_TOOLS.has('send_whatsapp_message')).toBe(true)
+    expect(DESTRUCTIVE_TOOLS.has('send_whatsapp_message')).toBe(true)
+    // Runs on the local/free tier — messaging is not behind a paywall.
+    expect(TIER_TOOL_REQUIREMENTS.send_whatsapp_message).toBeUndefined()
+  })
+
+  it('rejects a call with no message before any keyboard automation runs', async () => {
+    // bypassHitl skips the approval gate; validation must still block a send with
+    // a missing "message" (required arg) so we never open a chat and send nothing.
+    const r = await executeTool('send_whatsapp_message', { contact: 'Ashu' }, { tier: 'free', bypassHitl: true })
+    expect(r).toMatchObject({ ok: false })
+    expect((r as { error: string }).error).toMatch(/message/i)
+  })
+})
+
+// ── research_web — DuckDuckGo result parsing (pure, browser-free) ──────────────
+describe('parseDuckDuckGoResults', () => {
+  it('decodes uddg redirect targets and preserves titles', () => {
+    const raw = [
+      {
+        href: 'https://duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fa&rut=x',
+        title: 'Example A'
+      }
+    ]
+    expect(parseDuckDuckGoResults(raw, 5)).toEqual([{ url: 'https://example.com/a', title: 'Example A' }])
+  })
+
+  it('drops DuckDuckGo-internal links, non-http schemes, and duplicates, and honours the cap', () => {
+    const raw = [
+      { href: 'https://duckduckgo.com/l/?uddg=https%3A%2F%2Fduckduckgo.com%2Fabout', title: 'DDG self' },
+      { href: 'https://duckduckgo.com/l/?uddg=javascript%3Aalert(1)', title: 'xss' },
+      { href: 'https://duckduckgo.com/l/?uddg=https%3A%2F%2Fone.com%2F', title: 'One' },
+      { href: 'https://duckduckgo.com/l/?uddg=https%3A%2F%2Fone.com%2F', title: 'One dup' },
+      { href: 'https://duckduckgo.com/l/?uddg=https%3A%2F%2Ftwo.com%2F', title: 'Two' },
+      { href: 'https://duckduckgo.com/l/?uddg=https%3A%2F%2Fthree.com%2F', title: 'Three' }
+    ]
+    const out = parseDuckDuckGoResults(raw, 2)
+    expect(out).toEqual([
+      { url: 'https://one.com/', title: 'One' },
+      { url: 'https://two.com/', title: 'Two' }
+    ])
+  })
+
+  it('falls back to the URL as the title when no title text is present', () => {
+    const raw = [{ href: 'https://duckduckgo.com/l/?uddg=https%3A%2F%2Fnotitle.com%2F', title: '' }]
+    expect(parseDuckDuckGoResults(raw, 5)).toEqual([
+      { url: 'https://notitle.com/', title: 'https://notitle.com/' }
+    ])
   })
 })
 
