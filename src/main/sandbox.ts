@@ -26,9 +26,11 @@
 import { app } from 'electron'
 import { execFile, spawn } from 'node:child_process'
 import { promisify } from 'node:util'
+import { AsyncLocalStorage } from 'node:async_hooks'
 import { mkdir, writeFile, readFile, readdir, stat } from 'node:fs/promises'
 import { join, resolve, relative, isAbsolute, dirname, basename } from 'node:path'
 import { isSafeProjectSlug } from './projectName'
+import { parseUnifiedDiff, applyPatch } from './patch'
 
 const execFileAsync = promisify(execFile)
 
@@ -109,12 +111,33 @@ export function resetActiveProject(): void {
 }
 
 /**
- * Absolute path to the agent's workspace: the active project's folder under
- * `~/OpenUI Projects`. Created lazily on first use. Overridable for power users
- * (and for tests, which must not write to a real home directory) via
- * OPENUI_WORKSPACE.
+ * Per-worker workspace override (§3). Parallel coding sub-agents each run inside
+ * their own git worktree; wrapping a worker in `runInWorkspace(worktreeDir, fn)`
+ * makes every sandbox entry point resolve against THAT tree for the dynamic
+ * extent of `fn`, with no mutation of the shared `activeProject` global. Because
+ * it is carried on AsyncLocalStorage, N workers can touch N directories
+ * concurrently without racing — the mechanism that lets the coding lane run wide.
+ */
+const workspaceScope = new AsyncLocalStorage<string>()
+
+/**
+ * Run `fn` with the workspace pinned to `dir` (resolved to an absolute path).
+ * Concurrent invocations are isolated from one another; nested calls shadow the
+ * outer scope for their own subtree only.
+ */
+export function runInWorkspace<T>(dir: string, fn: () => Promise<T>): Promise<T> {
+  return workspaceScope.run(resolve(dir), fn)
+}
+
+/**
+ * Absolute path to the agent's workspace. A per-worker `runInWorkspace` scope
+ * wins first (isolated parallel workers); then the OPENUI_WORKSPACE override
+ * (power users + tests, which must not write to a real home directory); then the
+ * active project's folder under `~/OpenUI Projects`. Created lazily on first use.
  */
 export function getWorkspaceDir(): string {
+  const scoped = workspaceScope.getStore()
+  if (scoped) return scoped
   const override = process.env.OPENUI_WORKSPACE?.trim()
   if (override) return resolve(override)
   return join(getProjectsRoot(), activeProject ?? DEFAULT_PROJECT)
@@ -841,6 +864,45 @@ export async function editSandboxFile(
   return { replacements: replaceAll ? occurrences : 1, path: relative(workspace, abs) }
 }
 
+/** Result of applying a unified diff to a workspace file. */
+export interface PatchResult {
+  /** Workspace-relative path that was patched. */
+  path: string
+  /** Number of hunks applied. */
+  hunks: number
+}
+
+/**
+ * Apply a unified diff to an existing workspace file. Like editSandboxFile this
+ * mutates the named file in place with the same containment (resolveInSandbox,
+ * byte cap) — but expresses several edits to one file in a single call. Parsing
+ * and the byte-for-byte match live in patch.ts (pure, unit-tested); this only
+ * adds the fs wiring. A diff that no longer fits the file throws rather than
+ * corrupting it, so the model re-reads and regenerates instead of guessing.
+ */
+export async function applyPatchToSandboxFile(relPath: string, diff: string): Promise<PatchResult> {
+  const workspace = await ensureWorkspace()
+  const abs = resolveInSandbox(workspace, relPath)
+
+  const hunks = parseUnifiedDiff(diff)
+
+  let original: string
+  try {
+    original = await readFile(abs, 'utf8')
+  } catch {
+    throw new Error(`"${relPath}" does not exist in the workspace. Write it first with write_file.`)
+  }
+
+  const updated = applyPatch(original, hunks)
+
+  if (Buffer.byteLength(updated, 'utf8') > MAX_FILE_BYTES) {
+    throw new Error(`patch would push the file past the ${Math.round(MAX_FILE_BYTES / 1024)} KB limit`)
+  }
+
+  await writeFile(abs, updated, 'utf8')
+  return { path: relative(workspace, abs), hunks: hunks.length }
+}
+
 /** One matching line found by searchSandbox. */
 export interface SearchMatch {
   /** Workspace-relative path, always with forward slashes. */
@@ -1036,6 +1098,16 @@ const GIT_ALLOWED_SUBCOMMANDS = new Set([
 ])
 
 /**
+ * Subcommands the autonomous loop drives programmatically for checkpointing and
+ * parallel worktree workers, but which are NOT exposed to the model-facing `git`
+ * tool (its schema enum omits them, and `runGit` only permits them when the
+ * caller explicitly passes this set as `extraAllowed`). Keeping them out of
+ * GIT_ALLOWED_SUBCOMMANDS means a model-issued `git worktree`/`git merge` is
+ * still refused — only the loop's own trusted call sites can use them.
+ */
+const GIT_INTERNAL_SUBCOMMANDS = new Set(['worktree', 'merge'])
+
+/**
  * Arguments rejected wherever they appear. Each of these either relocates git
  * outside the sandbox (-C, --git-dir, --work-tree) or is a documented execution
  * vector (-c sets config inline; --exec-path, --upload-pack, --receive-pack and
@@ -1069,12 +1141,16 @@ function gitEnv(): NodeJS.ProcessEnv {
  * testing — this is a trust boundary, so it is tested without spawning git.
  * Returns null when the call is permitted, or the reason it was refused.
  */
-export function rejectGitInvocation(subcommand: unknown, args: unknown): string | null {
+export function rejectGitInvocation(
+  subcommand: unknown,
+  args: unknown,
+  extraAllowed?: Set<string>
+): string | null {
   if (typeof subcommand !== 'string' || !subcommand.trim()) {
     return 'git requires a non-empty subcommand.'
   }
   const sub = subcommand.trim()
-  if (!GIT_ALLOWED_SUBCOMMANDS.has(sub)) {
+  if (!GIT_ALLOWED_SUBCOMMANDS.has(sub) && !extraAllowed?.has(sub)) {
     return (
       `git subcommand "${sub}" is not allowed. Permitted: ` +
       `${[...GIT_ALLOWED_SUBCOMMANDS].sort().join(', ')}. ` +
@@ -1099,10 +1175,14 @@ export function rejectGitInvocation(subcommand: unknown, args: unknown): string 
  * the only thing a model can express here is a local git operation on its own
  * sandbox repo.
  */
-export async function runGit(subcommand: string, args: string[] = []): Promise<TestRunResult> {
+export async function runGit(
+  subcommand: string,
+  args: string[] = [],
+  extraAllowed?: Set<string>
+): Promise<TestRunResult> {
   const cwd = await ensureWorkspace()
 
-  const refusal = rejectGitInvocation(subcommand, args)
+  const refusal = rejectGitInvocation(subcommand, args, extraAllowed)
   if (refusal) return { passed: false, output: refusal }
 
   // Every subcommand but `init` needs a repo; say so plainly instead of letting
@@ -1119,4 +1199,152 @@ export async function runGit(subcommand: string, args: string[] = []): Promise<T
   }
 
   return runBoundedProcess('git', [subcommand, ...args], cwd, GIT_TIMEOUT_MS, undefined, gitEnv())
+}
+
+// --- Atomic checkpoint commits (§6) ---------------------------------------
+//
+// The autonomous loop commits a checkpoint after every VerifyGate-confirmed
+// green run, so a later sub-task failure can roll the working tree back to the
+// last *known-good* commit rather than to a whole-file snapshot of uncertain
+// vintage. These run `add`/`commit`/`rev-parse`/`checkout` — all already on the
+// model-facing allowlist — but are invoked only from trusted loop code, never
+// from a model tool call.
+
+/**
+ * Ensure the workspace is a git repository, running `git init` if it is not.
+ * Returns true when a repo is present (or was just created), false if init
+ * failed. Cheap and idempotent — safe to call before every checkpoint.
+ */
+export async function ensureGitRepo(): Promise<boolean> {
+  const cwd = await ensureWorkspace()
+  try {
+    await stat(join(cwd, '.git'))
+    return true
+  } catch {
+    // Not a repo yet — create one. `-b` names the initial branch deterministically
+    // so behaviour does not depend on the host's init.defaultBranch config.
+    const init = await runGit('init', ['-b', 'openui-work'])
+    return init.passed
+  }
+}
+
+/**
+ * Current HEAD commit SHA, or null when the workspace is not a repo or has no
+ * commits yet. Never throws — a null simply means "no checkpoint exists".
+ */
+export async function currentCommit(): Promise<string | null> {
+  const res = await runGit('rev-parse', ['HEAD'])
+  if (!res.passed) return null
+  const sha = res.output.trim()
+  return /^[0-9a-f]{7,40}$/i.test(sha) ? sha : null
+}
+
+/**
+ * Stage everything and commit a checkpoint. Returns the new (or unchanged) HEAD
+ * SHA, or null if committing was impossible. A clean tree ("nothing to commit")
+ * is not an error: the existing HEAD is still a valid checkpoint, so its SHA is
+ * returned. `add -A` stages deletions too, so the checkpoint captures the whole
+ * tree state, not just modifications.
+ */
+export async function commitCheckpoint(message: string): Promise<string | null> {
+  if (!(await ensureGitRepo())) return null
+
+  const staged = await runGit('add', ['-A'])
+  if (!staged.passed) return null
+
+  const committed = await runGit('commit', ['-m', message || 'checkpoint'])
+  if (!committed.passed) {
+    // Non-zero exit is expected when the tree is clean; treat that as success and
+    // return the standing HEAD. Any other failure yields whatever HEAD exists (or
+    // null when there is genuinely no commit to fall back to).
+    if (/nothing to commit|no changes added|working tree clean/i.test(committed.output)) {
+      return currentCommit()
+    }
+    return currentCommit()
+  }
+  return currentCommit()
+}
+
+/**
+ * Discard all uncommitted working-tree changes, restoring tracked files to the
+ * last commit. Returns false when there is no commit to roll back to (rollback
+ * of created-but-untracked files is handled by the snapshot layer, not here).
+ */
+export async function rollbackToLastCommit(): Promise<boolean> {
+  if ((await currentCommit()) === null) return false
+  const res = await runGit('checkout', ['--', '.'])
+  return res.passed
+}
+
+// --- Parallel worktree workers (§3) ---------------------------------------
+//
+// Independent sub-tasks run concurrently, each in its own linked git worktree so
+// their edits never collide in one shared directory. `worktree`/`merge` are NOT
+// on the model-facing allowlist — these helpers pass GIT_INTERNAL_SUBCOMMANDS
+// explicitly, so only trusted loop code can drive them. Worktrees live in a
+// sibling of the workspace so they are outside the tree the agent walks/edits.
+
+const WORKTREE_ROOT_DIR = '.openui-worktrees'
+
+export interface WorktreeHandle {
+  /** Sanitised worker name. */
+  name: string
+  /** Branch checked out in the worktree (created at the base commit). */
+  branch: string
+  /** Absolute path to the worktree directory. */
+  path: string
+}
+
+function sanitiseWorktreeName(name: string): string {
+  const cleaned = name.replace(/[^a-zA-Z0-9._-]/g, '-').replace(/^-+|-+$/g, '')
+  return cleaned || 'worker'
+}
+
+/**
+ * Create a linked worktree checked out on a fresh branch at the current HEAD.
+ * Requires the main workspace to be a repo with at least one commit (the base
+ * the workers diverge from) — ensured by the caller's checkpoint commit. Returns
+ * null when git or the worktree add fails, so the caller can fall back to a
+ * sequential run in the main tree.
+ */
+export async function addWorktree(name: string): Promise<WorktreeHandle | null> {
+  if ((await currentCommit()) === null) return null
+  const safe = sanitiseWorktreeName(name)
+  const branch = `openui/${safe}`
+  const root = join(dirname(getWorkspaceDir()), WORKTREE_ROOT_DIR)
+  const path = join(root, safe)
+  try {
+    await mkdir(root, { recursive: true })
+  } catch {
+    return null
+  }
+  const res = await runGit('worktree', ['add', path, '-b', branch], GIT_INTERNAL_SUBCOMMANDS)
+  if (!res.passed) return null
+  return { name: safe, branch, path }
+}
+
+/**
+ * Merge a worker's branch back into the main workspace. Returns the raw result:
+ * a non-`passed` result whose output mentions a conflict is the signal for the
+ * caller to abort the merge and re-run that sub-task sequentially on the merged
+ * base. `--no-ff` keeps each sub-task a discrete, revertable commit.
+ */
+export async function mergeWorktreeBranch(branch: string): Promise<TestRunResult> {
+  return runGit('merge', ['--no-ff', '--no-edit', branch], GIT_INTERNAL_SUBCOMMANDS)
+}
+
+/** Abort an in-progress merge (used to recover from a conflicted merge). */
+export async function abortMerge(): Promise<boolean> {
+  const res = await runGit('merge', ['--abort'], GIT_INTERNAL_SUBCOMMANDS)
+  return res.passed
+}
+
+/**
+ * Remove a worktree and delete its branch. Best-effort cleanup: `--force`
+ * discards any uncommitted worker state, and a failed branch delete is ignored
+ * (the worktree removal is what actually frees the path). Never throws.
+ */
+export async function removeWorktree(handle: WorktreeHandle): Promise<void> {
+  await runGit('worktree', ['remove', '--force', handle.path], GIT_INTERNAL_SUBCOMMANDS)
+  await runGit('branch', ['-D', handle.branch])
 }

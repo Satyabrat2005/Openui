@@ -18,10 +18,20 @@ import {
   runGit,
   readSandboxFile,
   writeSandboxFile,
+  ensureGitRepo,
+  currentCommit,
+  commitCheckpoint,
+  rollbackToLastCommit,
+  runInWorkspace,
+  getWorkspaceDir,
+  addWorktree,
+  mergeWorktreeBranch,
+  removeWorktree,
   setActiveProject,
   resetActiveProject,
   stripRedundantProjectPrefix
 } from './sandbox'
+import { resolve, dirname, basename } from 'node:path'
 
 let ws: string
 
@@ -222,6 +232,21 @@ describe('rejectGitInvocation', () => {
     expect(rejectGitInvocation('status', 'oops')).toMatch(/must be an array/)
     expect(rejectGitInvocation('status', [1])).toMatch(/must be a string/)
   })
+
+  it('keeps internal-only subcommands off the model-facing allowlist', () => {
+    // The model path calls rejectGitInvocation with no extraAllowed set, so the
+    // §3 worktree/merge machinery is refused when a model tries to reach it.
+    expect(rejectGitInvocation('worktree', ['list'])).toMatch(/not allowed/)
+    expect(rejectGitInvocation('merge', ['branch'])).toMatch(/not allowed/)
+  })
+
+  it('permits internal subcommands only when the trusted caller opts in', () => {
+    const internal = new Set(['worktree', 'merge'])
+    expect(rejectGitInvocation('worktree', ['list'], internal)).toBeNull()
+    expect(rejectGitInvocation('merge', ['feature'], internal)).toBeNull()
+    // Opting worktree in does not smuggle a still-forbidden flag past the arg check.
+    expect(rejectGitInvocation('worktree', ['-C', '/etc'], internal)).toMatch(/not allowed/)
+  })
 })
 
 describe('runGit', () => {
@@ -235,5 +260,115 @@ describe('runGit', () => {
     const result = await runGit('status', [])
     expect(result.passed).toBe(false)
     expect(result.output).toMatch(/not a git repository/)
+  })
+})
+
+// Live git integration (§6). Uses the real `git` binary against the throwaway
+// OPENUI_WORKSPACE repo created per test — the checkpoint helpers are the
+// rollback foundation, so they are exercised end-to-end rather than stubbed.
+describe('git checkpoints', () => {
+  it('initialises a repository on demand and is idempotent', async () => {
+    expect(await ensureGitRepo()).toBe(true)
+    expect(await ensureGitRepo()).toBe(true)
+  })
+
+  it('reports no commit before the first checkpoint, then the HEAD sha', async () => {
+    await ensureGitRepo()
+    expect(await currentCommit()).toBeNull()
+
+    await writeFile(join(ws, 'a.txt'), 'hello\n')
+    const sha = await commitCheckpoint('first checkpoint')
+    expect(sha).toMatch(/^[0-9a-f]{7,40}$/)
+    expect(await currentCommit()).toBe(sha)
+  })
+
+  it('treats a clean tree as success and returns the standing HEAD', async () => {
+    await writeFile(join(ws, 'a.txt'), 'hello\n')
+    const first = await commitCheckpoint('first')
+    // Nothing changed since the last checkpoint — git exits non-zero, but the
+    // helper must still report the existing known-good commit, not null.
+    const second = await commitCheckpoint('noop')
+    expect(second).toBe(first)
+  })
+
+  it('rolls the working tree back to the last checkpoint', async () => {
+    await writeFile(join(ws, 'a.txt'), 'good\n')
+    await commitCheckpoint('good state')
+
+    await writeFile(join(ws, 'a.txt'), 'broken\n')
+    expect(await rollbackToLastCommit()).toBe(true)
+    expect(await readSandboxFile('a.txt')).toBe('good\n')
+  })
+
+  it('cannot roll back when no checkpoint exists yet', async () => {
+    await ensureGitRepo()
+    expect(await rollbackToLastCommit()).toBe(false)
+  })
+})
+
+// §3 workspace isolation. A per-worker runInWorkspace scope must win over the
+// OPENUI_WORKSPACE global, and concurrent scopes must not bleed into each other
+// (the whole basis for running coding workers in parallel worktrees).
+describe('runInWorkspace / getWorkspaceDir', () => {
+  it('pins the workspace to the scoped dir, then restores the default after', async () => {
+    const scoped = join(ws, 'nested-worker')
+    expect(getWorkspaceDir()).toBe(resolve(ws))
+    await runInWorkspace(scoped, async () => {
+      expect(getWorkspaceDir()).toBe(resolve(scoped))
+    })
+    expect(getWorkspaceDir()).toBe(resolve(ws))
+  })
+
+  it('isolates concurrent scopes from one another', async () => {
+    const seen: Record<string, string> = {}
+    const dirA = join(ws, 'A')
+    const dirB = join(ws, 'B')
+    await Promise.all([
+      runInWorkspace(dirA, async () => {
+        await new Promise((r) => setTimeout(r, 5))
+        seen.a = getWorkspaceDir()
+      }),
+      runInWorkspace(dirB, async () => {
+        seen.b = getWorkspaceDir()
+        await new Promise((r) => setTimeout(r, 10))
+        // Still B after the other scope has come and gone.
+        seen.aAfter = getWorkspaceDir()
+      })
+    ])
+    expect(seen.a).toBe(resolve(dirA))
+    expect(seen.b).toBe(resolve(dirB))
+    expect(seen.aAfter).toBe(resolve(dirB))
+  })
+})
+
+// Live git worktree round-trip (§3): a worker's isolated tree, committed on its
+// own branch, merges back into the main workspace. Uses the real git binary.
+describe('git worktrees', () => {
+  it('creates a worktree, commits in it, and merges the work back into main', async () => {
+    // Base commit in main so the worktree has something to branch from.
+    await writeFile(join(ws, 'base.txt'), 'base\n')
+    expect(await commitCheckpoint('base')).toMatch(/^[0-9a-f]{7,40}$/)
+
+    const name = basename(ws) // unique per test run — avoids stale-worktree collisions
+    const handle = await addWorktree(name)
+    expect(handle).not.toBeNull()
+    if (!handle) return
+
+    // Do the worker's work inside its own tree, committed on its branch.
+    await runInWorkspace(handle.path, async () => {
+      await writeFile(join(handle.path, 'feature.txt'), 'from worker\n')
+      await commitCheckpoint('worker feature')
+    })
+
+    // The feature does not exist in main until we merge the branch.
+    expect(await readSandboxFile('feature.txt').catch(() => null)).toBeNull()
+
+    const merge = await mergeWorktreeBranch(handle.branch)
+    expect(merge.passed).toBe(true)
+    expect(await readSandboxFile('feature.txt')).toBe('from worker\n')
+
+    await removeWorktree(handle)
+    // Cleanup: remove the sibling worktree root so /tmp does not accumulate.
+    await rm(join(dirname(ws), '.openui-worktrees'), { recursive: true, force: true })
   })
 })

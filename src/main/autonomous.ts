@@ -20,12 +20,23 @@ import { VerifyGate } from './verifyGate'
 import { parseFailures, failureSignature } from './errorParser'
 import { FixTracker } from './fixTracker'
 import { getNextTask, recordTaskOutcome, type TaskSource, type AgentTask } from './tasks'
-import { resetActiveProject, readSandboxRegion } from './sandbox'
+import { resetActiveProject, readSandboxRegion, commitCheckpoint, currentCommit } from './sandbox'
+import { ensureCodebaseIndexed } from './codebaseIndex'
+import { buildCodebaseMap } from './codebaseMap'
+import { isLargeTask, decomposeCodingTask, computeTurnBudget } from './planner'
+import { runParallelCodingSubagents } from './codingSubagents'
+import {
+  loadCheckpoint,
+  saveCheckpoint,
+  clearCheckpoint,
+  findResumableCheckpoint
+} from './checkpoints'
 import { disarmEditorAutoOpen } from './editor'
 import { detectProjectType, getProjectProfile, type ProjectProfile } from './projectProfiles'
 import { startRun, type RunLog } from './runLog'
 import {
   beginTaskSnapshot,
+  resumeTaskSnapshot,
   discardActiveSnapshot,
   pruneSnapshots,
   restoreActiveSnapshot
@@ -40,9 +51,11 @@ export interface AutonomousStatus {
   detail?: string
 }
 
-// Per-task tool-call budget. Coding needs more turns than the interactive
-// assistant (write → test → fix cycles), so this is larger than MAX_TOOL_TURNS.
-const MAX_CODING_TURNS = 20
+// §3 hard wall-clock ceiling per task: even if the model keeps making "progress",
+// a single task can never run away with the machine. 15 minutes is generous for
+// a write/test/fix loop yet bounds the worst case. The dynamic per-task turn
+// budget itself lives in planner.computeTurnBudget.
+const MAX_TASK_WALLCLOCK_MS = 15 * 60_000
 
 // Cap how many tasks one idle window will burn through before yielding, so a
 // long todo list cannot monopolise the machine in a single sweep.
@@ -209,9 +222,20 @@ async function workOnTask(
   // §4: tracks recurring failures across the run to drive escalation.
   const fixTracker = new FixTracker()
 
-  for (let turn = 0; turn < MAX_CODING_TURNS; turn++) {
+  // §3: budget scales with the task's own complexity; a hard wall-clock ceiling
+  // guarantees termination even if the turn count keeps looking productive.
+  const turnBudget = computeTurnBudget(task)
+  const deadline = Date.now() + MAX_TASK_WALLCLOCK_MS
+
+  for (let turn = 0; turn < turnBudget; turn++) {
     if (stopRequested) {
       return { success: false, summary: 'Paused: the user returned before the task finished.' }
+    }
+    if (Date.now() > deadline) {
+      return {
+        success: false,
+        summary: `Reached the ${Math.round(MAX_TASK_WALLCLOCK_MS / 60_000)}-minute time limit before verification passed.`
+      }
     }
 
     // Withhold tool-call JSON from the UI, same as the interactive loop.
@@ -276,7 +300,10 @@ async function workOnTask(
     messages.push({ role: 'user', content: formatToolResult(toolCall.tool, result) + debugContext })
   }
 
-  return { success: false, summary: 'Reached the coding-turn limit before verification passed.' }
+  return {
+    success: false,
+    summary: `Reached the ${turnBudget}-turn limit before verification passed.`
+  }
 }
 
 /**
@@ -302,6 +329,24 @@ export async function runAutonomousCoding(
   try {
     let worked = 0
     void pruneSnapshots()
+    // Warm the semantic index and symbol map for this project once, in the
+    // background, so the first task can navigate by meaning + structure instead
+    // of blind grep. The index self-degrades when the native module / Ollama is
+    // unavailable; the map (pure regex) always builds.
+    void ensureCodebaseIndexed()
+    void buildCodebaseMap()
+
+    // §7: surface whether an interrupted task from a previous session is waiting
+    // to be resumed. getNextTask still re-serves it (interrupted tasks stay
+    // pending); the per-task loadCheckpoint below is what actually resumes it.
+    const resumable = await findResumableCheckpoint(source).catch(() => null)
+    if (resumable) {
+      emitAutonomousStatus(win, {
+        active: true,
+        state: 'working',
+        detail: `Resuming "${resumable.title}" (${resumable.completedSubtaskIds.length}/${resumable.subtaskIds.length} sub-tasks already done)`
+      })
+    }
 
     while (!stopRequested && worked < MAX_TASKS_PER_RUN) {
       let task: AgentTask | null
@@ -346,22 +391,104 @@ export async function runAutonomousCoding(
         projectType: profile.type,
         tier
       })
+      // §7: if this task was interrupted in a previous session, re-open its
+      // ORIGINAL snapshot (keeping the true baseline) and resume from what was
+      // already merged; otherwise open a fresh snapshot and seed a resume record.
+      const resume = await loadCheckpoint(task.id)
       try {
-        await beginTaskSnapshot(task.id)
+        if (resume && (await resumeTaskSnapshot(task.id))) {
+          runLog.event('resume', {
+            taskId: task.id,
+            completed: resume.completedSubtaskIds.length,
+            of: resume.subtaskIds.length,
+            lastGoodCommit: resume.lastGoodCommit ?? undefined
+          })
+        } else {
+          await beginTaskSnapshot(task.id)
+          await saveCheckpoint({
+            taskId: task.id,
+            source: task.source,
+            title: task.title,
+            subtaskIds: [],
+            completedSubtaskIds: [],
+            lastGoodCommit: await currentCommit(),
+            turnsUsed: 0
+          })
+        }
       } catch (err) {
         console.warn('[autonomous] snapshot unavailable for this task:', err)
       }
 
       let outcome: TaskOutcome
       try {
+        // §3: a large task is split into independent sub-tasks that run in
+        // parallel git worktrees; whatever merges cleanly pre-populates the tree.
+        // The normal loop then runs as the full-suite integration pass and closes
+        // any gaps. Any failure of the parallel path falls through to that loop,
+        // so a task is never dropped just because decomposition/worktrees misfired.
+        if (isLargeTask(task)) {
+          const allSubtasks = await decomposeCodingTask(win, tier, task).catch(() => [])
+          // §7: on resume, skip sub-tasks that already merged in a prior session.
+          const alreadyDone = new Set(resume?.completedSubtaskIds ?? [])
+          const subtasks = allSubtasks.filter((s) => !alreadyDone.has(s.id))
+          if (allSubtasks.length >= 2 && subtasks.length > 0) {
+            // Persist the full sub-task set up front so a later resume knows the
+            // whole plan even if we are interrupted mid-flight.
+            await saveCheckpoint({
+              taskId: task.id,
+              source: task.source,
+              title: task.title,
+              subtaskIds: allSubtasks.map((s) => s.id),
+              completedSubtaskIds: [...alreadyDone],
+              lastGoodCommit: await currentCommit(),
+              turnsUsed: 0
+            })
+            emitAutonomousStatus(win, {
+              active: true,
+              state: 'working',
+              currentTask: task.title,
+              detail: `Split into ${subtasks.length} parallel sub-tasks`
+            })
+            const decomp = await runParallelCodingSubagents(
+              win,
+              tier,
+              subtasks,
+              profile,
+              runLog
+            ).catch(() => null)
+            if (decomp) {
+              const newlyDone = decomp.outcomes.filter((o) => o.merged).map((o) => o.subtask.id)
+              runLog.event('decomposed', {
+                subtasks: allSubtasks.length,
+                merged: decomp.outcomes.filter((o) => o.merged).length,
+                failed: decomp.outcomes.filter((o) => !o.success).length
+              })
+              // Record the newly-merged sub-tasks so a resume after this point does
+              // not redo them.
+              await saveCheckpoint({
+                taskId: task.id,
+                source: task.source,
+                title: task.title,
+                subtaskIds: allSubtasks.map((s) => s.id),
+                completedSubtaskIds: [...alreadyDone, ...newlyDone],
+                lastGoodCommit: await currentCommit(),
+                turnsUsed: 0
+              })
+            }
+          }
+        }
+        // Integration + verification pass over the (possibly pre-populated) tree.
+        // §5's VerifyGate guarantees the parent is never marked done without a
+        // green full-suite run.
         outcome = await workOnTask(win, tier, task, runLog, profile)
       } catch (err) {
         outcome = { success: false, summary: err instanceof Error ? err.message : String(err) }
       }
 
       // If we stopped because the user returned, leave the task pending so it is
-      // retried next idle window rather than being marked failed. Partial
-      // progress is kept (the retry opens a fresh snapshot from that state).
+      // retried next idle window rather than being marked failed. The §7 resume
+      // checkpoint is deliberately KEPT here, so the retry re-opens the original
+      // snapshot and skips the sub-tasks that already merged.
       if (stopRequested && !outcome.success) {
         discardActiveSnapshot()
         runLog.end('cancelled', 'paused — user became active')
@@ -370,13 +497,24 @@ export async function runAutonomousCoding(
       }
 
       if (outcome.success) {
+        // §6: the verifier is green, so pin this tree as a known-good checkpoint.
+        // A later task's rollback can then target the last committed state rather
+        // than only a whole-file snapshot. Non-fatal: a git-less environment just
+        // records no SHA and keeps relying on the snapshot layer.
+        const sha = await commitCheckpoint(`checkpoint: ${task.title}`.slice(0, 200))
+        if (sha) runLog.event('checkpoint', { sha, task: task.id })
         discardActiveSnapshot()
+        // §7: the task is done — drop its resume record so it is never re-resumed.
+        await clearCheckpoint(task.id)
         runLog.end('success', outcome.summary.slice(0, 300))
       } else {
         // Definitive failure (GIVE UP / turn limit / crash): roll the workspace
         // back so the next task never starts on top of half-broken edits.
         const rollback = await restoreActiveSnapshot()
         runLog.event('rollback', { detail: rollback })
+        // §7: a definitively-failed task is marked failed in the source and never
+        // re-served, so its resume record is obsolete.
+        await clearCheckpoint(task.id)
         runLog.end('failure', outcome.summary.slice(0, 300))
       }
 

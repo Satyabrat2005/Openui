@@ -45,4 +45,30 @@ describe('runLog — structured JSONL task logging', () => {
 
     setRunLogDirForTests(null)
   })
+
+  it('records the §6 checkpoint and §7 resume events with their payloads', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'openui-runlog-'))
+    setRunLogDirForTests(dir)
+
+    const run = startRun('autonomous-task', { taskId: 't-42' })
+    // Shapes emitted by autonomous.ts: an atomic commit checkpoint (§6) and a
+    // cross-session resume (§7).
+    run.event('resume', { taskId: 't-42', completed: 1, of: 3, lastGoodCommit: 'deadbee' })
+    run.event('checkpoint', { sha: 'abc1234', task: 't-42' })
+    run.end('success', 'all sub-tasks merged and verified')
+    await waitForFlush()
+
+    const file = readdirSync(dir).find((f) => f.endsWith('.jsonl'))!
+    const lines = readFileSync(join(dir, file), 'utf8')
+      .trim()
+      .split('\n')
+      .map((l) => JSON.parse(l))
+
+    const resume = lines.find((l) => l.event === 'resume')
+    expect(resume).toMatchObject({ type: 'event', completed: 1, of: 3, lastGoodCommit: 'deadbee' })
+    const checkpoint = lines.find((l) => l.event === 'checkpoint')
+    expect(checkpoint).toMatchObject({ type: 'event', sha: 'abc1234', task: 't-42' })
+
+    setRunLogDirForTests(null)
+  })
 })

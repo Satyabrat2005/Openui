@@ -102,6 +102,31 @@ describe('taskQueue — lane concurrency', () => {
     await expect(enqueue('coding', 'next', async () => 42)).resolves.toBe(42)
   })
 
+  it('runs coding-worker jobs concurrently, unlike the single coding lane', async () => {
+    // §3: parallel sub-agents each run in an isolated worktree, so this lane's cap
+    // is >1. Two jobs held open must overlap (peak ≥ 2) where the `coding` lane
+    // would serialise them.
+    let running = 0
+    let peak = 0
+    const gates: (() => void)[] = []
+    const job = (): Promise<void> =>
+      new Promise<void>((release) => {
+        running++
+        peak = Math.max(peak, running)
+        gates.push(() => {
+          running--
+          release()
+        })
+      })
+
+    const jobs = [enqueue('coding-worker', 'w1', job), enqueue('coding-worker', 'w2', job)]
+    await tick()
+    expect(peak).toBeGreaterThanOrEqual(2)
+    expect(getQueueStats()['coding-worker'].active).toBeGreaterThanOrEqual(2)
+    gates.forEach((g) => g())
+    await Promise.all(jobs)
+  })
+
   it('cancelLane rejects waiting jobs and aborts running ones', async () => {
     let sawAbort = false
     let release: () => void = () => {}
