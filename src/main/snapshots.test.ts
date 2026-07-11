@@ -11,6 +11,7 @@ vi.mock('electron', () => ({
 
 import {
   beginTaskSnapshot,
+  resumeTaskSnapshot,
   snapshotBeforeWrite,
   restoreActiveSnapshot,
   discardActiveSnapshot,
@@ -93,5 +94,33 @@ describe('snapshots — transactional workspace rollback', () => {
     discardActiveSnapshot()
     expect(readFileSync(join(workspace, 'done.txt'), 'utf8')).toBe('after — task succeeded')
     expect(await restoreActiveSnapshot()).toBe('No snapshot to restore.')
+  })
+})
+
+describe('resumeTaskSnapshot — cross-session resume (§7)', () => {
+  it('re-opens the original snapshot so rollback targets the true baseline', async () => {
+    writeFileSync(join(workspace, 'app.js'), 'original')
+
+    await beginTaskSnapshot('resume-me')
+    await snapshotBeforeWrite('app.js')
+    writeFileSync(join(workspace, 'app.js'), 'partial session-1 progress')
+
+    // Simulate the app closing mid-task: in-memory state is gone, but the
+    // persisted manifest survives on disk.
+    discardActiveSnapshot()
+    expect(hasActiveSnapshot()).toBe(false)
+
+    // A new session re-opens the snapshot WITHOUT wiping the original pre-images.
+    expect(await resumeTaskSnapshot('resume-me')).toBe(true)
+    expect(hasActiveSnapshot()).toBe(true)
+
+    // Rolling back therefore targets the original baseline, not the half-done edit.
+    await restoreActiveSnapshot()
+    expect(readFileSync(join(workspace, 'app.js'), 'utf8')).toBe('original')
+  })
+
+  it('returns false when there is no snapshot to resume', async () => {
+    expect(await resumeTaskSnapshot('never-existed')).toBe(false)
+    expect(hasActiveSnapshot()).toBe(false)
   })
 })
