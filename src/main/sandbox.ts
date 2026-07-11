@@ -23,10 +23,12 @@
  * intentionally keeps a zero-dependency local-folder backend so the feature
  * works out of the box.
  */
-import { app } from 'electron'
+import { app, shell } from 'electron'
 import { execFile, spawn } from 'node:child_process'
 import { promisify } from 'node:util'
+import { existsSync } from 'node:fs'
 import { mkdir, writeFile, readFile, readdir, stat } from 'node:fs/promises'
+import { homedir } from 'node:os'
 import { join, resolve, relative, isAbsolute, dirname, basename } from 'node:path'
 
 const execFileAsync = promisify(execFile)
@@ -60,15 +62,49 @@ const LONG_RUNNING_SCRIPT_RE = /^(dev|start|serve|watch|preview|serve:.*|dev:.*)
 const MAX_FILE_BYTES = 512 * 1024
 
 /**
- * Absolute path to the agent's workspace. Created lazily on first use under
- * the OS-appropriate userData dir (e.g. %APPDATA%\OpenUI on Windows,
- * ~/Library/Application Support/OpenUI on macOS). Overridable for power users
- * via OPENUI_WORKSPACE.
+ * Absolute path to the agent's workspace. Created lazily on first use.
+ *
+ * This lives in a VISIBLE folder under the user's home (`~/OpenUI Projects`) —
+ * not the hidden userData dir it used to use — because a builder run that writes
+ * files somewhere the user can't see reads as "it did nothing". A visible folder
+ * (plus opening it in an editor on first write, see openWorkspaceInEditor) is
+ * what makes the build tangible. Overridable via OPENUI_WORKSPACE (the tests set
+ * it to a temp dir). Confinement is unchanged: resolveInSandbox still pins every
+ * path inside this directory.
  */
 export function getWorkspaceDir(): string {
   const override = process.env.OPENUI_WORKSPACE?.trim()
   if (override) return resolve(override)
-  return join(app.getPath('userData'), 'autonomous-workspace')
+  return join(homedir(), 'OpenUI Projects')
+}
+
+/**
+ * Best-effort: open the workspace in the user's editor so they SEE the project
+ * being built. Prefers VS Code (launched from Code.exe directly — never the
+ * code.cmd shim, whose shell quoting mangles the spaced workspace path), and
+ * falls back to revealing the folder in the OS file manager, which always works.
+ * Never throws — a build must not fail just because no editor is installed.
+ */
+export function openWorkspaceInEditor(): void {
+  const dir = getWorkspaceDir()
+  try {
+    const candidates = IS_WIN
+      ? [
+          join(process.env.LOCALAPPDATA ?? '', 'Programs', 'Microsoft VS Code', 'Code.exe'),
+          join(process.env.PROGRAMFILES ?? '', 'Microsoft VS Code', 'Code.exe'),
+          join(process.env['PROGRAMFILES(X86)'] ?? '', 'Microsoft VS Code', 'Code.exe')
+        ]
+      : ['/usr/local/bin/code', '/usr/bin/code', '/snap/bin/code']
+    const code = candidates.find((p) => p && existsSync(p))
+    if (code) {
+      spawn(code, [dir], { detached: true, stdio: 'ignore', windowsHide: true }).unref()
+      return
+    }
+  } catch {
+    /* fall through to the file manager */
+  }
+  // No VS Code found (or the spawn failed) — at least reveal the folder.
+  void shell.openPath(dir)
 }
 
 /** Ensure the workspace directory exists; returns its absolute path. */

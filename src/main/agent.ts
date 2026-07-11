@@ -16,6 +16,7 @@ import { classifyFeedbackSignal, getCustomSystemPrompt } from './improvement'
 import { startRun } from './runLog'
 import { grantOrigin } from './browser/consent'
 import { resolveOllamaModel, resolveGeneralModel, DEFAULT_CODE_MODEL } from './models'
+import { openWorkspaceInEditor } from './sandbox'
 import {
   TrajectoryRecorder,
   applyQualitySignal,
@@ -457,6 +458,10 @@ function knownCodingToolNames(): Set<string> {
 async function runBuilderSession(win: BrowserWindow, tier: Tier, userMessage: string): Promise<string> {
   const messages: Message[] = [{ role: 'user', content: userMessage }]
   const codingNames = knownCodingToolNames()
+  // Whether we've already opened the workspace in the editor (on first write) and
+  // whether we've already nudged a rambling model to start emitting tool calls.
+  let editorOpened = false
+  let nudged = false
 
   for (let turn = 0; turn < MAX_BUILDER_TURNS; turn++) {
     const gate = new StreamGate((delta) => emit(win, 'openui:chat:chunk', delta))
@@ -465,7 +470,24 @@ async function runBuilderSession(win: BrowserWindow, tier: Tier, userMessage: st
 
     const toolCall = parseToolCallCore(responseText, codingNames)
     gate.finalize(toolCall !== null)
-    if (!toolCall) return responseText.trim() // natural-language reply ⇒ done
+    if (!toolCall) {
+      // The model replied in prose instead of emitting the first tool call —
+      // common when the request is vague ("do some coding"). Silently returning
+      // here is exactly what reads as "it did nothing", so nudge it ONCE to start
+      // building rather than giving up. Only on the very first turn: a prose reply
+      // after real work is a legitimate "I'm done" summary.
+      if (!nudged && turn === 0) {
+        nudged = true
+        messages.push({
+          role: 'user',
+          content:
+            'Begin now. Reply with ONLY a single tool-call JSON object (first character "{") — ' +
+            'start by writing package.json with write_file. Pick sensible defaults and do NOT ask questions.'
+        })
+        continue
+      }
+      return responseText.trim() // natural-language reply ⇒ done
+    }
 
     const taskId = `b${++taskSeq}`
     const label = describeCodingToolCall(toolCall.tool, toolCall.args)
@@ -479,6 +501,14 @@ async function runBuilderSession(win: BrowserWindow, tier: Tier, userMessage: st
       status: result.ok ? 'done' : 'error',
       detail: result.ok ? result.output?.slice(0, 200) : result.error
     } satisfies TaskUpdate)
+
+    // The moment the first file lands, open the workspace in the user's editor so
+    // they watch the project take shape instead of staring at a task list with no
+    // visible output. Best-effort and fired once per session.
+    if (result.ok && !editorOpened && toolCall.tool === 'write_file') {
+      editorOpened = true
+      openWorkspaceInEditor()
+    }
 
     messages.push({ role: 'user', content: formatToolResult(toolCall, result) })
   }
