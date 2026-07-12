@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import {
   extractFirstJsonObject,
+  looksLikeAttemptedToolCall,
   objToToolCall,
   parseToolCall,
   repairLooseJson,
@@ -206,6 +207,37 @@ describe('parseToolCall — tolerates raw control chars in string values', () =>
     const src = '{\n  "k": "a\nb"\n}'
     const repaired = repairLooseJson(src)
     expect(JSON.parse(repaired)).toEqual({ k: 'a\nb' })
+  })
+})
+
+describe('looksLikeAttemptedToolCall', () => {
+  it('flags a JSON object describing a project instead of calling a tool', () => {
+    const blob = '{"projectName":"my-site","files":["index.html","style.css"],"stack":"static"}'
+    expect(looksLikeAttemptedToolCall(blob)).toBe(true)
+  })
+
+  it('flags a fenced JSON manifest with no tool field', () => {
+    // "projectName", not "name" — objToToolCall treats "name" as a tool-name
+    // alias by design (see its docblock), so a key that collides with that
+    // alias is a real (if hallucinated) tool call, not malformed JSON.
+    const blob = '```json\n{"projectName":"app","dependencies":{"react":"^18"}}\n```'
+    expect(looksLikeAttemptedToolCall(blob)).toBe(true)
+  })
+
+  it('does not flag a real tool call, even with an unknown/hallucinated tool name', () => {
+    // A wrong tool name is a genuine (if bad) call attempt — it should route to
+    // the normal "Unknown tool" execute path, not be treated as malformed JSON.
+    expect(looksLikeAttemptedToolCall('{"tool":"write_file","args":{"path":"a.js"}}')).toBe(false)
+    expect(looksLikeAttemptedToolCall('{"tool":"scaffold_project","args":{}}')).toBe(false)
+  })
+
+  it('does not flag plain prose', () => {
+    expect(looksLikeAttemptedToolCall('Here is a summary of what I built.')).toBe(false)
+    expect(looksLikeAttemptedToolCall('')).toBe(false)
+  })
+
+  it('does not flag prose that merely mentions a brace', () => {
+    expect(looksLikeAttemptedToolCall('The count is {5} today.')).toBe(false)
   })
 })
 
