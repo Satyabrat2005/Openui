@@ -1116,7 +1116,7 @@ export async function handleChat(win: BrowserWindow, userMessage: string, tier: 
   const rollbackLen = history.length // for clean rollback on failure
 
   if (!currentConversationId) {
-    currentConversationId = database.conversations.createConversation(null, 'New Chat')
+    currentConversationId = database.conversations.createConversation(getCurrentUserId(), 'New Chat')
   }
   const convId = currentConversationId
 
@@ -1742,9 +1742,7 @@ export function registerAgentIPC(win: BrowserWindow): void {
 
 export function registerConversationIPC(win: BrowserWindow): void {
   ipcMain.handle('openui:get-conversations', async () => {
-    const userId = getCurrentUserId()
-    if (!userId) return []
-    return database.conversations.getConversationsByUser(userId)
+    return database.conversations.getConversationsByUser(getCurrentUserId())
   })
 
   ipcMain.handle('openui:load-conversation', async (_event, conversationId: unknown) => {

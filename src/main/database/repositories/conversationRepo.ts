@@ -21,10 +21,14 @@ export function createConversation(userId: string | null, title = 'New Chat'): s
   return id
 }
 
-export function getConversationsByUser(userId: string): ConversationRow[] {
-  return getDb()
-    .prepare('SELECT * FROM conversations WHERE user_id = ? ORDER BY updated_at DESC')
-    .all(userId) as ConversationRow[]
+export function getConversationsByUser(userId: string | null): ConversationRow[] {
+  return userId === null
+    ? (getDb()
+        .prepare('SELECT * FROM conversations WHERE user_id IS NULL ORDER BY updated_at DESC')
+        .all() as ConversationRow[])
+    : (getDb()
+        .prepare('SELECT * FROM conversations WHERE user_id = ? ORDER BY updated_at DESC')
+        .all(userId) as ConversationRow[])
 }
 
 export function getConversationById(id: string): ConversationRow | null {
