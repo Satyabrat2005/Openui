@@ -111,3 +111,20 @@ export async function openInEditor(dir: string): Promise<EditorLaunch> {
   const err = await shell.openPath(dir)
   return err ? 'failed' : 'file-browser'
 }
+
+/**
+ * Reveal a single FILE in the already-open VS Code window, so each file the
+ * agent writes pops open and focuses as it is written — the way a person would
+ * flip to the file they just edited. `-r` (--reuse-window) targets the existing
+ * window instead of spawning a new one; `-g` puts the cursor in the file.
+ * Best-effort and never throws: failing to focus a file must not fail the write.
+ */
+export async function openFileInEditor(filePath: string): Promise<void> {
+  try {
+    const exe = await findVsCode()
+    if (!exe) return
+    await spawnDetached(exe, ['-r', '-g', filePath])
+  } catch {
+    // No editor / spawn failed — the file is still written; focusing is a nicety.
+  }
+}

@@ -5,11 +5,11 @@ import { SPAWN_SUBAGENTS_TOOL, runParallelSubagents, parseSubTaskSpecs } from '.
 import { codingToolSchemas, executeCodingTool, describeCodingToolCall } from './codingTools'
 import { VerifyGate } from './verifyGate'
 import { detectProjectType, getProjectProfile } from './projectProfiles'
-import { getWorkspaceDir, setActiveProject } from './sandbox'
+import { getWorkspaceDir, setActiveProject, writeSandboxFile } from './sandbox'
 import { ensureCodebaseIndexed } from './codebaseIndex'
 import { buildCodebaseMap } from './codebaseMap'
 import { deriveProjectSlug } from './projectName'
-import { armEditorAutoOpen } from './editor'
+import { armEditorAutoOpen, openFileInEditor } from './editor'
 import { generatePlan, looksLikeTask, type Plan } from './planner'
 import { getMcpToolSchemas, callMcpTool } from './mcp-client'
 import { database } from './database'
@@ -562,6 +562,11 @@ async function runBuilderSession(win: BrowserWindow, tier: Tier, userMessage: st
   const verifyGate = new VerifyGate(profile)
   const systemPrompt = `${BUILDER_SYSTEM_PROMPT}\n\n${profile.promptAddendum}`
 
+  // Session log for the completion report: every file written and every
+  // build/test/run command with its outcome.
+  const writtenFiles: string[] = []
+  const ranCommands: Array<{ label: string; ok: boolean; summary: string }> = []
+
   for (let turn = 0; turn < MAX_BUILDER_TURNS; turn++) {
     const gate = new StreamGate((delta) => emit(win, 'openui:chat:chunk', delta))
     const responseText = await callModel(win, tier, messages, systemPrompt, gate.push)
@@ -572,7 +577,17 @@ async function runBuilderSession(win: BrowserWindow, tier: Tier, userMessage: st
     if (!toolCall) {
       // Natural-language reply ⇒ the model thinks it is done. Only let it be done
       // if it actually ran something against the code as it now stands.
-      if (verifyGate.onFinalReply(responseText) !== 'nudge') return responseText.trim()
+      if (verifyGate.onFinalReply(responseText) !== 'nudge') {
+        // Verified build ⇒ leave a completion report so there's a durable record
+        // of what was built and that it passed (opened in the editor too).
+        if (verifyGate.isVerified) {
+          const reportPath = await writeCompletionReport(win, userMessage, writtenFiles, ranCommands)
+          if (reportPath) {
+            return `${responseText.trim()}\n\n📄 Build verified. Wrote a completion report: ${reportPath}`
+          }
+        }
+        return responseText.trim()
+      }
       emit(win, 'openui:task:update', {
         id: `b${++taskSeq}`,
         label: verifyGate.nudgeLabel,
@@ -596,11 +611,109 @@ async function runBuilderSession(win: BrowserWindow, tier: Tier, userMessage: st
       detail: result.ok ? result.output?.slice(0, 200) : result.error
     } satisfies TaskUpdate)
 
+    if (result.ok) recordBuilderAction(toolCall, result, writtenFiles, ranCommands)
+
     verifyGate.observe(toolCall.tool, toolCall.args, result.ok, result.output ?? '')
     messages.push({ role: 'user', content: formatToolResult(toolCall, result) })
   }
 
   return 'Reached the build-step limit for this request. Tell me if you want me to keep going.'
+}
+
+/** Coding-tool names whose run is a build/test/verify command (for the report). */
+const BUILDER_COMMAND_TOOLS = new Set([
+  'run_script',
+  'run_tests',
+  'run_pytest',
+  'run_python',
+  'run_cpp',
+  'install_dependencies'
+])
+
+/**
+ * Record one successful builder action for the completion report — and, for a
+ * file write, pop that file open in VS Code so the user watches each file appear
+ * as it is written (not just the folder once at the start).
+ */
+function recordBuilderAction(
+  call: ToolCall,
+  result: ToolResult,
+  writtenFiles: string[],
+  ranCommands: Array<{ label: string; ok: boolean; summary: string }>
+): void {
+  if (call.tool === 'write_file') {
+    const rel = typeof call.args.path === 'string' ? call.args.path : ''
+    if (rel && !writtenFiles.includes(rel)) writtenFiles.push(rel)
+    // executeCodingTool reports "Wrote N bytes to <absolute path>."
+    const out = result.output ?? ''
+    const idx = out.indexOf('bytes to ')
+    const abs = idx >= 0 ? out.slice(idx + 'bytes to '.length).trim().replace(/\.$/, '') : ''
+    if (abs) void openFileInEditor(abs)
+    return
+  }
+  if (BUILDER_COMMAND_TOOLS.has(call.tool)) {
+    const out = result.output ?? ''
+    const passed = /\b(PASSED|OK)\b/.test(out) && !/\bFAILED\b/.test(out)
+    ranCommands.push({
+      label: describeCodingToolCall(call.tool, call.args),
+      ok: passed,
+      summary: (out.split('\n')[0] ?? '').slice(0, 120)
+    })
+  }
+}
+
+/**
+ * Write a WORKFLOW.md build report into the project once the build is verified —
+ * a durable record of the goal, the files written, and every build/test step
+ * with its outcome — then open it in the editor. Best-effort; never throws.
+ */
+async function writeCompletionReport(
+  win: BrowserWindow,
+  goal: string,
+  writtenFiles: string[],
+  ranCommands: Array<{ label: string; ok: boolean; summary: string }>
+): Promise<string | null> {
+  try {
+    const filesList = writtenFiles.length
+      ? writtenFiles.map((f) => `- \`${f}\``).join('\n')
+      : '- (no files recorded)'
+    const cmdList = ranCommands.length
+      ? ranCommands.map((c) => `- ${c.ok ? '✅' : '❌'} **${c.label}** — ${c.summary}`).join('\n')
+      : '- (no build/test commands recorded)'
+    const md = [
+      '# Build Report',
+      '',
+      `**Generated:** ${new Date().toISOString()}`,
+      `**Goal:** ${goal.trim()}`,
+      '**Status:** ✅ Verified — the build/tests passed.',
+      '',
+      '## Files written',
+      filesList,
+      '',
+      '## Build & test steps',
+      cmdList,
+      '',
+      '## Workflow',
+      '1. Scaffolded the project files.',
+      '2. Installed dependencies where needed.',
+      '3. Ran the build/tests and iterated on failures until they passed.',
+      '4. Verified the result and generated this report.',
+      '',
+      '_Generated automatically by OpenUI._',
+      ''
+    ].join('\n')
+    const abs = await writeSandboxFile('WORKFLOW.md', md)
+    void openFileInEditor(abs)
+    emit(win, 'openui:task:update', {
+      id: 'build-report',
+      label: 'Build report (WORKFLOW.md)',
+      status: 'done',
+      detail: abs
+    } satisfies TaskUpdate)
+    return abs
+  } catch {
+    return null
+  }
 }
 
 /**
