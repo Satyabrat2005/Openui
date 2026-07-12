@@ -1,658 +1,128 @@
-# OpenUI
+<p align="center">
+  <img src="resources/icon.png" width="88" alt="OpenUI">
+</p>
 
-**OpenUI** is a Windows and macOS menu-bar AI assistant built with Electron, React, TypeScript, and Vite. It lives quietly in the system tray and surfaces as a transparent floating overlay when you need it. Under the hood it connects to Anthropic Claude and OpenAI Whisper exclusively through our own cloud backend (every tier, no local model setup, no way to bypass the metered plan), plus a suite of OS-automation, code, design, and developer tools.
+<h1 align="center">OpenUI</h1>
+<p align="center"><b>A local-first AI copilot that lives in your menu bar</b><br>
+Chat, control your desktop, browse the web, and ship code — powered by a model running on <i>your</i> machine.</p>
 
----
-
-## Feature Overview
-
-| Phase | Feature | Status |
-|---|---|---|
-| **Phase 1** | UI shell — transparent overlay, tray icon, GSAP animations | ✅ Complete |
-| **Phase 2** | Agent backend — model router, streaming IPC, tool-calling, conversation history | ✅ Complete |
-| **Phase 2.5** | OS automation — macOS AppleScript tools, cross-platform nut.js mouse/keyboard, live TaskListPopup | ✅ Complete |
-| **Phase 3** | UI wiring — live chat input, streaming transcript, real audio bars | ✅ Complete |
-| **Phase 4** | Screen vision — `read_screen()` via desktopCapturer, Claude Vision (pro/enterprise), Tesseract.js OCR (free) | ✅ Complete |
-| **Phase 5** | Voice input — push-to-talk mic, MediaRecorder, OpenAI Whisper, auto-route to agent | ✅ Complete |
-| **Phase 6** | macOS permission hardening — pre-flight OS checks, PermissionModal, unhandled-rejection fixes | ✅ Complete |
-| **Distribution** | electron-builder — Windows NSIS installer, macOS DMG, `openui://` deep-link, single-instance lock | ✅ Complete |
-| **Phase 7** | Auth + subscriptions — Google OAuth via Supabase, SQLite persistence, tier routing, Stripe checkout | ✅ Complete |
-| **Sub-Phase 4** | Telemetry — PostHog analytics, opt-in `ConsentModal`, Settings toggle, GDPR-safe design | ✅ Complete |
-| **Phase 8** | Autonomous Coding Mode — unattended sandbox agent, todo.json/GitHub Issues tasks, write/test loop | ✅ Complete |
-| **Phase 9** | AI Interviewer — voice-driven technical screening, TTS responses, structured 10-turn sessions | ✅ Complete |
-| **Phase 10** | GitHub PR Review — `list_open_prs`, `get_pr_diff`, `post_pr_comment` via `@octokit/rest` | ✅ Complete |
-| **Phase 11** | Figma Design Tools — `get_figma_file`, `export_figma_frames` with Vision analysis, `create_figma_comment` | ✅ Complete |
-| **Onboarding** | Cloud-only routing, 4-step OnboardingWizard, daily/monthly usage counter | ✅ Complete |
-| **Auto-updater** | `electron-updater` + GitHub Releases — Windows in-app install, macOS browser redirect | ✅ Complete |
+<p align="center">
+  <img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT License">
+  <img src="https://img.shields.io/badge/version-7.1.1-informational.svg" alt="Version 7.1.1">
+  <img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS-lightgrey.svg" alt="Windows | macOS">
+  <img src="https://img.shields.io/badge/engine-Ollama-000000.svg" alt="Ollama powered">
+  <a href="https://github.com/Satyabrat2005/Openui/actions/workflows/pr-check.yml"><img src="https://github.com/Satyabrat2005/Openui/actions/workflows/pr-check.yml/badge.svg" alt="PR Check"></a>
+</p>
 
 ---
 
-## Table of Contents
+OpenUI is an Electron + React desktop app that sits in your tray and does real work: it can operate your OS (open apps, click, type, read the screen via OCR), automate the browser, review and push code to GitHub, manage your calendar, and rewrite your files — all driven by a local Ollama model, with no API key, no sign-up, and no message limit to get started.
 
-1. [Traction & Product Learnings](#traction--product-learnings)
-2. [Prerequisites](#prerequisites)
-3. [Quick Start](#quick-start)
-4. [Environment Variables](#environment-variables)
-5. [Architecture Overview](#architecture-overview)
-6. [Agent & Model Routing](#agent--model-routing)
-7. [OS Automation Tools](#os-automation-tools)
-8. [Screen Vision (`read_screen`)](#screen-vision-read_screen)
-9. [Voice Input](#voice-input)
-10. [GitHub PR Review](#github-pr-review)
-11. [Figma Design Tools](#figma-design-tools)
-12. [Autonomous Coding Mode](#autonomous-coding-mode)
-13. [AI Interviewer](#ai-interviewer)
-14. [Auth & Subscription Gating](#auth--subscription-gating)
-15. [Telemetry & Privacy](#telemetry--privacy)
-16. [Auto-Updater](#auto-updater)
-17. [Onboarding & Cloud-First Routing](#onboarding--cloud-first-routing)
-18. [Building for Distribution](#building-for-distribution)
-19. [Security Model](#security-model)
+## Contents
 
----
+[Why it's different](#why-its-different) · [Quick start](#quick-start) · [What it can do](#what-it-can-do) · [Three flavors of multi-agent](#three-flavors-of-multi-agent) · [Model routing](#model-routing) · [Security & trust](#security--trust) · [Building from source](#building-from-source) · [Docs](#further-reading)
 
-## Traction & Product Learnings
+## Why it's different
 
-OpenUI currently has **32 signups** from users booking a demo. The infrastructure described below is in place so we can learn from real usage as those sessions happen — no usage-driven product decisions have been made from it yet.
+| | |
+|---|---|
+| **Local by default** | Every chat, plan, and coding turn streams from Ollama on your own hardware. No cloud key is required to use the app fully. |
+| **A real desktop agent** | Mouse/keyboard control, screenshots + OCR, clipboard, and a home-directory-confined filesystem — not just a chat window. |
+| **Three separate multi-agent systems** | Conversational fan-out, git-worktree-isolated coding subagents, and an idle-time autonomous coding loop — each scoped to what it's actually good at. |
+| **Guarded, not just capable** | Per-site browser consent + content sanitization, human-gated GitHub writes, path-confined sandboxes, and opt-in (not opt-out) telemetry. |
+| **One clean codebase** | A single TypeScript/Electron tree — the earlier disconnected Python prototype and three experimental backend stacks have been removed entirely. |
 
-- **Telemetry (built, currently inert):** PostHog (`posthog-node`) is integrated end-to-end and is consent-gated — `ConsentStatus` in `consent.ts` defaults to `UNKNOWN` on first launch, and the PostHog client is never initialised until the user explicitly opts in. The event taxonomy in `events.ts` already covers app lifecycle, auth, chat, model routing, tool execution, voice, checkout/subscription, waitlist, and feedback events. `POSTHOG_API_KEY`/`POSTHOG_HOST` in `.env.example` are present but unset by default, so telemetry collects nothing in this build — it will start capturing real usage once demo sessions begin and a production key is set.
-- **Error tracking (built, inert without a DSN):** Sentry (`@sentry/electron`) is wired through `telemetry/sentry.ts` behind the **same consent** as PostHog — no DSN or no opt-in means it never initialises. Every event is PII-scrubbed before leaving the machine (`beforeSend` drops user/request/extra fields, strips usernames from stack-trace paths, and redacts anything token- or email-shaped), and the local `crash.log` + PostHog crash counter keep working with zero configuration.
-- **Feedback loop (local, working today):** `feedbackRepo.ts` stores a sentiment-derived rating plus an explicit 👍/👎 per assistant message locally in SQLite. `promptRefiner.ts` reads the low-rated turns weekly, clusters them by topic, and rewrites the system prompt to address recurring failure modes — a working self-improvement loop that is local-only today, not yet aggregated across users.
-- **Next phase (plan, not yet done):** as demo sessions begin, the plan is to turn on PostHog in production and use it to see which tools/model tiers get used most, where onboarding drops off, and how the waitlist converts — combined with qualitative feedback from demo users — to decide what to prioritize next.
-
----
-
-## Prerequisites
-
-| Requirement | Version | Notes |
-|---|---|---|
-| **Node.js** | 20+ | [nodejs.org](https://nodejs.org) |
-| **npm** | 10+ | Bundled with Node.js |
-| **macOS** | 12+ | Primary target; Windows dev supported |
-| **Supabase project** | — | Required for cloud chat proxy + guest/anon sessions (enable Anonymous sign-ins) |
-
----
-
-## Quick Start
+## Quick start
 
 ```bash
 git clone https://github.com/Satyabrat2005/Openui.git
 cd Openui
-npm install          # also generates tray icons via postinstall
-cp .env.example .env # fill in your keys (see Environment Variables)
-npm run dev          # Electron + Vite HMR dev mode
+npm install
+
+# OpenUI needs a local Ollama server for chat + coding
+ollama pull qwen3.5           # general chat / planning
+ollama pull qwen2.5-coder:7b  # autonomous coding agent
+
+npm run dev
 ```
 
-The app appears as a tray icon. Click it to toggle the overlay. Press **Escape** or click outside the popup to hide it.
+That's it — no `.env` file is required to start chatting. `.env.example` documents optional integrations (voice, calendar, GitHub tokens, hosted cloud tier) that layer on top.
 
----
+## What it can do
 
-## Environment Variables
-
-Create a `.env` file in the project root (gitignored). Only `SUPABASE_URL` and `SUPABASE_ANON_KEY` are required; the rest unlock optional features.
-
-```env
-# ── Required for cloud chat + auth ───────────────────────────────────────────
-SUPABASE_URL=https://your-project.supabase.co
-SUPABASE_ANON_KEY=eyJ...
-
-# ── Required for direct Vision and local-dev chat fallback ───────────────────
-ANTHROPIC_API_KEY=sk-ant-...
-
-# ── Required for Whisper voice transcription (pro/enterprise tiers) ──────────
-OPENAI_API_KEY=sk-...
-
-# ── GitHub PR review + task source (per-user: set in Settings → GitHub) ──────
-# The shipped app reads the token from Settings → GitHub. This env var is a
-# local-dev fallback only. GITHUB_REPO points the autonomous issue source at a repo.
-GITHUB_TOKEN=ghp_...          # local-dev fallback; repo read + write:discussion scopes
-GITHUB_REPO=owner/repo        # optional default repo
-
-# ── Figma design tools (per-user: set in Settings → Figma) ───────────────────
-# The shipped app reads the token from Settings → Figma. Env var is a dev fallback.
-FIGMA_TOKEN=figd_...           # Figma personal access token
-
-# ── Required for Stripe checkout ─────────────────────────────────────────────
-STRIPE_PRO_PRICE_ID=price_...
-STRIPE_ENTERPRISE_PRICE_ID=price_...
-
-# ── Required for PostHog analytics (optional — disables telemetry if unset) ──
-POSTHOG_API_KEY=phc_...
-POSTHOG_HOST=https://us.i.posthog.com   # default
-
-# ── Sentry error tracking (optional — no-op if unset; consent-gated like PostHog) ──
-SENTRY_DSN=https://...@o0.ingest.sentry.io/0
-
-# ── Optional — Ollama, used ONLY by the local knowledge-base (RAG) embeddings
-# ── and the weekly self-improvement job; never used for chat or billing ──────
-OLLAMA_HOST=http://127.0.0.1:11434
-OLLAMA_MODEL=llama3:8b
-
-# ── Optional — local Whisper for free tier ───────────────────────────────────
-WHISPER_CPP_PATH=/path/to/whisper/binary
-
-# ── Optional — enterprise chat fallback (GLM) ────────────────────────────────
-GLM_BASE_URL=http://127.0.0.1:8080/v1
-GLM_API_KEY=no-key
-GLM_MODEL=glm-4
-
-# ── Optional — override the autonomous coding workspace path ─────────────────
-OPENUI_WORKSPACE=/path/to/workspace
-```
-
----
-
-## Architecture Overview
-
-OpenUI is a standard Electron app with three Vite bundles (main, preload, renderer) built by `electron-vite`.
-
-For a curated tour of the most notable engineering patterns in this codebase, see [ENGINEERING_HIGHLIGHTS.md](./ENGINEERING_HIGHLIGHTS.md).
-
-```
-src/
-├── main/                         # Node / Electron main process
-│   ├── index.ts                  # App bootstrap, tray, BrowserWindow, IPC registration
-│   ├── agent.ts                  # LLM agent: model router, streaming, agentic tool loop
-│   ├── tools.ts                  # OS automation tool registry + executeTool dispatcher
-│   ├── voice.ts                  # Whisper transcription, TTS synthesis, voice IPC handler
-│   ├── github.ts                 # GitHub PR tools (Phase 10)
-│   ├── figma.ts                  # Figma design tools (Phase 11)
-│   ├── autonomous.ts             # Autonomous Coding Mode loop (Phase 8)
-│   ├── codingTools.ts            # Sandbox-only tools: write_file, read_file, run_tests
-│   ├── sandbox.ts                # Sandboxed workspace I/O + test runner
-│   ├── tasks.ts                  # Task sources: todo.json + GitHub Issues
-│   ├── interviewer.ts            # AI Interviewer session management (Phase 9)
-│   ├── permissions.ts            # macOS systemPreferences permission helpers
-│   ├── updater/updater.ts        # electron-updater wrapper
-│   ├── cloudFreeTier.ts          # chat-proxy SSE streaming client
-│   ├── telemetry/                # PostHog integration (events, consent, posthog client)
-│   ├── stripe/                   # Stripe pricing, checkout, subscription sync
-│   └── database/                 # better-sqlite3 schema, repos (users, conversations, messages, settings)
-├── preload/
-│   └── index.ts                  # contextBridge — exposes window.openui to renderer
-└── renderer/src/
-    ├── App.tsx                   # Transparent overlay, onboarding gate, update banner wiring
-    ├── components/
-    │   ├── AssistantPopup.tsx    # Main chat UI — input, mic, transcript, chips
-    │   ├── TaskListPopup.tsx     # Live tool-call task list
-    │   ├── OnboardingWizard/     # 4-step first-run wizard
-    │   ├── AuthButton.tsx        # Google sign-in / user avatar
-    │   ├── SubscriptionStatus.tsx
-    │   ├── ConversationList.tsx  # Sidebar conversation history
-    │   ├── TierUpgradeModal.tsx
-    │   ├── ConsentModal.tsx      # Telemetry opt-in prompt
-    │   ├── SettingsModal.tsx     # Analytics toggle, conversation controls
-    │   ├── UpdateBanner.tsx      # "v1.x available" slim banner
-    │   ├── UpdateProgress.tsx    # Download progress bar
-    │   ├── UpdateReady.tsx       # "Restart to install" prompt
-    │   ├── LocalAIStatus.tsx     # Shows the active cloud plan + usage footer
-    │   ├── SignInBanner.tsx      # Upsell to sign in
-    │   ├── PermissionModal.tsx   # macOS Accessibility / Microphone settings deep-link
-    │   └── UsageCounter.tsx      # "15/20 messages today"
-    └── context/AuthContext.tsx   # User, tier, upgrade payload global state
-```
-
-### Security model (IPC)
-
-```
-Renderer (Chromium)         Preload (contextBridge)         Main (Node)
-─────────────────────       ────────────────────────        ──────────────────
-contextIsolation: true   →  window.openui (safe API)    →  ipcMain handlers
-nodeIntegration: false      sandbox: true                   (full Node access)
-```
-
-API keys, `process.env`, `desktopCapturer`, and all tool execution stay in the main process and never cross the contextBridge.
-
----
-
-## Agent & Model Routing
-
-`agent.ts` implements the agentic loop. **Interactive chat is cloud-only** — every chat message goes through the cloud proxy under per-tier limits. Local Ollama models serve a different, narrower job: the autonomous background coding loop (`autonomous.ts`) that runs while you're away, so it never spends your chat quota and works offline.
-
-### Model routing (per tier)
-
-```
-callModel(tier)
-  ├─ free:        cloud proxy → claude-3-5-haiku      (5 msgs/day, 120 voice min/month)
-  ├─ pro:         cloud proxy → claude-sonnet-4-6      (500 msgs/day, 600 voice min/month)
-  └─ enterprise:  cloud proxy → claude-sonnet-4-6      (unlimited; GLM in local dev only)
-
-autonomous coding (background, optional, requires Ollama)
-  ├─ general:     qwen3.5 (local; resolved against whatever `ollama list` reports)
-  └─ code:        qwen2.5-coder:7b — or your fine-tuned openui-qwen-coder:vN once promoted
-```
-
-The **cloud proxy** (`supabase/functions/chat-proxy`) holds our LLM API keys server-side. Every authenticated user can chat immediately — no local setup required, and local models cannot be routed into interactive chat, so there is no local path around the per-tier limits.
-
-### Local fine-tuning (opt-in personalisation, not a frontier-model replacement)
-
-When AI Improvement **and** the separate fine-tuning opt-in are both enabled, `finetune/pipeline.ts` periodically (at most every 24 h, only while you're away, only once ≥50 quality-scored trajectories exist) trains a LoRA adapter for the local coding model on **your own** recorded interactions:
-
-- Every checkpoint is **versioned** (`openui-qwen-coder:v1`, `v2`, …) with its dataset and manifest under `userData/finetune/` — previous versions are never deleted or overwritten.
-- A candidate is **promoted only if it does not regress** against the currently active model on a held-out slice of your data; a regressing candidate is auto-rejected and the last-known-good model keeps serving.
-
-Honest framing, because it matters: this adapts a small local model to **your** workflows — your project names, your phrasing, your recurring tasks — with everything staying on your machine. It is **not** competitive with frontier cloud models on general capability, and we don't claim otherwise. Cloud models do the heavy interactive reasoning; the local model gets steadily better at *your* background chores.
-
-### Agentic tool loop
-
-```
-handleChat()
-  └── loop (≤ 8 turns, or 32 for PR review):
-        callModel() → stream tokens → parse response
-        ├── plain text   → finalise, send openui:chat:done
-        └── JSON tool call → executeTool() → push result to history → continue loop
-```
-
-The loop is rolled back entirely on error so history stays consistent.
-
-### Conversation history
-
-Conversations and messages are persisted in a local SQLite database (`better-sqlite3`). Past sessions are accessible from the `ConversationList` sidebar. History survives popup hide/show but resets on `clearHistory()`.
-
----
-
-## OS Automation Tools
-
-Available to the interactive assistant (not the autonomous coding agent):
-
-| Tool | Platform | Description |
-|---|---|---|
-| `open_app(appName)` | macOS | Open any application via AppleScript |
-| `search_files(query)` | macOS | Spotlight search via `mdfind` (returns up to 20 results) |
-| `control_calendar(action, eventDetails?)` | macOS | Create or list Calendar.app events |
-| `move_mouse(x, y)` | Cross-platform | Move pointer to absolute screen coordinates |
-| `left_click()` | Cross-platform | Click at the current pointer position |
-| `type_text(text)` | Cross-platform | Synthesise keyboard input via `@nut-tree-fork/nut-js` |
-| `read_screen()` | macOS† | Capture screen + Claude Vision or Tesseract OCR (see below) |
-
-All tools are loaded lazily — a missing native package surfaces as a `{ ok: false, error }` tool result rather than a crash.
-
----
-
-## Screen Vision (`read_screen`)
-
-`read_screen()` captures the full display via `desktopCapturer`, then:
-
-- **Pro / Enterprise:** sends the PNG to Claude Vision (`claude-sonnet-4-6`) for a detailed description of every visible UI element with approximate X,Y coordinates.
-- **Free:** runs Tesseract.js OCR and returns extracted text.
-
-The agent uses this for "screen navigation" workflows:
-
-```
-User: "Open the GitHub Pull Requests panel in VS Code"
-  1. read_screen()  → "VS Code open. GitHub PR icon at (48, 380)."
-  2. move_mouse(48, 380)
-  3. left_click()
-  4. "Done — the GitHub Pull Requests panel is now open."
-```
-
-**macOS note:** Screen Recording permission must be granted in System Settings → Privacy & Security → Screen Recording.
-
----
-
-## Voice Input
-
-Push-to-talk voice input is built into the mic orb in the assistant popup.
-
-**Flow:**
-1. Click the mic orb → `getUserMedia()` starts recording; audio bars go live.
-2. Click again to stop → `MediaRecorder` produces `audio/webm;codecs=opus`.
-3. Audio is sent to the main process → OpenAI Whisper (`whisper-1`) transcribes it.
-4. Transcript appears in the bubble; the agent streams its reply.
-
-**Tier routing:**
-
-| Tier | Backend |
+| Category | Capabilities |
 |---|---|
-| `free` + `WHISPER_CPP_PATH` set | Local `whisper.cpp` binary |
-| `free` + no binary | Actionable upgrade message |
-| `pro` / `enterprise` | OpenAI Whisper API |
+| **Desktop control** | Open/close/list apps, mouse & keyboard automation, screenshots with OCR (Tesseract), clipboard read/write, filesystem tools confined to the home directory with human-in-the-loop confirmation on destructive actions |
+| **Browser automation** | Playwright-driven browsing that asks per-site consent before automating a new domain, sanitizes page content pulled into context, and falls back to an in-page vision pass when structured extraction fails |
+| **GitHub** | 9 tools — read (list open PRs, get PR diff, post PR comment) and write (check/create repo, update README, push files, open PR, merge). Opening and merging a PR is **always** a human click, regardless of autonomy level |
+| **Coding** | `edit_file`, `search_code`, local `git` tools, and a per-project **semantic codebase index** (HNSW vector search over a `.gitignore`-aware, incrementally re-embedded store) via `search_codebase_semantic` |
+| **Voice** | Push-to-talk capture, Whisper transcription, ElevenLabs/OpenAI text-to-speech |
+| **Productivity** | Native spreadsheet automation (read/write/update cells/formulas via exceljs), Google Calendar invites, an interactive `run_python`, and `research_web` — citation-backed web research over the connected browser with no API key |
+| **Documents & design** | PDF parsing, Figma design review |
+| **MCP** | Ships as an MCP client — bring your own Model Context Protocol servers (the included `mcp-config.json` is a fully commented-out template; zero servers are wired up out of the box) |
 
-Voice also powers the **AI Interviewer** (see below) where the assistant both listens and speaks back with synthesised audio.
+## Three flavors of multi-agent
 
----
+OpenUI doesn't have one "multi-agent mode" — it has three, each shaped for a different job:
 
-## GitHub PR Review
+| System | Kicks in when | Isolation model | What it's for |
+|---|---|---|---|
+| **Conversational subagents** | You ask for several independent things at once | Tool-restricted, up to 4 running concurrently via `Promise.all` | "Check my inbox and also summarize this PDF" |
+| **Coding subagents** | You ask for parallel code changes | One **git worktree per subtask**, dependency-ordered scheduling, a per-worker verify gate | Larger refactors split into independent, conflict-safe pieces, merged back serially |
+| **Autonomous Coding Mode** | You step away (idle ≥ 5 min) or flip "I'm busy" | A confined sandbox workspace under a visible `~/OpenUI Projects` folder (VS Code opens automatically on the first write) | Pulls a task from `todo.json` or GitHub Issues, then writes code → runs the full test suite → debugs → iterates (≤ 5 tasks per idle window) — and pauses the instant you're back |
 
-Say **"Review my PRs"** or **"Review pull requests"** and OpenUI triggers a dedicated PR review session:
+All local generation — interactive or autonomous — is serialized through a single-flight lock (`ollamaLock.ts`), since the default hardware target is one 8 GB-VRAM GPU that holds one model at a time.
 
-- **Model:** always `claude-sonnet-4-6` (pro), regardless of the user's current tier in the UI.
-- **Turn budget:** up to 32 turns (list + diff × N + comment × N).
-- **System prompt:** strict reviewer mandate — outputs structured markdown per PR.
+## Model routing
 
-**Tools registered** (`src/main/github.ts`):
+By default OpenUI is **Ollama-only**: chat, planning, and the coding agent all resolve against whatever compatible model `ollama list` reports, with `qwen3.5` and `qwen2.5-coder:7b` as the expected pair.
 
-| Tool | Description |
-|---|---|
-| `list_open_prs(repo?)` | Fetch up to 30 open PRs, sorted by most-recently-updated |
-| `get_pr_diff(repo, pr_number)` | Raw unified diff, capped at 24 000 chars |
-| `post_pr_comment(repo, pr_number, body)` | Post a markdown review comment via GitHub Issues API |
+An optional **cloud tier** (Anthropic/OpenAI, billed via Stripe + Supabase) exists in the codebase for teams that want a hosted option, but it ships **off**. Turning it on requires all three of:
 
-**Each posted review follows this format:**
+1. `OPENUI_ENABLE_CLOUD=1` at build/run time (the master switch, off by default),
+2. the in-app Settings toggle, and
+3. a real API key.
 
-```markdown
-## OpenUI Automated Code Review
-**Decision: [APPROVE / REQUEST CHANGES / COMMENT ONLY]**
-### Bugs
-### Security Issues
-### Architecture
-### Verdict
-```
+With all three set, tiers and daily cloud-message limits look like this:
 
-**Setup:** paste a GitHub personal access token in **Settings → GitHub** (a per-user credential, stored locally on the device). For local development you may instead set it via env:
-```env
-GITHUB_TOKEN=ghp_...      # local-dev fallback; repo read + write:discussion scopes
-GITHUB_REPO=owner/repo    # optional default; can also be supplied in the chat prompt
-```
+| Tier | Price | Cloud messages/day | Notes |
+|---|---|---|---|
+| Free | $0 | 5 | Local Ollama use is always unlimited regardless of tier |
+| Pro | $19/mo | 500 | |
+| Enterprise | $49/mo | Unlimited | Adds premium/frontier models |
 
-**Security:** the token stays in the main process and never crosses the contextBridge; repo names validated against `^[\w.-]+\/[\w.-]+$`; diff capped; comment capped at 65 536 chars (GitHub limit); never merges or closes PRs.
+## Security & trust
 
----
+- **Browser automation** asks consent per site and sanitizes scraped content before it reaches the model (`browser/consent.ts`, `browser/sanitizer.ts`).
+- **GitHub writes** (`open_pull_request`, `merge_pr`) are human-gated no matter what autonomy level is active.
+- **Autonomous coding** is contained, not sandboxed against hostile code: paths are confined to the workspace, writes are capped at 512 KB/file, `npm test` runs with a 120 s timeout, and the background loop has zero desktop-control tools — it cannot move a mouse or launch another app.
+- **Telemetry is opt-in** (PostHog) and **crash reporting is dual-gated** — a Sentry DSN must be configured *and* the user must consent — with PII scrubbed before anything is sent.
+- A broken-object-level-authorization (IDOR) bug in the `create-checkout`, `check-subscription`, and `customer-portal` billing edge functions — which read `userId` straight from an unauthenticated request body — is fixed, brought in line with `chat-proxy`'s existing token-verified user check.
+- 136 tests passing, clean `tsc --noEmit`, covering the tool-execution trust boundary, agent loop, and persistence layer.
+- MIT licensed, single TypeScript/Electron codebase — no orphaned prototype trees shipping alongside the real app.
 
-## Figma Design Tools
-
-OpenUI can inspect Figma files, export frames, analyse them with Claude Vision, and post comments back to Figma — all from the chat UI.
-
-**Tools registered** (`src/main/figma.ts`):
-
-| Tool | Description |
-|---|---|
-| `get_figma_file(file_key)` | File name, last-modified, and full top-level frame inventory with node IDs |
-| `export_figma_frames(file_key, node_ids?)` | PNG export + Claude Vision analysis: layout, colour/contrast, typography, accessibility, 3–5 improvement suggestions |
-| `create_figma_comment(file_key, message, node_id?)` | Post AI-generated design feedback directly in Figma (optionally anchored to a frame) |
-
-**Example workflow:**
-
-```
-User: "Review my Figma mockups"
-  1. get_figma_file(key)          → frame inventory
-  2. export_figma_frames(key)     → Vision analysis of top 3 frames
-  3. create_figma_comment(key, …) → feedback posted in Figma
-  4. "Here's the design review…"
-```
-
-**Setup:**
-```env
-FIGMA_TOKEN=figd_...        # Figma personal access token
-ANTHROPIC_API_KEY=sk-ant-… # for Vision analysis
-```
-
-**Security:** file keys validated; node IDs validated; image download capped at 10 MB; max 3 frames per call; HTTPS-only downloads.
-
----
-
-## Autonomous Coding Mode
-
-When you're away or busy, OpenUI's autonomous coding agent works through a task list in the background — no user in the loop.
-
-### How it works
-
-1. **Task source** — reads from `todo.json` in the sandbox workspace (or GitHub Issues when `GITHUB_REPO` is set).
-2. **Coding loop** — for each pending task: write files → run `npm test` → read output → fix and iterate (up to 20 turns per task, 5 tasks per idle window).
-3. **Sandbox** — all file operations are confined to `<userData>/autonomous-workspace` (or `OPENUI_WORKSPACE`). Path traversal is blocked at the API level. The test command is static (`npm test`) — the model never supplies it.
-4. **Status** — streamed to the renderer via `openui:autonomous:status` and shown in the TaskListPopup "Background Agent" banner.
-
-### Coding tools (separate registry — desktop tools excluded)
-
-| Tool | Description |
-|---|---|
-| `write_file(path, content)` | Create or overwrite a file; parent dirs created automatically |
-| `read_file(path)` | Read a file (capped at 16 000 chars) |
-| `list_files()` | List all workspace files |
-| `run_tests()` | Run `npm test` in the workspace; returns `TESTS PASSED` / `TESTS FAILED` + full output |
-
-### Task sources
-
-| Source | Config | Behaviour |
-|---|---|---|
-| `todo.json` | Default (no config) | Reads `{ tasks: [{ id, title, description?, status }] }`; writes back `done`/`failed` |
-| GitHub Issues | `GITHUB_REPO` env var | Fetches open issues as tasks; outcomes mirrored locally — **never writes to GitHub** |
-
----
-
-## AI Interviewer
-
-OpenUI can conduct structured technical screening interviews using voice — ask questions, listen to the candidate's answers, and generate a structured evaluation.
-
-**How to start:** type or say "Start interview" and provide a job description and resume.
-
-**Session structure (10 turns):**
-1. Warm opener about background
-2–4. Technical skills and relevant experience
-5–6. Situational / problem-solving question
-7–8. Behavioural (STAR format)
-9–10. Role-fit and motivation
-- Closing: thank-you + "any questions for me?"
-
-The interviewer speaks each question aloud using Text-to-Speech synthesis and listens for the candidate's voice response via OpenAI Whisper. Sessions require `ANTHROPIC_API_KEY` (for Claude question generation) and `OPENAI_API_KEY` (for Whisper + TTS).
-
----
-
-## Auth & Subscription Gating
-
-### Sign-in flow
-
-1. Click **Sign in with Google** → system browser opens Google OAuth via Supabase.
-2. Supabase redirects to `openui://auth/callback?access_token=…`.
-3. macOS routes the deep-link back to the running app → user row written to SQLite → `openui:auth-success` pushed to renderer → `AuthContext` updates.
-
-### Tiers
-
-| Tier | Cloud messages/day | Models | Voice | Screen Vision |
-|---|---|---|---|---|
-| **Free** | 20 | claude-3-5-haiku | whisper.cpp local only | Tesseract OCR |
-| **Pro** | 500 | claude-sonnet-4-6 | OpenAI Whisper API | Claude Vision |
-| **Enterprise** | Unlimited | claude-sonnet-4-6 (GLM in local dev) | OpenAI Whisper API | Claude Vision |
-
-Tier is resolved server-side (`chat-proxy` reads `app_metadata.tier` from the Supabase JWT) — the renderer's tier hint cannot be spoofed. SQLite caches the tier for up to 24 hours so the app works offline.
-
-### Stripe subscription lifecycle
-
-- **Upgrade:** `window.openui.checkout(priceId)` → `create-checkout` Edge Function → Stripe hosted checkout.
-- **Manage/cancel:** `window.openui.manageSubscription()` → `customer-portal` Edge Function → Stripe Billing Portal.
-- **Webhook:** Stripe fires to `stripe-webhook` Edge Function → `subscriptions` table updated → `getTierForUser()` picks it up on next call.
-
----
-
-## Telemetry & Privacy
-
-OpenUI ships an **opt-in only** analytics layer built on PostHog. Nothing is collected — and the PostHog client is never initialised — until the user explicitly grants consent.
-
-### First-launch consent
-
-On first run, a `ConsentModal` offers **Allow Analytics** and **Skip** — both buttons are the same size (no dark patterns). Choosing **Skip** permanently records `DENIED` in the `settings` table; the prompt never reappears. The choice is always reversible from the Settings gear icon.
-
-### What IS collected (only after opt-in)
-
-- App opens, closes, crashes, version, and auto-update events
-- Feature usage: which tools run, which models/tiers are selected, voice and vision usage
-- Performance: response latency, tool execution time, token counts
-- Subscription tier, OS platform, app version
-- A random anonymous device id (replaced by Supabase user id after sign-in)
-
-### What is NEVER collected
-
-- Chat messages or voice recordings (only lengths/counts, never content)
-- File or screen contents, OCR text, screenshots
-- Personal data beyond the post-login user id
-- API keys or environment secrets
-
-### Changing the choice later
-
-Settings (gear icon) → **Anonymous Usage Analytics** toggle.
-
-```env
-POSTHOG_API_KEY=phc_...    # leave unset to disable telemetry build-wide
-```
-
----
-
-## Auto-Updater
-
-OpenUI uses `electron-updater` backed by GitHub Releases.
-
-| Platform | Behaviour |
-|---|---|
-| **Windows** | Checks on startup (+30 s), every 4 hours, and on focus. If an update is found, a slim `UpdateBanner` appears. User clicks **Download** → progress bar → **Restart & Install**. |
-| **macOS** | Same check schedule. Beta builds are ad-hoc signed (not notarized), so Squirrel.Mac in-app install is not used — **Open Download Page** opens the GitHub Releases page in the user's browser. First-launch Gatekeeper steps: [docs/INSTALL-MACOS-BETA.md](docs/INSTALL-MACOS-BETA.md). |
-
-Update events are tracked via telemetry (`UPDATE_AVAILABLE`, `UPDATE_DOWNLOADED`, `UPDATE_INSTALL_RESTART`, `UPDATE_ERROR`).
-
-> **When you notarize (GA):** the release workflow already uploads the macOS
-> `.zip` + `latest-mac.yml` that Squirrel.Mac needs for in-app updates. Switch
-> the macOS row above from browser-redirect to in-app install at that point.
-
----
-
-## Onboarding & Cloud-First Routing
-
-### First-run wizard
-
-New users walk through a 4-step onboarding wizard before the chat interface appears:
-
-| Step | Content |
-|---|---|
-| 1. Welcome | Product intro, animated entrance |
-| 2. Sign In | Google OAuth — cannot be skipped |
-| 3. Tour | Feature highlights with interactive callouts |
-| 4. First Chat | Type or speak a first message; transitions to the main chat |
-
-Step completion and timing are tracked via telemetry (`onboarding_started`, `onboarding_step_reached`, `onboarding_completed`).
-
-### Cloud-first routing
-
-The product promise is **launch it and it works — no account screen, no local setup**. On first launch the app mints a silent **anonymous Supabase session** (`ensureGuestSession` in `sessionManager.ts`); that token is all the `chat-proxy` Edge Function needs to serve the free tier, so cloud Claude is available immediately. Signing in with Google later is an optional upgrade that syncs the plan/preferences and unlocks Pro — never a gate.
-
-> **Ops note:** anonymous sessions require **Authentication → Sign In / Providers → Anonymous sign-ins = enabled** in the Supabase dashboard. If it's disabled, `ensureGuestSession` no-ops and the app falls back to a neutral connectivity message — never to a local model.
-
-Every tier is served exclusively by our cloud backend — there is no local-model routing path anywhere in the app, so nothing a user installs on their own machine changes their limit:
-
-- `LocalAIStatus` shows the active plan ("Cloud AI · 5 messages/day free").
-- The **daily usage counter** (`UsageCounter`) shows "3/5 messages today" drawn from `x-ratelimit-remaining` headers returned by `chat-proxy`.
-- Voice/interview usage is metered separately: 120 minutes/month on Free, enforced in `voice.ts` against the `voice_usage` table.
-
-A 429 from the proxy triggers a friendly upsell message and `TierUpgradeModal` — never a raw error.
-
----
-
-## Building for Distribution
+## Building from source
 
 ```bash
-# Windows (run on Windows)
-npm run build:win    # → dist/OpenUI.Setup.exe (NSIS x64 + ia32)
-
-# macOS (run on macOS)
-npm run build:mac    # → dist/OpenUI-arm64.dmg and dist/OpenUI-x64.dmg (separate per-arch builds, not universal)
+npm run typecheck   # tsc --noEmit
+npm run test         # vitest run
+npm run build:mac    # electron-vite build && electron-builder --mac
+npm run build:win    # electron-vite build && electron-builder --win
 ```
 
-**Signed releases** require the following GitHub Actions secrets (Settings → Secrets and variables → Actions):
+Every PR runs typecheck/test/build in CI (`.github/workflows/pr-check.yml`); tagged releases build signed macOS + Windows installers (`.github/workflows/release.yml`). Local semantic-search/RAG indexing (`hnswlib-node`) ships **macOS-only** — it's stripped from Windows builds due to native ABI constraints.
 
-| Secret | Platform | Description |
-|--------|----------|-------------|
-| `CSC_LINK` | macOS | Base64-encoded Developer ID Application `.p12` cert (`base64 -i cert.p12 \| pbcopy`) |
-| `CSC_KEY_PASSWORD` | macOS | Passphrase for the `.p12` |
-| `APPLE_ID` | macOS | Apple ID email used for notarization |
-| `APPLE_APP_SPECIFIC_PASSWORD` | macOS | App-specific password from [appleid.apple.com](https://appleid.apple.com) |
-| `APPLE_TEAM_ID` | macOS | 10-character Team ID from [developer.apple.com/account](https://developer.apple.com/account) |
-| `WIN_CSC_LINK` | Windows | Base64-encoded EV/OV `.pfx` cert |
-| `WIN_CSC_KEY_PASSWORD` | Windows | Passphrase for the `.pfx` |
+## Further reading
 
-All signing secrets are optional. The macOS build config carries
-`hardenedRuntime` + a scoped entitlements file (`resources/entitlements.mac.plist`
-— JIT + audio-input only) so a signed build is notarizable as-is. `scripts/notarize.js`
-then chooses a path automatically:
-
-- **Apple secrets present** → the Developer-ID-signed app is submitted to Apple's
-  notary service for a fully signed + notarized GA build (no Gatekeeper warning).
-- **Apple secrets absent (beta path)** → the bundle is **ad-hoc signed** so it
-  still launches on Apple Silicon; beta users clear Gatekeeper once via
-  [docs/INSTALL-MACOS-BETA.md](docs/INSTALL-MACOS-BETA.md).
-
-If the Windows cert is absent, the installer is unsigned and SmartScreen shows an
-"unknown publisher" notice. Once a build is fully signed, the packaged app
-auto-detects this (`OPENUI_MAC_SIGNED`, baked at build time) and enables silent
-in-app auto-update on macOS instead of the browser-redirect fallback.
-
-**Icon generation** runs automatically on `npm install` via `scripts/convert-icon.js` (synthesises a 1024×1024 orb PNG, emits `.ico` and `.icns` — no external tooling required).
-
-**Native modules** (`@nut-tree-fork/nut-js`, `better-sqlite3`) are rebuilt against the target Electron ABI by `electron-builder`'s `npmRebuild: true` setting. On macOS, run `npx electron-rebuild` after install to compile `better-sqlite3` locally.
-
-**Deep-link + single-instance:** the packaged app registers `openui://` as a protocol handler and acquires a single-instance lock — duplicate tray icons are impossible, and OAuth callbacks are routed back to the running instance.
-
----
-
-## Security Model
-
-### Trust boundaries
-
-| Boundary | What is trusted |
+| Doc | Covers |
 |---|---|
-| Renderer → Preload | Only `window.openui` methods exposed via `contextBridge` |
-| Preload → Main | IPC payloads validated (type, size, allowlist) in every `ipcMain.handle` |
-| Main → LLM | Tool arguments validated (required keys, JSON types, enums) before execution |
-| LLM → OS | AppleScript uses `asStringLiteral()` escaping; `search_files` uses `execFile` (no shell) |
-| Cloud → Main | Supabase JWT verified; tier read from `app_metadata` (server-authoritative) |
-| Stripe → Supabase | Stripe signature verified before trusting any webhook payload |
-
-### Content Security Policy
-
-Applied to every renderer response via `session.webRequest.onHeadersReceived`. Production: `default-src 'self'`, `script-src 'self'`, `object-src/frame-src 'none'`. Dev mode relaxes it for Vite HMR only.
-
-### What the autonomous coding agent can and cannot do
-
-The autonomous coding agent has access **only** to `write_file`, `read_file`, `list_files`, and `run_tests`. Desktop-automation tools (`move_mouse`, `open_app`, `read_screen`, etc.) are not in its registry. All file paths are sandbox-checked; the test command is a static string (no model-supplied shell commands).
-
----
-
-## Supabase Edge Functions
-
-Six Deno Edge Functions live in `supabase/functions/`:
-
-| Function | Purpose |
-|---|---|
-| `chat-proxy` | Cloud-first chat: verify JWT → check daily limit → proxy to Anthropic/OpenAI → normalised SSE |
-| `create-checkout` | Create Stripe Checkout Session |
-| `customer-portal` | Create Stripe Billing Portal session |
-| `check-subscription` | Return live `{ tier, status, currentPeriodEnd }` |
-| `stripe-webhook` | Handle Stripe events → update `app_metadata.tier` |
-| `waitlist` | Proxy waitlist email to Mailchimp (keeps API key server-side) |
-
-Stripe secret key and Supabase service-role key never leave the Edge Functions. The Electron app only holds the Supabase anon key.
-
-```bash
-supabase functions deploy chat-proxy
-supabase functions deploy create-checkout
-supabase functions deploy customer-portal
-supabase functions deploy check-subscription
-supabase functions deploy stripe-webhook --no-verify-jwt
-supabase db push   # creates the usage_tracking table
-```
-
----
-
-## Runtime Dependencies
-
-| Package | Version | Role |
-|---|---|---|
-| `@anthropic-ai/sdk` | ^0.40.0 | Claude models, streaming, Vision |
-| `openai` | ^4.0.0 | Whisper transcription, TTS, GLM fallback |
-| `ollama` | ^0.5.0 | Local LLM client — used only for RAG embeddings + the self-improvement job, never chat |
-| `@supabase/supabase-js` | ^2.108.2 | Auth, Edge Function calls, JWT refresh |
-| `better-sqlite3` | ^12.11.1 | Local persistence (users, conversations, messages, settings) |
-| `electron-updater` | ^6.8.9 | GitHub Releases auto-update |
-| `posthog-node` | ^4.18.0 | Privacy-first analytics |
-| `@octokit/rest` | ^20.0.0 | GitHub PR tools |
-| `@nut-tree-fork/nut-js` | ^4.2.0 | Cross-platform mouse/keyboard automation |
-| `node-osascript` | ^2.1.0 | macOS AppleScript execution |
-| `tesseract.js` | ^5.1.0 | Free-tier OCR fallback |
-| `gsap` | ^3.12.5 | UI animations |
-| `react` / `react-dom` | ^18.3.1 | Renderer UI |
-| `playwright` | ^1.44.0 | (available for future browser automation tools) |
-
-All heavy native packages (`@nut-tree-fork/nut-js`, `tesseract.js`, `node-osascript`) are lazy-loaded at call time — the bundle builds cleanly even when they are absent.
-
----
+| [`ARCHITECTURE.md`](./ARCHITECTURE.md) | Deep dive on the agent loop, tool registry, and process boundaries |
+| [`ENGINEERING_HIGHLIGHTS.md`](./ENGINEERING_HIGHLIGHTS.md) | Notable implementation details, with file/line pointers |
+| [`CHANGELOG.md`](./CHANGELOG.md) | Version history |
+| [`docs/DEMO_RUNBOOK.md`](./docs/DEMO_RUNBOOK.md) | Steps for a reliable live demo |
+| [`docs/INSTALL-MACOS-BETA.md`](./docs/INSTALL-MACOS-BETA.md) | macOS beta install instructions |
+| [`supabase/functions/README.md`](./supabase/functions/README.md) | The edge functions behind the optional cloud tier |
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT © OpenUI, 2025
