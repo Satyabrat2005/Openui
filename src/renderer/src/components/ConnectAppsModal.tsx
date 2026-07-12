@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { ConnectionState, McpConnectConfig } from '../env'
 import type { AppKind } from '../lib/appKind'
 import AppIcon from './AppIcon'
@@ -278,9 +278,20 @@ function SourceRow({ src }: { src: SourceDef }): JSX.Element {
 }
 
 export default function ConnectAppsModal({ onClose }: { onClose: () => void }): JSX.Element {
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') onClose()
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [onClose])
+
   return (
     <div
       className="ou-modal-scrim"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Connect apps"
       onMouseDown={(e) => {
         e.stopPropagation()
         onClose()

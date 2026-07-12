@@ -22,6 +22,7 @@
  */
 import type { BrowserWindow } from 'electron'
 import { callModel, parseToolCall, StreamGate, type Message } from './agent'
+import { looksLikeAttemptedToolCall } from './toolCallParser'
 import { executeCodingTool } from './codingTools'
 import { VerifyGate } from './verifyGate'
 import {
@@ -149,7 +150,8 @@ async function runWorker(
       messages.push({ role: 'assistant', content: responseText })
 
       const toolCall = parseToolCall(responseText)
-      gate.finalize(toolCall !== null)
+      const malformed = !toolCall && looksLikeAttemptedToolCall(responseText)
+      gate.finalize(toolCall !== null || malformed)
 
       if (!toolCall) {
         const decision = verifyGate.onFinalReply(responseText)

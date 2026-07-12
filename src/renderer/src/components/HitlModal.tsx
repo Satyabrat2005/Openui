@@ -54,8 +54,20 @@ export default function HitlModal({ request, onAllow, onDeny, onSelect }: Props)
     if (secondsLeft <= 0) onDeny()
   }, [secondsLeft, onDeny])
 
+  // Escape denies, same as the auto-deny timeout — deny is the only safe default here.
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') onDeny()
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [onDeny])
+
   return (
     <div
+      role="dialog"
+      aria-modal="true"
+      aria-label="Confirmation required"
       style={{
         position: 'fixed',
         inset: 0,

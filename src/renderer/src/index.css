@@ -1,8 +1,6 @@
-/* Inter (UI) + JetBrains Mono (code). Loads from the network when online;
-   silently falls back to the system stack below when the app is offline.
-   Must precede the @tailwind directives — CSS requires @import first. */
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
-
+/* Inter (UI) + JetBrains Mono (code) are not self-hosted or fetched: the CSP is
+   locked to 'self' (the renderer makes no direct network requests), so these
+   are system-font-stack fallbacks only, by design — not a network font. */
 @tailwind base;
 @tailwind components;
 @tailwind utilities;

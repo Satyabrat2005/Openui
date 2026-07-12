@@ -154,6 +154,10 @@ export function looksLikeAttemptedToolCall(text: string): boolean {
   const jsonText = extractFirstJsonObject(candidate)
   if (!jsonText) return false
   const parsed = tryParseJson(jsonText)
+  // Balanced braces that still fail to parse (e.g. an unescaped backslash in a
+  // Windows path) are an attempted-but-broken tool call, not prose — treat as
+  // malformed rather than falling through to the "not an object" case below.
+  if (parsed === undefined) return true
   if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return false
   return objToToolCall(parsed, false, new Set()) === null
 }

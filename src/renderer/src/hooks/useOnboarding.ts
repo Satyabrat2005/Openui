@@ -8,6 +8,7 @@ import { useCallback, useEffect, useState } from 'react'
  */
 
 const ONBOARDING_KEY = 'onboarding_complete'
+const ONBOARDING_STEP_KEY = 'onboarding_step'
 
 export interface UseOnboarding {
   /** True once the user has finished (or previously finished) onboarding. */
@@ -22,7 +23,7 @@ export interface UseOnboarding {
 
 export function useOnboarding(): UseOnboarding {
   const [isComplete, setIsComplete] = useState(false)
-  const [currentStep, setCurrentStep] = useState(0)
+  const [currentStep, setCurrentStepState] = useState(0)
   const [isLoading, setIsLoading] = useState(true)
 
   useEffect(() => {
@@ -31,8 +32,24 @@ export function useOnboarding(): UseOnboarding {
       .getSetting(ONBOARDING_KEY)
       .then((value) => {
         if (cancelled) return
-        setIsComplete(value === true)
-        setIsLoading(false)
+        const complete = value === true
+        setIsComplete(complete)
+        if (complete) {
+          setIsLoading(false)
+          return
+        }
+        // Only resume a saved step if onboarding hasn't already been finished.
+        window.openui
+          .getSetting(ONBOARDING_STEP_KEY)
+          .then((step) => {
+            if (cancelled) return
+            if (typeof step === 'number') setCurrentStepState(step)
+            setIsLoading(false)
+          })
+          .catch(() => {
+            if (cancelled) return
+            setIsLoading(false)
+          })
       })
       .catch(() => {
         // If the read fails, fail open into onboarding rather than trapping the
@@ -45,15 +62,23 @@ export function useOnboarding(): UseOnboarding {
     }
   }, [])
 
+  const setCurrentStep = useCallback((step: number): void => {
+    setCurrentStepState(step)
+    void window.openui.setSetting(ONBOARDING_STEP_KEY, step)
+  }, [])
+
   const completeOnboarding = useCallback(async (): Promise<void> => {
     await window.openui.setSetting(ONBOARDING_KEY, true)
+    await window.openui.setSetting(ONBOARDING_STEP_KEY, 0)
     setIsComplete(true)
+    setCurrentStepState(0)
   }, [])
 
   const resetOnboarding = useCallback(async (): Promise<void> => {
     await window.openui.setSetting(ONBOARDING_KEY, false)
+    await window.openui.setSetting(ONBOARDING_STEP_KEY, 0)
     setIsComplete(false)
-    setCurrentStep(0)
+    setCurrentStepState(0)
   }, [])
 
   return { isComplete, isLoading, currentStep, setCurrentStep, completeOnboarding, resetOnboarding }

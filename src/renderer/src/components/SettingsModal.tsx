@@ -268,8 +268,19 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
     }
   }
 
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') onClose()
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [onClose])
+
   return (
     <div
+      role="dialog"
+      aria-modal="true"
+      aria-label="Settings"
       style={{
         position: 'fixed',
         inset: 0,
@@ -294,6 +305,8 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
           padding: '22px 24px',
           maxWidth: 380,
           width: '90%',
+          maxHeight: '80vh',
+          overflowY: 'auto',
           boxShadow: '0 12px 40px rgba(0, 0, 0, 0.22), 0 0 0 0.5px rgba(0,0,0,0.08)',
           fontFamily: '-apple-system, BlinkMacSystemFont, sans-serif'
         }}

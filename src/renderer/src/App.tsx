@@ -118,7 +118,7 @@ function AppShell(): JSX.Element {
   const [planRequest, setPlanRequest] = useState<PlanRequestPayload | null>(null)
 
   const { taskViewActive } = useTaskActivity()
-  const { isComplete, isLoading, completeOnboarding } = useOnboarding()
+  const { isComplete, isLoading, currentStep, setCurrentStep, completeOnboarding } = useOnboarding()
   // The first message typed in onboarding, replayed once the chat mounts.
   const [initialMessage, setInitialMessage] = useState<string | null>(null)
 
@@ -199,7 +199,11 @@ function AppShell(): JSX.Element {
       {isLoading ? (
         <LoadingScreen />
       ) : !isComplete ? (
-        <OnboardingWizard onComplete={handleOnboardingComplete} />
+        <OnboardingWizard
+          onComplete={handleOnboardingComplete}
+          initialStep={currentStep}
+          onStepChange={setCurrentStep}
+        />
       ) : (
         <>
           <ErrorBoundary label="Chat">
