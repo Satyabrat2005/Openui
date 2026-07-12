@@ -13,6 +13,10 @@ interface Props {
    * chat interface, which sends the message so the reply streams into the chat.
    */
   onComplete: (firstMessage: string | null) => void
+  /** Step to resume at (e.g. after quitting partway through onboarding last time). */
+  initialStep?: number
+  /** Called whenever the current step changes, so the parent can persist it. */
+  onStepChange?: (step: number) => void
 }
 
 const STEP_NAMES = ['welcome', 'signin', 'tour', 'first_chat'] as const
@@ -25,9 +29,11 @@ const FIRST_CHAT_STEP = TOTAL_STEPS - 1
  * slide-down-out / slide-up-in; the final step dissolves the whole wizard
  * before the chat interface takes over. Auth (step 2) cannot be skipped.
  */
-export default function OnboardingWizard({ onComplete }: Props): JSX.Element {
+export default function OnboardingWizard({ onComplete, initialStep, onStepChange }: Props): JSX.Element {
   const { animateStepIn, animateStepOut, animateWizardOut } = useOnboardingAnimations()
-  const [step, setStep] = useState(0)
+  const clampedInitialStep =
+    initialStep !== undefined ? Math.min(Math.max(initialStep, 0), FIRST_CHAT_STEP) : 0
+  const [step, setStep] = useState(clampedInitialStep)
   const wizardRef = useRef<HTMLDivElement>(null)
   const contentRef = useRef<HTMLDivElement>(null)
   const startTimeRef = useRef(Date.now())
@@ -44,7 +50,8 @@ export default function OnboardingWizard({ onComplete }: Props): JSX.Element {
   useEffect(() => {
     animateStepIn(contentRef.current)
     track('onboarding_step_reached', { step_number: step, step_name: STEP_NAMES[step] })
-  }, [step, animateStepIn])
+    onStepChange?.(step)
+  }, [step, animateStepIn, onStepChange])
 
   const goToStep = useCallback(
     (next: number): void => {
