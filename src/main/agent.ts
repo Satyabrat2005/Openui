@@ -122,6 +122,45 @@ function waitForHitlApproval(
   })
 }
 
+/** Resolvers keyed by request id, awaited while the renderer shows the choice picker. */
+const pendingHitlChoiceRequests = new Map<string, (selected: string | null) => void>()
+let hitlChoiceSeq = 0
+
+/**
+ * Emit a HITL "choice" request to the renderer — a candidate picker, not a
+ * plain Allow/Deny (see ToolResult.needsConfirmation's 'choice' kind, used by
+ * e.g. an ambiguous WhatsApp contact) — and resolve once the user picks a
+ * candidate (its exact string) or cancels (null), or null after the backstop
+ * timeout. Reuses the same 'openui:hitl:request' event as waitForHitlApproval
+ * (HitlModal tells the two apart by whether `choices` is present) but keeps a
+ * separate id/resolver map and a separate response channel
+ * (openui:hitl:choice-response) so this can never cross-wire with the existing
+ * boolean Allow/Deny flow.
+ */
+function waitForHitlChoice(
+  win: BrowserWindow,
+  tool: string,
+  args: Record<string, unknown>,
+  label: string,
+  choices: string[]
+): Promise<string | null> {
+  const id = `hitlc${++hitlChoiceSeq}`
+  return new Promise<string | null>((resolve) => {
+    const timer = setTimeout(() => {
+      if (pendingHitlChoiceRequests.delete(id)) {
+        console.warn(`[agent] HITL choice request ${id} (${tool}) timed out — auto-cancelled`)
+        emit(win, 'openui:hitl:timeout', { id })
+        resolve(null)
+      }
+    }, HITL_BACKSTOP_TIMEOUT_MS)
+    pendingHitlChoiceRequests.set(id, (selected) => {
+      clearTimeout(timer)
+      resolve(selected)
+    })
+    emit(win, 'openui:hitl:request', { id, tool, args, label, choices })
+  })
+}
+
 // ── Autonomy level ────────────────────────────────────────────────────────────
 
 /**
@@ -1388,19 +1427,39 @@ export async function handleChat(win: BrowserWindow, userMessage: string, tier: 
       // action; a further sensitive step returns here again for its own click.
       if (!result.ok && result.needsConfirmation) {
         const nc = result.needsConfirmation
-        const approved = await waitForHitlApproval(win, toolCall.tool, toolCall.args, nc.label)
-        if (approved) {
-          // Site grants persist per-origin and land in the domain audit log.
-          if (nc.kind === 'site-consent' && nc.origin) grantOrigin(nc.origin, 'hitl')
-          result = (await executeTool(toolCall.tool, toolCall.args, {
-            tier: effectiveTier,
-            bypassHitl: true,
-            sensitiveApproved: true
-          })) as ToolResult
+        if (nc.kind === 'choice') {
+          // A candidate picker, not Allow/Deny (e.g. "which WhatsApp chat did
+          // you mean?") — see waitForHitlChoice. The pick is data, not a
+          // boolean, so it's merged into the retried args as resolvedContact
+          // rather than set on context.
+          const selected = await waitForHitlChoice(win, toolCall.tool, toolCall.args, nc.label, nc.choices ?? [])
+          if (selected) {
+            result = (await executeTool(
+              toolCall.tool,
+              { ...toolCall.args, resolvedContact: selected },
+              { tier: effectiveTier, bypassHitl: true }
+            )) as ToolResult
+          } else {
+            result = {
+              ok: false,
+              error: `User did not pick one of the options for: ${nc.label} Do not retry; let the user know you cannot proceed without their selection.`
+            }
+          }
         } else {
-          result = {
-            ok: false,
-            error: `User declined: ${nc.label} Do not retry; let the user know you cannot proceed without their approval.`
+          const approved = await waitForHitlApproval(win, toolCall.tool, toolCall.args, nc.label)
+          if (approved) {
+            // Site grants persist per-origin and land in the domain audit log.
+            if (nc.kind === 'site-consent' && nc.origin) grantOrigin(nc.origin, 'hitl')
+            result = (await executeTool(toolCall.tool, toolCall.args, {
+              tier: effectiveTier,
+              bypassHitl: true,
+              sensitiveApproved: true
+            })) as ToolResult
+          } else {
+            result = {
+              ok: false,
+              error: `User declined: ${nc.label} Do not retry; let the user know you cannot proceed without their approval.`
+            }
           }
         }
       }
@@ -1524,6 +1583,20 @@ export function registerAgentIPC(win: BrowserWindow): void {
     if (resolve) {
       pendingHitlRequests.delete(id)
       resolve(approved === true)
+    }
+  })
+
+  // Resolve the waiting agent loop turn when the user responds to a HITL
+  // choice prompt (candidate picker) — a separate channel/map from the
+  // boolean Allow/Deny flow above, so the two can never cross-wire.
+  ipcMain.on('openui:hitl:choice-response', (_event, payload: unknown) => {
+    if (typeof payload !== 'object' || payload === null) return
+    const { id, selected } = payload as Record<string, unknown>
+    if (typeof id !== 'string') return
+    const resolve = pendingHitlChoiceRequests.get(id)
+    if (resolve) {
+      pendingHitlChoiceRequests.delete(id)
+      resolve(typeof selected === 'string' ? selected : null)
     }
   })
 
