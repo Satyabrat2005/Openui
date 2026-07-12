@@ -1338,8 +1338,9 @@ export async function handleChat(win: BrowserWindow, userMessage: string, tier: 
       history.push({ role: 'assistant', content: responseText })
 
       const toolCall = parseToolCall(responseText)
-      // Reveal any withheld output that turned out NOT to be a real tool call.
-      gate.finalize(toolCall !== null)
+      const malformed = !toolCall && looksLikeAttemptedToolCall(responseText)
+      // Reveal any withheld output that turned out NOT to be a real (or attempted) tool call.
+      gate.finalize(toolCall !== null || malformed)
       console.log(
         `[agent] turn ${turn}: ${toolCall ? `tool=${toolCall.tool}` : 'natural-language reply'} (${responseText.length} chars)`
       )
@@ -1391,6 +1392,15 @@ export async function handleChat(win: BrowserWindow, userMessage: string, tier: 
           history.push({
             role: 'user',
             content: `TOOL RESULT [${SPAWN_SUBAGENTS_TOOL}] error: no valid tasks. Provide {"tasks":[{"title":"…","instruction":"…"}]}.`
+          })
+          continue
+        }
+        const label = `Run ${specs.length} sub-agent${specs.length === 1 ? '' : 's'} in parallel: ${specs.map((s) => s.title).join('; ')}`
+        const approved = await waitForHitlApproval(win, SPAWN_SUBAGENTS_TOOL, toolCall.args, label)
+        if (!approved) {
+          history.push({
+            role: 'user',
+            content: `TOOL RESULT [${SPAWN_SUBAGENTS_TOOL}] error: User denied running sub-agents. Do not retry; tell the user you cannot proceed without their approval.`
           })
           continue
         }

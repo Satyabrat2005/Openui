@@ -221,6 +221,11 @@ export const STATE_CHANGING_TOOLS = new Set<string>([
  */
 export const DESTRUCTIVE_TOOLS = new Set<string>([
   'delete_file',
+  // Creating/overwriting a file is a real filesystem mutation with no isolation
+  // net (sub-agents run with bypassHitl and only DESTRUCTIVE_TOOLS are ever
+  // blocked/confirmed for them), so both always confirm and never bypass HITL.
+  'write_file',
+  'create_folder',
   // Sends a WhatsApp message to another person — outward-facing and cannot be
   // unsent, so it always confirms and never runs under any autonomy mode.
   'send_whatsapp_message',

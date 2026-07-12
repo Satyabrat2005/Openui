@@ -15,6 +15,7 @@
  */
 import type { BrowserWindow } from 'electron'
 import { callModel, parseToolCall, emit, StreamGate, type Message } from './agent'
+import { looksLikeAttemptedToolCall } from './toolCallParser'
 import { codingToolSchemas, executeCodingTool, describeCodingToolCall } from './codingTools'
 import { VerifyGate } from './verifyGate'
 import { parseFailures, failureSignature } from './errorParser'
@@ -246,7 +247,8 @@ async function workOnTask(
     messages.push({ role: 'assistant', content: responseText })
 
     const toolCall = parseToolCall(responseText)
-    gate.finalize(toolCall !== null)
+    const malformed = !toolCall && looksLikeAttemptedToolCall(responseText)
+    gate.finalize(toolCall !== null || malformed)
     if (!toolCall) {
       // Plain-language reply ⇒ the agent considers the task finished (or gave up).
       const decision = verifyGate.onFinalReply(responseText)
