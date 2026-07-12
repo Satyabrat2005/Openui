@@ -1,9 +1,10 @@
 import { describe, it, expect } from 'vitest'
 import { homedir } from 'node:os'
-import { join, sep } from 'node:path'
-import { resolveSafePath, SENSITIVE_PATH_RE } from './pathSafety'
+import { join, dirname, sep } from 'node:path'
+import { resolveSafePath, SENSITIVE_PATH_RE, SYSTEM_SECRET_PATH_RE } from './pathSafety'
 
 const HOME = homedir()
+const USERS_ROOT = dirname(HOME)
 
 describe('resolveSafePath — input validation', () => {
   it('rejects non-string or empty paths', () => {
@@ -86,5 +87,44 @@ describe('resolveSafePath — home confinement for mutations', () => {
     // e.g. /home/user-evil should NOT be treated as inside /home/user
     const sibling = `${HOME}-evil${sep}secret.txt`
     expect(() => resolveSafePath(sibling, { mutating: true })).toThrow(/home folder/)
+  })
+})
+
+describe('resolveSafePath — narrow read hardening (outside home)', () => {
+  it('still allows reading a user file on another drive / outside home', () => {
+    // The whole point of the narrow block: legitimate out-of-home reads keep working.
+    const outside = process.platform === 'win32' ? 'D:\\work\\notes.txt' : '/mnt/data/notes.txt'
+    expect(() => resolveSafePath(outside, { mutating: false })).not.toThrow()
+    // ProgramData / /usr/share stay readable too.
+    const shared = process.platform === 'win32' ? 'C:\\ProgramData\\readme.txt' : '/usr/share/doc'
+    expect(() => resolveSafePath(shared, { mutating: false })).not.toThrow()
+  })
+
+  it('blocks reading another user\'s home directory', () => {
+    const otherUser = join(USERS_ROOT, 'someone-else', 'private.txt')
+    expect(() => resolveSafePath(otherUser, { mutating: false })).toThrow(/another user/)
+  })
+
+  it('blocks reading system credential stores that live outside home', () => {
+    const secret =
+      process.platform === 'win32'
+        ? 'C:\\Windows\\System32\\config\\SAM'
+        : '/etc/shadow'
+    expect(() => resolveSafePath(secret, { mutating: false })).toThrow(/system credentials/)
+  })
+
+  it('SYSTEM_SECRET_PATH_RE matches the documented out-of-home stores', () => {
+    expect(SYSTEM_SECRET_PATH_RE.test('C:\\Windows\\System32\\config\\SAM')).toBe(true)
+    expect(SYSTEM_SECRET_PATH_RE.test('/etc/shadow')).toBe(true)
+    expect(SYSTEM_SECRET_PATH_RE.test('/etc/ssl/private/server.key')).toBe(true)
+    expect(SYSTEM_SECRET_PATH_RE.test('/private/etc/master.passwd')).toBe(true)
+    // A user's own project file is not a system secret.
+    expect(SYSTEM_SECRET_PATH_RE.test('/home/u/projects/app.ts')).toBe(false)
+  })
+
+  it('does not apply the out-of-home read blocks to files inside home', () => {
+    // A file under home that merely contains an "etc" segment is fine to read.
+    const p = join(HOME, 'projects', 'etc', 'config.txt')
+    expect(() => resolveSafePath(p, { mutating: false })).not.toThrow()
   })
 })

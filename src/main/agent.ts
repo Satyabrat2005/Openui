@@ -207,11 +207,28 @@ function planStepRows(plan: Plan): PlanStepRow[] {
 /**
  * Emit a plan-approval request and resolve once the user approves (true) or
  * cancels (false) the whole plan in PlanApprovalModal.
+ *
+ * Carries the same backstop timeout as waitForHitlApproval: if the renderer
+ * never sends openui:plan:response (window closed while the modal is open, a
+ * renderer crash/reload, a dismissed modal, or a dropped IPC message) the turn
+ * would otherwise hang forever with no openui:chat:done ever emitted. On timeout
+ * we drop the pending resolver and cancel the plan (false), so the turn ends
+ * cleanly instead of stranding the UI in a permanent "working" state.
  */
 function waitForPlanApproval(win: BrowserWindow, plan: Plan, steps: PlanStepRow[]): Promise<boolean> {
   const id = `plan${++planSeq}`
   return new Promise<boolean>((resolve) => {
-    pendingPlanRequests.set(id, resolve)
+    const timer = setTimeout(() => {
+      if (pendingPlanRequests.delete(id)) {
+        console.warn(`[agent] plan approval ${id} timed out — auto-cancelled`)
+        emit(win, 'openui:plan:timeout', { id })
+        resolve(false)
+      }
+    }, HITL_BACKSTOP_TIMEOUT_MS)
+    pendingPlanRequests.set(id, (approved) => {
+      clearTimeout(timer)
+      resolve(approved)
+    })
     emit(win, 'openui:plan:request', { id, summary: plan.summary, steps })
   })
 }
@@ -650,7 +667,12 @@ async function runBuilderSession(win: BrowserWindow, tier: Tier, userMessage: st
 
   for (let turn = 0; turn < MAX_BUILDER_TURNS; turn++) {
     const gate = new StreamGate((delta) => emit(win, 'openui:chat:chunk', delta))
-    const responseText = await callModel(win, tier, messages, systemPrompt, gate.push)
+    // coding: true — this session writes real source files, same as the
+    // unattended autonomous loop (autonomous.ts), so it needs the code-tuned
+    // model (qwen2.5-coder), not the general chat model. Omitting this was a
+    // real bug: every interactive "build me an app" request silently ran on
+    // the general model and produced syntactically broken output.
+    const responseText = await callModel(win, tier, messages, systemPrompt, gate.push, { coding: true })
     messages.push({ role: 'assistant', content: responseText })
 
     const toolCall = parseToolCallCore(responseText, codingNames)
@@ -1473,9 +1495,22 @@ export async function handleChat(win: BrowserWindow, userMessage: string, tier: 
         }
       }
 
-      // Fall back to MCP if the tool is unknown to built-ins.
+      // Fall back to MCP if the tool is unknown to built-ins. MCP tools bypass
+      // the executeTool HITL gate above (they aren't built-ins, so executeTool
+      // returns "Unknown tool" before any approval fires), and a stdio MCP
+      // server can run arbitrary local actions — so gate the call the same way
+      // built-in state-changing tools are gated: outside autopilot (full-auto or
+      // an approved plan) require one human confirmation before invoking it.
       if (!result.ok && result.error?.startsWith('Unknown tool')) {
-        result = await callMcpTool(toolCall.tool, toolCall.args)
+        const mcpApproved = bypassHitl || (await waitForHitlApproval(win, toolCall.tool, toolCall.args))
+        if (mcpApproved) {
+          result = await callMcpTool(toolCall.tool, toolCall.args)
+        } else {
+          result = {
+            ok: false,
+            error: `User denied the action: ${describeToolCall(toolCall.tool, toolCall.args)}. Do not retry; let the user know you cannot proceed without their approval.`
+          }
+        }
       }
 
       // If a tool detected a missing OS permission, notify the renderer so it
