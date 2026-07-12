@@ -30,6 +30,8 @@ import { SENSITIVE_PATH_RE, resolveSafePath } from './fs/pathSafety'
 import { app, desktopCapturer, clipboard, shell, BrowserWindow } from 'electron'
 import { checkAccessibility, checkScreenRecording, type PermissionTarget } from './permissions'
 import { resolveApp, type InstalledApp } from './appResolver'
+import { runPowerShell, runPowerShellScript } from './powershell'
+import { enumerateWindowsApps, enumerateMacApps, launchWindowsApp } from './appIndex'
 import { githubToolSchemas, githubRegistry } from './github'
 import { figmaToolSchemas, figmaRegistry } from './figma'
 import { designToolSchemas, designRegistry } from './designFlow'
@@ -302,76 +304,9 @@ async function runAppleScript(script: string): Promise<string> {
 }
 
 // ── Windows helpers (PowerShell) ──────────────────────────────────────────────
-
-/**
- * Absolute path to the Windows PowerShell binary.
- *
- * SECURITY: invoking a bare "powershell.exe" lets Windows' CreateProcess search
- * order resolve the name, which — depending on process configuration — can
- * include the current working directory. A planted powershell.exe in the CWD
- * would then run instead of the real interpreter (binary-planting / search-order
- * hijack → code execution). Resolving the full path under %SystemRoot% removes
- * that ambiguity.
- */
-function powerShellPath(): string {
-  const root = process.env.SystemRoot || process.env.windir || 'C:\\Windows'
-  return `${root}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`
-}
-
-// Hard wall-clock bound on every PowerShell child (also guards against a hung
-// Outlook COM call) plus a 1 MiB stdout cap.
-const PS_TIMEOUT_MS = 15_000
-const PS_MAX_BUFFER = 1024 * 1024
-
-/**
- * Spawn PowerShell with a fixed argv and an optional set of EXTRA ENVIRONMENT
- * VARIABLES.
- *
- * SECURITY — parameterization, not concatenation. Untrusted values (app names,
- * search queries, calendar fields) are passed ONLY through the child's
- * environment and read inside the script via `$env:NAME`. They never appear in
- * the command/script text, so they can never be re-parsed as PowerShell code,
- * regardless of their contents. This is the PowerShell equivalent of a
- * parameterized query and replaces all string-building of dynamic values.
- */
-function runPowerShellArgs(
-  args: string[],
-  extraEnv?: Record<string, string>
-): Promise<{ stdout: string }> {
-  return execFileAsync(powerShellPath(), ['-NoProfile', '-NonInteractive', ...args], {
-    maxBuffer: PS_MAX_BUFFER,
-    timeout: PS_TIMEOUT_MS,
-    windowsHide: true,
-    env: extraEnv ? { ...process.env, ...extraEnv } : process.env
-  })
-}
-
-/**
- * Execute a single-line PowerShell command via -Command and return stdout.
- * The `command` text MUST be static; supply any untrusted data through
- * `extraEnv` and reference it as `$env:NAME` inside the command.
- */
-async function runPowerShell(command: string, extraEnv?: Record<string, string>): Promise<string> {
-  const { stdout } = await runPowerShellArgs(['-Command', command], extraEnv)
-  return stdout.trim()
-}
-
-/**
- * Execute a multi-line PowerShell script via -EncodedCommand (base64-encoded
- * UTF-16LE). This sidesteps all command-line quoting issues — the script text
- * is decoded verbatim by PowerShell with no shell interpretation. As with
- * runPowerShell, untrusted data MUST be supplied via `extraEnv` and read as
- * `$env:NAME`; never interpolate it into the script text.
- */
-async function runPowerShellScript(
-  script: string,
-  extraEnv?: Record<string, string>
-): Promise<string> {
-  // PowerShell -EncodedCommand accepts base64(UTF-16LE).
-  const encoded = Buffer.from(script, 'utf16le').toString('base64')
-  const { stdout } = await runPowerShellArgs(['-EncodedCommand', encoded], extraEnv)
-  return stdout.trim()
-}
+// powerShellPath/runPowerShellArgs/runPowerShell/runPowerShellScript now live in
+// ./powershell so appIndex.ts can shell out to PowerShell without importing this
+// whole module; imported below alongside the other top-of-file imports.
 
 // ── common helpers ────────────────────────────────────────────────────────────
 
@@ -531,135 +466,10 @@ try {
 }
 `.trim()
 
-/**
- * Static index script for the OpenUI app resolver: enumerate every installed app
- * the user could open, as JSON. Two sources cover the vast majority of apps:
- *   • Get-StartApps — Store/UWP apps + registered desktop apps, each with an
- *     AppUserModelID we can launch via shell:AppsFolder.
- *   • Start-menu .lnk shortcuts — path-launchable, and a safety net for anything
- *     Get-StartApps misses.
- * Takes NO user input, so nothing untrusted is ever spliced into the script.
- */
-const WIN_LIST_APPS_SCRIPT = `
-$ErrorActionPreference = 'SilentlyContinue'
-$ProgressPreference = 'SilentlyContinue'
-$apps = New-Object System.Collections.ArrayList
-foreach ($a in (Get-StartApps)) {
-  if ($a.Name) {
-    [void]$apps.Add([pscustomobject]@{ name = [string]$a.Name; appId = [string]$a.AppID; path = ''; source = 'startapps' })
-  }
-}
-$roots = @(
-  (Join-Path $env:ProgramData 'Microsoft\\Windows\\Start Menu\\Programs'),
-  (Join-Path $env:AppData 'Microsoft\\Windows\\Start Menu\\Programs')
-)
-foreach ($root in $roots) {
-  if (Test-Path -LiteralPath $root) {
-    Get-ChildItem -LiteralPath $root -Recurse -Filter *.lnk -ErrorAction SilentlyContinue | ForEach-Object {
-      [void]$apps.Add([pscustomobject]@{ name = [string]$_.BaseName; appId = ''; path = [string]$_.FullName; source = 'shortcut' })
-    }
-  }
-}
-# @(...) guarantees a JSON array even when only one app is found.
-ConvertTo-Json -InputObject @($apps) -Compress -Depth 3
-`.trim()
-
-/** Launch a resolved app by its Start-menu AppID (Store/UWP + registered desktop). */
-const WIN_LAUNCH_APPID_SCRIPT = `
-$ErrorActionPreference = 'Stop'
-Start-Process ('shell:AppsFolder\\' + $env:OPENUI_LAUNCH_TARGET)
-`.trim()
-
-/** Launch a resolved app by a full path to its .exe/.lnk. */
-const WIN_LAUNCH_PATH_SCRIPT = `
-$ErrorActionPreference = 'Stop'
-Start-Process -FilePath $env:OPENUI_LAUNCH_TARGET
-`.trim()
-
-// In-memory index of installed apps. Enumerating shells out to PowerShell (a few
-// hundred ms), so a short TTL cache keeps rapid "open X / open Y" sequences snappy
-// without going stale as the user installs/uninstalls apps across a session.
-let _winAppCache: { at: number; apps: InstalledApp[] } | null = null
-const WIN_APP_CACHE_TTL_MS = 60_000
-
-/** Enumerate installed Windows apps (cached), for the resolver + list_apps. */
-async function enumerateWindowsApps(): Promise<InstalledApp[]> {
-  if (_winAppCache && Date.now() - _winAppCache.at < WIN_APP_CACHE_TTL_MS) {
-    return _winAppCache.apps
-  }
-  const out = await runPowerShellScript(WIN_LIST_APPS_SCRIPT)
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(out || '[]')
-  } catch {
-    parsed = []
-  }
-  const arr = Array.isArray(parsed) ? parsed : parsed ? [parsed] : []
-  const apps: InstalledApp[] = []
-  for (const raw of arr) {
-    const a = raw as Record<string, unknown>
-    const name = typeof a?.name === 'string' ? a.name.trim() : ''
-    if (!name) continue
-    apps.push({
-      name,
-      appId: typeof a.appId === 'string' && a.appId ? a.appId : undefined,
-      path: typeof a.path === 'string' && a.path ? a.path : undefined,
-      source: a.source === 'shortcut' ? 'shortcut' : 'startapps'
-    })
-  }
-  _winAppCache = { at: Date.now(), apps }
-  return apps
-}
-
-// Standard locations for .app bundles. readdir (not `mdfind`) so this works
-// even when Spotlight is disabled or still indexing.
-const MAC_APP_DIRS = [
-  '/Applications',
-  '/Applications/Utilities',
-  '/System/Applications',
-  '/System/Applications/Utilities',
-  joinPath(homedir(), 'Applications')
-]
-
-let _macAppCache: { at: number; apps: InstalledApp[] } | null = null
-const MAC_APP_CACHE_TTL_MS = 60_000
-
-/** Enumerate installed macOS apps (cached), for the resolver + list_apps. */
-async function enumerateMacApps(): Promise<InstalledApp[]> {
-  if (_macAppCache && Date.now() - _macAppCache.at < MAC_APP_CACHE_TTL_MS) {
-    return _macAppCache.apps
-  }
-  const apps: InstalledApp[] = []
-  for (const dir of MAC_APP_DIRS) {
-    let entries: string[]
-    try {
-      entries = await readdir(dir)
-    } catch {
-      continue
-    }
-    for (const entry of entries) {
-      if (!entry.endsWith('.app')) continue
-      apps.push({
-        name: entry.slice(0, -'.app'.length),
-        path: joinPath(dir, entry),
-        source: 'app-bundle'
-      })
-    }
-  }
-  _macAppCache = { at: Date.now(), apps }
-  return apps
-}
-
-/** Launch a resolved app by AppID (preferred) or path. Throws on failure. */
-async function launchWindowsApp(match: InstalledApp): Promise<void> {
-  if (match.appId) {
-    await runPowerShellScript(WIN_LAUNCH_APPID_SCRIPT, { OPENUI_LAUNCH_TARGET: match.appId })
-  } else if (match.path) {
-    await runPowerShellScript(WIN_LAUNCH_PATH_SCRIPT, { OPENUI_LAUNCH_TARGET: match.path })
-  } else {
-    throw new Error(`No launch target for "${match.name}".`)
-  }
-}
+// WIN_LIST_APPS_SCRIPT/enumerateWindowsApps/enumerateMacApps/launchWindowsApp now
+// live in ./appIndex (imported above) so editor.ts's named-editor handoff can
+// reuse the same installed-app index and launch path without importing this
+// whole module.
 
 /**
  * List the apps installed on this machine (read-only). Lets the model discover
@@ -1000,7 +810,7 @@ async function open_folder_in_editor(args: Record<string, unknown>): Promise<Too
       }
     } else if (!IS_WIN) {
       try {
-        await execFileAsync('code', [dir], { timeout: 5_000, maxBuffer: PS_MAX_BUFFER })
+        await execFileAsync('code', [dir], { timeout: 5_000, maxBuffer: AS_MAX_BUFFER })
         return { ok: true, output: `Opened ${dir} in Visual Studio Code.` }
       } catch {
         // Fall back to the file manager below.

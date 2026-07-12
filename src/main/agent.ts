@@ -494,6 +494,22 @@ function preferredCodeModel(): string {
 const BUILD_RE =
   /\b(build|scaffold|bootstrap|create|make|generate|code|develop)\b[^.!?]{0,60}\b(react|next(?:\.?js)?|vue|svelte|angular|node(?:\.?js)?|express|vite|website|web\s?site|web\s?app|webapp|web\s?page|webpage|landing\s?page|front\s?end|frontend|back\s?end|backend|app|application|project|game|api|cli|dashboard|component|script|program)\b/i
 
+/**
+ * Pull a trailing "...open/edit/continue it in/with/using <tool>" editor name
+ * out of a build request, e.g. "build a snake game and open it in Antigravity"
+ * → "Antigravity". Deliberately requires a hand-off verb (open/edit/continue),
+ * not a bare "with X" — "build a site with react" must NOT be read as "open an
+ * editor named react". A miss or a name nothing resolves to is harmless: it
+ * just falls through to armEditorAutoOpen's default VS Code / file-browser flow.
+ */
+const EDITOR_HANDOFF_RE =
+  /\b(?:open|edit|continue|hand(?:\s+it)?\s+off)\b[^.!?]{0,30}?\b(?:in|with|using)\s+([a-z0-9][a-z0-9 .+#-]{1,40}?)(?=\s*[.!?]|\s*$)/i
+
+function extractEditorHandoff(text: string): string | null {
+  const m = EDITOR_HANDOFF_RE.exec(text)
+  return m ? m[1].trim() : null
+}
+
 /** Per-request step budget for a builder session — matches the autonomous cap. */
 const MAX_BUILDER_TURNS = 20
 
@@ -569,7 +585,7 @@ async function runBuilderSession(win: BrowserWindow, tier: Tier, userMessage: st
     status: 'done',
     detail: getWorkspaceDir()
   } satisfies TaskUpdate)
-  armEditorAutoOpen()
+  armEditorAutoOpen(extractEditorHandoff(userMessage))
   // Warm the semantic index + symbol map for this project in the background
   // (the index self-degrades when the native module / Ollama is unavailable).
   void ensureCodebaseIndexed()

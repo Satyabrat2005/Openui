@@ -16,22 +16,34 @@ import { spawn } from 'node:child_process'
 import { access } from 'node:fs/promises'
 import { constants } from 'node:fs'
 import { join } from 'node:path'
+import { resolveApp } from './appResolver'
+import { enumerateInstalledApps, launchInstalledAppInDir } from './appIndex'
 
 const IS_WIN = process.platform === 'win32'
 
 /** How the folder ended up in front of the user, for logging/telemetry. */
-export type EditorLaunch = 'vscode' | 'file-browser' | 'failed'
+export type EditorLaunch = 'vscode' | 'named-app' | 'file-browser' | 'failed'
 
 let armed = false
+/** Preferred editor/tool name for the next auto-open, e.g. "antigravity". */
+let preferredEditor: string | null = null
 
-/** Arm auto-open for the next write. Call once per interactive build session. */
-export function armEditorAutoOpen(): void {
+/**
+ * Arm auto-open for the next write. Call once per interactive build session.
+ * `preferred`, when given, names an installed app (e.g. "antigravity") the
+ * user asked to hand the project off to — resolved via appResolver's fuzzy
+ * matching against the real installed-app index, same as open_app. A miss or
+ * ambiguous match just falls through to the normal VS Code / file-browser path.
+ */
+export function armEditorAutoOpen(preferred?: string | null): void {
   armed = true
+  preferredEditor = preferred?.trim() || null
 }
 
 /** Disarm without opening anything (used by tests and unattended runs). */
 export function disarmEditorAutoOpen(): void {
   armed = false
+  preferredEditor = null
 }
 
 /**
@@ -42,10 +54,39 @@ export async function maybeOpenEditorOnFirstWrite(dir: string): Promise<EditorLa
   if (!armed) return null
   // Disarm before awaiting, so concurrent writes cannot both launch a window.
   armed = false
+  const preferred = preferredEditor
+  preferredEditor = null
   try {
-    return await openInEditor(dir)
+    return await openInEditor(dir, preferred)
   } catch {
     return 'failed'
+  }
+}
+
+/**
+ * VS Code aliases the user might type ("vscode", "code", "vs code") that mean
+ * "just use the default flow", not a distinct third-party app to resolve.
+ */
+const VSCODE_ALIASES = new Set(['vscode', 'vs code', 'code', 'visual studio code'])
+
+/**
+ * Try to launch `dir` in a named installed app (e.g. "antigravity"). Returns
+ * true when it launched, false when the name was empty, a VS Code alias, not
+ * installed, or ambiguous — all of which fall through to the normal VS Code /
+ * file-browser flow rather than failing the build.
+ */
+async function tryOpenNamedEditor(dir: string, preferred: string | null): Promise<boolean> {
+  if (!preferred) return false
+  const norm = preferred.toLowerCase().trim()
+  if (VSCODE_ALIASES.has(norm)) return false
+  try {
+    const apps = await enumerateInstalledApps()
+    const match = resolveApp(preferred, apps)
+    if (!match) return false
+    await launchInstalledAppInDir(match, dir)
+    return true
+  } catch {
+    return false
   }
 }
 
@@ -95,10 +136,13 @@ function spawnDetached(exe: string, args: string[]): Promise<void> {
 }
 
 /**
- * Open `dir` in VS Code, falling back to the OS file browser when VS Code is
- * not installed. Returns which one actually came up.
+ * Open `dir` in a named installed app when one was requested and resolves
+ * (e.g. "open it in Antigravity"), otherwise VS Code, falling back to the OS
+ * file browser when neither is installed. Returns which one actually came up.
  */
-export async function openInEditor(dir: string): Promise<EditorLaunch> {
+export async function openInEditor(dir: string, preferred?: string | null): Promise<EditorLaunch> {
+  if (await tryOpenNamedEditor(dir, preferred ?? null)) return 'named-app'
+
   const exe = await findVsCode()
   if (exe) {
     try {

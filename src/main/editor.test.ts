@@ -13,12 +13,18 @@ import { EventEmitter } from 'node:events'
 const h = vi.hoisted(() => ({
   openPath: vi.fn(async (_p: string) => ''),
   spawn: vi.fn(),
-  access: vi.fn(async (_p: string) => undefined as unknown)
+  execFile: vi.fn(),
+  access: vi.fn(async (_p: string) => undefined as unknown),
+  readdir: vi.fn(async (_p: string) => [] as string[])
 }))
 
 vi.mock('electron', () => ({ shell: { openPath: h.openPath } }))
-vi.mock('node:child_process', () => ({ spawn: h.spawn }))
-vi.mock('node:fs/promises', () => ({ access: h.access }))
+// execFile/readdir are unused by these tests (only the named-editor handoff
+// path calls them, via appIndex.ts/powershell.ts) but must exist: editor.ts
+// now imports that path, and Vitest's module mock requires every named export
+// it reads.
+vi.mock('node:child_process', () => ({ spawn: h.spawn, execFile: h.execFile }))
+vi.mock('node:fs/promises', () => ({ access: h.access, readdir: h.readdir }))
 
 import { armEditorAutoOpen, disarmEditorAutoOpen, maybeOpenEditorOnFirstWrite, openInEditor } from './editor'
 
