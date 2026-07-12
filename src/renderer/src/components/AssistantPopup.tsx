@@ -12,7 +12,7 @@ import SettingsModal from './SettingsModal'
 import { useUpdater } from '../hooks/useUpdater'
 import LocalAIStatus from './LocalAIStatus'
 import ConversationList from './ConversationList'
-import PlusMenu, { type AttachedFile } from './PlusMenu'
+import PlusMenu, { type AttachedFile, type AttachedPathFile } from './PlusMenu'
 import ConnectAppsModal from './ConnectAppsModal'
 import ThinkingStatus from './ThinkingStatus'
 import Timeline from './Timeline'
@@ -77,6 +77,10 @@ export default function AssistantPopup({
   const [showConnect, setShowConnect] = useState(false)
   // Files attached via the "+" menu, folded into the next message as context.
   const [attachments, setAttachments] = useState<AttachedFile[]>([])
+  // Files picked via the main-process dialog — real paths for tools like
+  // send_email's attachmentPath, kept separate from the text-extraction
+  // attachments above.
+  const [pathAttachments, setPathAttachments] = useState<AttachedPathFile[]>([])
   // Inline "assign a task" composer, opened from the "+" menu.
   const [assignOpen, setAssignOpen] = useState(false)
   const [assignText, setAssignText] = useState('')
@@ -390,11 +394,18 @@ export default function AssistantPopup({
             : `[Attached file: ${f.name} — binary/image, not readable as text]`
         )
         .join('\n\n')
-      const agentMessage = contextBlock ? `${contextBlock}\n\n${trimmed}` : trimmed
+      // Path attachments fold in as a real, absolute file path — a tool (e.g.
+      // send_email) can pass this straight through as attachmentPath.
+      const pathBlock = pathAttachments
+        .map((f) => `[Attached file path: ${f.path}]`)
+        .join('\n')
+      const blocks = [pathBlock, contextBlock].filter(Boolean).join('\n\n')
+      const agentMessage = blocks ? `${blocks}\n\n${trimmed}` : trimmed
 
       captionLockedRef.current = true
       setInputText('')
       setAttachments([])
+      setPathAttachments([])
       // Open a task card for the board/activity panel before the agent emits its
       // reset/step events, so the card carries the user's request as its title.
       beginTask(trimmed, opts?.kind ?? 'chat')
@@ -408,7 +419,7 @@ export default function AssistantPopup({
         captionLockedRef.current = false
       }
     },
-    [voiceState, captionLockedRef, beginTurn, beginTask, attachments, tier]
+    [voiceState, captionLockedRef, beginTurn, beginTask, attachments, pathAttachments, tier]
   )
 
   // Assign a task straight to the board (from the "+" menu). Same agent path as
@@ -448,10 +459,10 @@ export default function AssistantPopup({
   // a blank session, and docked at the bottom of the thread once a chat starts.
   const renderComposer = (variant: 'hero' | 'docked'): JSX.Element => (
     <div className={`ou-composer ${variant}`}>
-      {attachments.length > 0 && (
+      {(attachments.length > 0 || pathAttachments.length > 0) && (
         <div className="ou-attachments">
           {attachments.map((f, i) => (
-            <span className="ou-attach-chip" key={`${f.name}-${i}`}>
+            <span className="ou-attach-chip" key={`text-${f.name}-${i}`}>
               <span className="ou-attach-name">{f.name}</span>
               <button
                 type="button"
@@ -463,11 +474,25 @@ export default function AssistantPopup({
               </button>
             </span>
           ))}
+          {pathAttachments.map((f, i) => (
+            <span className="ou-attach-chip" key={`path-${f.name}-${i}`} title={f.path}>
+              <span className="ou-attach-name">{f.name}</span>
+              <button
+                type="button"
+                className="ou-attach-x"
+                aria-label={`Remove ${f.name}`}
+                onClick={() => setPathAttachments((a) => a.filter((_, j) => j !== i))}
+              >
+                ×
+              </button>
+            </span>
+          ))}
         </div>
       )}
       <div className="input-strip">
         <PlusMenu
           onAttach={(f) => setAttachments((a) => [...a, f])}
+          onAttachPath={(f) => setPathAttachments((a) => [...a, f])}
           onConnect={() => setShowConnect(true)}
           onAssign={() => setAssignOpen(true)}
           disabled={isBusy || isRecording}
