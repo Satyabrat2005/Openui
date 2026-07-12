@@ -40,6 +40,7 @@ import {
 import {
   parseToolCall as parseToolCallCore,
   extractFirstJsonObject,
+  looksLikeAttemptedToolCall,
   StreamGate,
   type ToolCall
 } from './toolCallParser'
@@ -496,6 +497,19 @@ const BUILD_RE =
 /** Per-request step budget for a builder session — matches the autonomous cap. */
 const MAX_BUILDER_TURNS = 20
 
+/** How many times we'll re-prompt a reply that parsed as JSON but wasn't a real tool call. */
+const MAX_MALFORMED_TOOL_CALL_RETRIES = 3
+/** How many times we'll re-prompt a "done" reply that never called a single tool. */
+const MAX_ZERO_TOOL_RETRIES = 2
+
+const MALFORMED_TOOL_CALL_NUDGE =
+  'That was a JSON object but not a tool call — it had no "tool" field, so nothing happened. ' +
+  'Call write_file now with the real file contents. Do not describe the project as JSON; call the tool.'
+
+const ZERO_TOOL_NUDGE =
+  "You replied as if you were done, but you haven't called a single tool yet — nothing has been " +
+  'written. Call write_file now to create the first real file.'
+
 /**
  * System prompt for interactive builder sessions. Mirrors the autonomous coding
  * prompt but is framed for a user who is present: it still works UNATTENDED
@@ -508,6 +522,11 @@ To call a tool, respond with ONLY a raw JSON object and nothing else (no prose, 
 {"tool": "tool_name", "args": {"key": "value"}}
 
 The very first character of a tool-call message MUST be "{". After each tool runs you receive a message starting with "TOOL RESULT". Use it to decide the next step. Call exactly one tool per message.
+
+Example — the first message for a brand-new project must be a real write, e.g.:
+{"tool": "write_file", "args": {"path": "package.json", "content": "{\\n  \\"name\\": \\"my-app\\"\\n}"}}
+Never reply with a JSON object that only DESCRIBES the project (a file list, tech stack, or folder
+structure) instead of calling write_file — that is not a tool call and creates nothing on disk.
 
 Available tools:
 ${codingToolSchemas.map(renderSchema).join('\n')}
@@ -562,27 +581,76 @@ async function runBuilderSession(win: BrowserWindow, tier: Tier, userMessage: st
   const verifyGate = new VerifyGate(profile)
   const systemPrompt = `${BUILDER_SYSTEM_PROMPT}\n\n${profile.promptAddendum}`
 
+  // Zero tool calls ever made is never a legitimate finish for a build session —
+  // BUILD_RE only routes here on an explicit build request, unlike the shared
+  // VerifyGate contract (also used read-only by autonomous.ts), which treats an
+  // untouched tree as "nothing to verify" rather than "nothing was attempted".
+  let toolCallCount = 0
+  let malformedReplies = 0
+  let zeroToolRetries = 0
+
   for (let turn = 0; turn < MAX_BUILDER_TURNS; turn++) {
     const gate = new StreamGate((delta) => emit(win, 'openui:chat:chunk', delta))
     const responseText = await callModel(win, tier, messages, systemPrompt, gate.push)
     messages.push({ role: 'assistant', content: responseText })
 
     const toolCall = parseToolCallCore(responseText, codingNames)
-    gate.finalize(toolCall !== null)
-    if (!toolCall) {
-      // Natural-language reply ⇒ the model thinks it is done. Only let it be done
-      // if it actually ran something against the code as it now stands.
-      if (verifyGate.onFinalReply(responseText) !== 'nudge') return responseText.trim()
+    const malformed = !toolCall && looksLikeAttemptedToolCall(responseText)
+    // Withhold malformed JSON from the UI too — a "project manifest" blob is not
+    // a message the user should ever see; it's a failed tool-call attempt.
+    gate.finalize(toolCall !== null || malformed)
+
+    if (malformed) {
+      if (++malformedReplies > MAX_MALFORMED_TOOL_CALL_RETRIES) {
+        return (
+          "I couldn't start building — the model kept returning a description of the project " +
+          'instead of calling a tool to write files. Try again, or name the tech stack you want used.'
+        )
+      }
       emit(win, 'openui:task:update', {
         id: `b${++taskSeq}`,
-        label: verifyGate.nudgeLabel,
+        label: 'Not a tool call',
         status: 'working',
-        detail: `Summarised without running ${profile.verifiers.join(' / ')} — asking it to verify.`
+        detail: 'Replied with JSON but no "tool" field — asking it to call write_file instead.'
       } satisfies TaskUpdate)
-      messages.push({ role: 'user', content: verifyGate.nudgeMessage() })
+      messages.push({ role: 'user', content: MALFORMED_TOOL_CALL_NUDGE })
       continue
     }
 
+    if (!toolCall) {
+      // Natural-language reply ⇒ the model thinks it is done. Only let it be done
+      // if it actually ran something against the code as it now stands.
+      const decision = verifyGate.onFinalReply(responseText)
+      if (decision === 'nudge') {
+        emit(win, 'openui:task:update', {
+          id: `b${++taskSeq}`,
+          label: verifyGate.nudgeLabel,
+          status: 'working',
+          detail: `Summarised without running ${profile.verifiers.join(' / ')} — asking it to verify.`
+        } satisfies TaskUpdate)
+        messages.push({ role: 'user', content: verifyGate.nudgeMessage() })
+        continue
+      }
+      if (decision === 'accept' && toolCallCount === 0) {
+        if (++zeroToolRetries > MAX_ZERO_TOOL_RETRIES) {
+          return (
+            "I wasn't able to start building this — the model responded without writing any files. " +
+            'Try rephrasing the request, or name the tech stack you want used.'
+          )
+        }
+        emit(win, 'openui:task:update', {
+          id: `b${++taskSeq}`,
+          label: 'Nothing written yet',
+          status: 'working',
+          detail: 'Replied as if done, but no file has been written — asking it to actually build.'
+        } satisfies TaskUpdate)
+        messages.push({ role: 'user', content: ZERO_TOOL_NUDGE })
+        continue
+      }
+      return responseText.trim()
+    }
+
+    toolCallCount++
     const taskId = `b${++taskSeq}`
     const label = describeCodingToolCall(toolCall.tool, toolCall.args)
     emit(win, 'openui:chat:tool', toolCall)
