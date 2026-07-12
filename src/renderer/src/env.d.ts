@@ -399,6 +399,10 @@ export interface OpenUIApi {
   // Google Calendar (dedicated OAuth connect + status).
   googleCalendarStatus: () => Promise<{ connected: boolean }>
   connectGoogleCalendar: () => Promise<{ ok: boolean; output?: string; error?: string }>
+  // Gmail (shares the Calendar OAuth client, own refresh token).
+  gmailStatus: () => Promise<{ connected: boolean }>
+  connectGmail: () => Promise<{ ok: boolean; output?: string; error?: string }>
+  pickAttachment: () => Promise<{ path: string; name: string } | null>
   // Team / Shared Workflows.
   listWorkflows: () => Promise<Workflow[]>
   exportWorkflow: (workflow: Workflow) => Promise<WorkflowResult>

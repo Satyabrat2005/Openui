@@ -1,6 +1,6 @@
 // Must be the first import — see loadEnv.ts for why the ordering matters.
 import './loadEnv'
-import { app, BrowserWindow, Tray, Menu, ipcMain, nativeImage, session, shell, desktopCapturer } from 'electron'
+import { app, BrowserWindow, Tray, Menu, ipcMain, nativeImage, session, shell, desktopCapturer, dialog } from 'electron'
 import { join } from 'path'
 import { registerAgentIPC, registerConversationIPC } from './agent'
 import { startPromptRefiner, stopPromptRefiner } from './promptRefiner'
@@ -12,6 +12,7 @@ import { registerStripeIPC, isPaymentFlowWebContents } from './stripe/checkout'
 import { registerWaitlistIPC } from './waitlist'
 import { closeBrowser } from './tools'
 import { connectGoogleCalendar, isGoogleCalendarConnected } from './googleCalendar'
+import { connectGmail, isGmailConnected } from './gmail'
 import { connectMcpServer, disconnectAll, type McpServerConfig } from './mcp-client'
 import { initDatabase, database } from './database'
 import { registerDeepLinkProtocol, setupDeepLinkHandlers } from './auth/deeplink'
@@ -525,6 +526,21 @@ app.whenReady().then(async () => {
   // ── Google Calendar (dedicated OAuth, see googleCalendar.ts) ───────────────
   ipcMain.handle('openui:google-calendar-status', () => ({ connected: isGoogleCalendarConnected() }))
   ipcMain.handle('openui:connect-google-calendar', () => connectGoogleCalendar())
+
+  // ── Gmail (shares the Calendar OAuth client, own refresh token — see gmail.ts) ──
+  ipcMain.handle('openui:gmail-status', () => ({ connected: isGmailConnected() }))
+  ipcMain.handle('openui:connect-gmail', () => connectGmail())
+
+  // Lets the user pick a real file (e.g. a resume) to attach to an outgoing
+  // email. dialog.showOpenDialog runs in the main process and returns an
+  // absolute path directly, sidestepping the renderer's File-object path
+  // restrictions entirely — same pattern importWorkflow uses (workflows.ts).
+  ipcMain.handle('openui:pick-attachment', async () => {
+    const { canceled, filePaths } = await dialog.showOpenDialog({ properties: ['openFile'] })
+    if (canceled || filePaths.length === 0) return null
+    const path = filePaths[0]
+    return { path, name: path.split(/[\\/]/).pop() ?? path }
+  })
 
   // ── Local RAG knowledge base ──────────────────────────────────────────────
   // Index a local directory of .txt/.pdf files and store embeddings in the

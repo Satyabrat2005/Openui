@@ -471,6 +471,13 @@ const api = {
   connectGoogleCalendar: (): Promise<{ ok: boolean; output?: string; error?: string }> =>
     ipcRenderer.invoke('openui:connect-google-calendar'),
 
+  // ── Gmail (shares the Calendar OAuth client, own refresh token) ─────────────
+  gmailStatus: (): Promise<{ connected: boolean }> => ipcRenderer.invoke('openui:gmail-status'),
+  connectGmail: (): Promise<{ ok: boolean; output?: string; error?: string }> =>
+    ipcRenderer.invoke('openui:connect-gmail'),
+  pickAttachment: (): Promise<{ path: string; name: string } | null> =>
+    ipcRenderer.invoke('openui:pick-attachment'),
+
   // ── Team / Shared Workflows ───────────────────────────────────────────────────
   listWorkflows: (): Promise<Workflow[]> =>
     ipcRenderer.invoke('openui:workflow:list'),
