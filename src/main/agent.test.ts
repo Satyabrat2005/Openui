@@ -278,6 +278,34 @@ describe('handleChat — plan approval gate', () => {
     expect(chunks().toLowerCase()).toContain('cancelled')
     expect(sent('openui:chat:done')).toBe(true)
   })
+
+  // Regression: if the renderer never answers the plan prompt (window closed
+  // while the modal is open, renderer crash/reload, dropped IPC), the backstop
+  // timeout must auto-cancel the turn instead of hanging forever. Only fake
+  // setTimeout so the test harness's setImmediate-based `tick()` still runs.
+  it('auto-cancels the turn if the plan prompt is never answered', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      h.state.responses = ['{"tool":"open_app","args":{}}']
+      const pending = handleChat(win, 'clean my desktop', 'free')
+
+      await tick()
+      await tick()
+      expect(sent('openui:plan:request')).toBe(true)
+
+      // User never responds — advance past the backstop timeout (150s).
+      vi.advanceTimersByTime(200_000)
+      await pending
+
+      expect(sent('openui:plan:timeout')).toBe(true)
+      expect(h.executeTool).not.toHaveBeenCalled()
+      expect(h.ollamaChat).not.toHaveBeenCalled()
+      expect(chunks().toLowerCase()).toContain('cancelled')
+      expect(sent('openui:chat:done')).toBe(true)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })
 
 // ── False-completion guard: planned OS run ────────────────────────────────────

@@ -5,6 +5,42 @@ the newest work lands under **Unreleased** until the next version bump.
 
 ## [Unreleased]
 
+### Fixed
+
+- **The plan-approval prompt could hang a chat turn forever.** `waitForPlanApproval`
+  in `agent.ts` awaited the renderer's `openui:plan:response` with no backstop
+  timeout, unlike `waitForHitlApproval`. If that response never arrived — the
+  window was closed while the plan modal was open, the renderer crashed/reloaded,
+  the modal was dismissed, or the IPC message was dropped — the turn's Promise
+  never settled: no `openui:chat:done` fired, the UI stayed stuck in "working,"
+  and the pending resolver leaked. Since `approve-plan` is the default autonomy
+  level, this sat on the primary path. Added the same 150s backstop the HITL gate
+  uses; on timeout the plan auto-cancels and emits `openui:plan:timeout`.
+- **The interactive "build me an app" session ran on the wrong model.**
+  `runBuilderSession` (`agent.ts`) — the feature behind any "build/scaffold/create
+  a website/app/component" chat request — called `callModel` without
+  `{ coding: true }`, so it silently ran on the general chat model instead of the
+  code-tuned model the autonomous coding loop already uses. Reproduced live:
+  asking it to build a Pomodoro timer produced JSX/JS with mismatched braces,
+  stray escaped quotes, and undefined variables. Now passes `{ coding: true }`,
+  matching `autonomous.ts`.
+
+### Security
+
+- **MCP tools now honour the per-tool approval gate.** The MCP fallback ran
+  *after* the executeTool HITL gate, and MCP tool names aren't in
+  `DESTRUCTIVE_TOOLS`, so an MCP tool (a stdio server can run arbitrary local
+  actions) executed with no confirmation in every autonomy mode. It is now gated
+  like built-in state-changing tools: outside autopilot (full-auto / an approved
+  plan) it requires one human confirmation before running.
+- **Narrowed the read trust boundary (`pathSafety.ts`).** Reads stay unconfined
+  within the user's own space (project/data files on other drives keep working),
+  but a read of a path *outside* home is now refused if it targets a system-level
+  secret store (`SYSTEM_SECRET_PATH_RE`: Windows registry hives, `/etc/shadow`,
+  private TLS/SSH keys, the macOS local directory DB) or another user's home
+  directory — closing an information-disclosure surface without breaking
+  legitimate cross-drive reads.
+
 ## v7.1.1 — 2026-07-12
 
 A security fix plus a large expansion of the autonomous coding agent:
