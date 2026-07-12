@@ -2,10 +2,15 @@ import { useEffect, useRef, useState } from 'react'
 
 /**
  * PlusMenu (#1) — the "+" affordance next to the composer. Opens a small menu
- * with three actions:
+ * with four actions:
  *   • Attach a file — reads a local file in the renderer and hands its name +
  *     (for text-like files) contents back to the composer as message context.
  *     There is no agent file-upload channel, so images attach by name only.
+ *   • Attach a file to send — picks a file via the main-process file dialog
+ *     (dialog.showOpenDialog), which returns a real absolute path rather than
+ *     a renderer File object. Kept separate from the flow above: this path is
+ *     for files a TOOL needs on disk (e.g. send_email's attachmentPath, a
+ *     resume), not for folding contents into the prompt as text.
  *   • Connect an app — opens the Connect-apps (MCP) panel (#2).
  *   • Assign a task — routes the request straight to the task board (#4) instead
  *     of the chat thread. Execution still goes through the agent (there is one
@@ -17,16 +22,24 @@ export interface AttachedFile {
   text: string | null
 }
 
+/** A file picked via the main-process dialog — a real path a tool can use. */
+export interface AttachedPathFile {
+  path: string
+  name: string
+}
+
 const TEXT_EXT = /\.(txt|md|markdown|json|ya?ml|csv|log|js|jsx|ts|tsx|py|rb|go|rs|java|c|h|cpp|css|html?|xml|sh|toml|ini)$/i
 const MAX_TEXT_CHARS = 20000
 
 export default function PlusMenu({
   onAttach,
+  onAttachPath,
   onConnect,
   onAssign,
   disabled
 }: {
   onAttach: (file: AttachedFile) => void
+  onAttachPath: (file: AttachedPathFile) => void
   onConnect: () => void
   onAssign: () => void
   disabled?: boolean
@@ -67,6 +80,12 @@ export default function PlusMenu({
     onAttach({ name: file.name, text })
   }
 
+  const handlePickPath = async (): Promise<void> => {
+    setOpen(false)
+    const picked = await window.openui.pickAttachment()
+    if (picked) onAttachPath(picked)
+  }
+
   return (
     <div className="ou-plus" ref={rootRef}>
       <button
@@ -101,6 +120,22 @@ export default function PlusMenu({
             <div className="ou-plus-item-text">
               <span className="ou-plus-item-title">Attach a file</span>
               <span className="ou-plus-item-sub">README, docs, images</span>
+            </div>
+          </button>
+
+          <button
+            type="button"
+            role="menuitem"
+            className="ou-plus-item"
+            onClick={() => void handlePickPath()}
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+              <path d="M14 2v6h6M9 15l2 2 4-4" />
+            </svg>
+            <div className="ou-plus-item-text">
+              <span className="ou-plus-item-title">Attach a file to send</span>
+              <span className="ou-plus-item-sub">Resume, PDF — for email or tools</span>
             </div>
           </button>
 

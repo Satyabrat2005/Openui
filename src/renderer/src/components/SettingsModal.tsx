@@ -59,6 +59,12 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
   const [gcalConnected, setGcalConnected] = useState(false)
   const [gcalConnecting, setGcalConnecting] = useState(false)
   const [gcalMessage, setGcalMessage] = useState('')
+  // Gmail — shares the Google Calendar OAuth client id/secret above (one
+  // Google Cloud client, multiple scopes) but has its own refresh token and
+  // Connect button, since it's a separate OAuth grant.
+  const [gmailConnected, setGmailConnected] = useState(false)
+  const [gmailConnecting, setGmailConnecting] = useState(false)
+  const [gmailMessage, setGmailMessage] = useState('')
 
   useEffect(() => {
     let cancelled = false
@@ -131,6 +137,13 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
       .googleCalendarStatus()
       .then((s) => {
         if (!cancelled) setGcalConnected(Boolean(s?.connected))
+      })
+      .catch(() => {})
+
+    window.openui
+      .gmailStatus()
+      .then((s) => {
+        if (!cancelled) setGmailConnected(Boolean(s?.connected))
       })
       .catch(() => {})
 
@@ -218,6 +231,25 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
       setGcalMessage('Connection failed.')
     } finally {
       setGcalConnecting(false)
+    }
+  }
+
+  const connectGmail = async (): Promise<void> => {
+    if (gmailConnecting) return
+    setGmailConnecting(true)
+    setGmailMessage('Waiting for Google sign-in in your browser…')
+    try {
+      // Same shared client id/secret as Google Calendar — persist the latest
+      // values first so the main-process flow can read them.
+      await window.openui.setSetting('google_oauth_client_id', gcalClientId.trim())
+      await window.openui.setSetting('google_oauth_client_secret', gcalClientSecret.trim())
+      const result = await window.openui.connectGmail()
+      setGmailConnected(result.ok)
+      setGmailMessage(result.ok ? 'Connected.' : result.error || 'Connection failed.')
+    } catch {
+      setGmailMessage('Connection failed.')
+    } finally {
+      setGmailConnecting(false)
     }
   }
 
@@ -610,6 +642,49 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
             </button>
             {gcalMessage && (
               <span style={{ fontSize: 11, color: '#8e8e93', lineHeight: 1.4 }}>{gcalMessage}</span>
+            )}
+          </div>
+        </div>
+
+        {/* Integrations: Gmail (shares the Calendar OAuth client above, own refresh token) */}
+        <div style={{ borderTop: '1px solid rgba(0,0,0,0.06)', paddingTop: 14, marginTop: 14 }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <div style={{ fontSize: 13.5, fontWeight: 600, color: '#1c1c1e' }}>Gmail</div>
+            <span
+              style={{
+                fontSize: 11,
+                color: gmailConnected ? '#34c759' : '#8e8e93',
+                fontWeight: 500
+              }}
+            >
+              {gmailConnected ? 'Connected' : 'Not connected'}
+            </span>
+          </div>
+          <div style={{ fontSize: 12, color: '#8e8e93', lineHeight: 1.5, marginTop: 3, marginBottom: 8 }}>
+            Lets OpenUI send email and follow up on threads. Uses the same Google OAuth Client ID
+            and Secret entered above for Google Calendar (enable the Gmail API on that same
+            project), just click Connect.
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <button
+              type="button"
+              onClick={() => void connectGmail()}
+              disabled={gmailConnecting || !gcalClientId.trim() || !gcalClientSecret.trim()}
+              style={{
+                fontSize: 12.5,
+                fontWeight: 500,
+                color: '#fff',
+                background: gmailConnecting ? '#8e8e93' : '#0a84ff',
+                border: 'none',
+                borderRadius: 8,
+                padding: '7px 14px',
+                cursor: gmailConnecting ? 'default' : 'pointer'
+              }}
+            >
+              {gmailConnecting ? 'Connecting…' : gmailConnected ? 'Reconnect' : 'Connect'}
+            </button>
+            {gmailMessage && (
+              <span style={{ fontSize: 11, color: '#8e8e93', lineHeight: 1.4 }}>{gmailMessage}</span>
             )}
           </div>
         </div>

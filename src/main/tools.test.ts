@@ -22,6 +22,7 @@ vi.mock('./telemetry/posthog', () => ({ trackEvent: () => {} }))
 import {
   executeTool,
   parseDuckDuckGoResults,
+  scoreContactCandidates,
   STATE_CHANGING_TOOLS,
   DESTRUCTIVE_TOOLS,
   TIER_TOOL_REQUIREMENTS
@@ -261,6 +262,40 @@ describe('send_whatsapp_message', () => {
     const r = await executeTool('send_whatsapp_message', { contact: 'Ashu' }, { tier: 'free', bypassHitl: true })
     expect(r).toMatchObject({ ok: false })
     expect((r as { error: string }).error).toMatch(/message/i)
+  })
+})
+
+// ── scoreContactCandidates — OCR candidate scoring for the two-phase WhatsApp
+// contact resolution (fail-closed: only a clearly-best, well-separated match
+// auto-resolves; anything else surfaces every plausible candidate instead) ──
+describe('scoreContactCandidates', () => {
+  it('resolves an exact (case/spacing-insensitive) match outright', () => {
+    const r = scoreContactCandidates('ashu', ['Ashu', 'Ashutosh Kumar', 'Random Group'])
+    expect(r.resolved).toBe('Ashu')
+  })
+
+  it('resolves a single confident match that is well clear of the runner-up', () => {
+    const r = scoreContactCandidates('ashu kumar', ['Ashu Kumar Verma', 'Unrelated Chat'])
+    expect(r.resolved).toBe('Ashu Kumar Verma')
+  })
+
+  it('refuses to guess between two similarly-plausible candidates (fails closed)', () => {
+    const r = scoreContactCandidates('john', ['John Smith', 'John Doe', 'Weekend Trip'])
+    expect(r.resolved).toBeNull()
+    expect(r.candidates).toContain('John Smith')
+    expect(r.candidates).toContain('John Doe')
+  })
+
+  it('returns no resolution and no candidates when nothing on screen matches', () => {
+    const r = scoreContactCandidates('zzznonexistent', ['Family Group', 'Work Chat', '10:32 AM'])
+    expect(r.resolved).toBeNull()
+    expect(r.candidates).toEqual([])
+  })
+
+  it('caps candidates at 5, best-scoring first', () => {
+    const lines = ['Ashu A', 'Ashu B', 'Ashu C', 'Ashu D', 'Ashu E', 'Ashu F', 'Ashu G']
+    const r = scoreContactCandidates('ashu', lines)
+    expect(r.candidates.length).toBe(5)
   })
 })
 

@@ -82,6 +82,12 @@ export interface HitlRequestPayload {
   args: Record<string, unknown>
   /** Human-readable label from describeToolCall, e.g. "Open Safari" */
   label: string
+  /**
+   * Present only for a 'choice' request (e.g. "which WhatsApp chat did you
+   * mean?") — a candidate picker instead of the plain Allow/Deny UI. Always
+   * non-empty when set.
+   */
+  choices?: string[]
 }
 
 /** One step of an approved plan, tracked as a checklist row. */
@@ -399,6 +405,10 @@ export interface OpenUIApi {
   // Google Calendar (dedicated OAuth connect + status).
   googleCalendarStatus: () => Promise<{ connected: boolean }>
   connectGoogleCalendar: () => Promise<{ ok: boolean; output?: string; error?: string }>
+  // Gmail (shares the Calendar OAuth client, own refresh token).
+  gmailStatus: () => Promise<{ connected: boolean }>
+  connectGmail: () => Promise<{ ok: boolean; output?: string; error?: string }>
+  pickAttachment: () => Promise<{ path: string; name: string } | null>
   // Team / Shared Workflows.
   listWorkflows: () => Promise<Workflow[]>
   exportWorkflow: (workflow: Workflow) => Promise<WorkflowResult>
@@ -407,6 +417,9 @@ export interface OpenUIApi {
   // HITL (Human-in-the-Loop) confirmation.
   onHitlRequest: (cb: (payload: HitlRequestPayload) => void) => () => void
   respondHitl: (id: string, approved: boolean) => void
+  // HITL candidate-picker response — a separate channel from the boolean
+  // Allow/Deny above, used only when HitlRequestPayload.choices is present.
+  respondHitlChoice: (id: string, selected: string | null) => void
   onHitlTimeout: (cb: (payload: { id: string }) => void) => () => void
   // Plan approval (approve the whole plan once).
   onPlanRequest: (cb: (payload: PlanRequestPayload) => void) => () => void

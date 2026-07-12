@@ -471,6 +471,13 @@ const api = {
   connectGoogleCalendar: (): Promise<{ ok: boolean; output?: string; error?: string }> =>
     ipcRenderer.invoke('openui:connect-google-calendar'),
 
+  // ── Gmail (shares the Calendar OAuth client, own refresh token) ─────────────
+  gmailStatus: (): Promise<{ connected: boolean }> => ipcRenderer.invoke('openui:gmail-status'),
+  connectGmail: (): Promise<{ ok: boolean; output?: string; error?: string }> =>
+    ipcRenderer.invoke('openui:connect-gmail'),
+  pickAttachment: (): Promise<{ path: string; name: string } | null> =>
+    ipcRenderer.invoke('openui:pick-attachment'),
+
   // ── Team / Shared Workflows ───────────────────────────────────────────────────
   listWorkflows: (): Promise<Workflow[]> =>
     ipcRenderer.invoke('openui:workflow:list'),
@@ -496,6 +503,13 @@ const api = {
 
   respondHitl: (id: string, approved: boolean): void => {
     ipcRenderer.send('openui:hitl:response', { id, approved })
+  },
+
+  // Response for a 'choice' HITL request (HitlRequestPayload.choices present)
+  // — a separate channel from respondHitl above so the candidate-picker flow
+  // can never cross-wire with the boolean Allow/Deny flow.
+  respondHitlChoice: (id: string, selected: string | null): void => {
+    ipcRenderer.send('openui:hitl:choice-response', { id, selected })
   },
 
   // Main emits openui:hitl:timeout when its backstop auto-denied a request the

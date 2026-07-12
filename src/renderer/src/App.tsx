@@ -267,7 +267,15 @@ function AppShell(): JSX.Element {
               setHitlRequest(null)
             }}
             onDeny={() => {
-              window.openui.respondHitl(hitlRequest.id, false)
+              if (hitlRequest.choices && hitlRequest.choices.length > 0) {
+                window.openui.respondHitlChoice(hitlRequest.id, null)
+              } else {
+                window.openui.respondHitl(hitlRequest.id, false)
+              }
+              setHitlRequest(null)
+            }}
+            onSelect={(choice) => {
+              window.openui.respondHitlChoice(hitlRequest.id, choice)
               setHitlRequest(null)
             }}
           />

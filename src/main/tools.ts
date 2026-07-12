@@ -29,7 +29,9 @@ import { homedir } from 'node:os'
 import { SENSITIVE_PATH_RE, resolveSafePath } from './fs/pathSafety'
 import { app, desktopCapturer, clipboard, shell, BrowserWindow } from 'electron'
 import { checkAccessibility, checkScreenRecording, type PermissionTarget } from './permissions'
-import { resolveApp, type InstalledApp } from './appResolver'
+import { resolveApp, scoreAppName, normalizeAppName, type InstalledApp } from './appResolver'
+import { runPowerShell, runPowerShellScript } from './powershell'
+import { enumerateWindowsApps, enumerateMacApps, launchWindowsApp } from './appIndex'
 import { githubToolSchemas, githubRegistry } from './github'
 import { figmaToolSchemas, figmaRegistry } from './figma'
 import { designToolSchemas, designRegistry } from './designFlow'
@@ -41,6 +43,7 @@ import {
   googleListToday,
   normalizeAttendees
 } from './googleCalendar'
+import { isGmailConnected, sendGmailMessage, findEmailThread as gmailFindThread } from './gmail'
 import { createHash } from 'node:crypto'
 import { callChatProxyText } from './edgeFunctions'
 import { trackEvent } from './telemetry/posthog'
@@ -87,18 +90,26 @@ export interface ToolResult {
   /**
    * Set when the tool refused to act until the user gives a one-time,
    * per-action confirmation that NO autonomy mode can bypass: per-site browser
-   * consent, and sensitive actions (payments, refunds, password changes,
-   * account deletion, sending messages/emails). ok is always false alongside
-   * this, so any caller that ignores the field fails CLOSED (subagents and
+   * consent, sensitive actions (payments, refunds, password changes, account
+   * deletion, sending messages/emails), and ambiguous-target choices (e.g.
+   * "which WhatsApp chat did you mean?"). ok is always false alongside this,
+   * so any caller that ignores the field fails CLOSED (subagents and
    * autonomous runs simply see a denial). The interactive agent loop upgrades
    * it into a HitlModal prompt and re-runs the tool after the human click.
    */
   needsConfirmation?: {
-    kind: 'site-consent' | 'sensitive-action'
+    kind: 'site-consent' | 'sensitive-action' | 'choice'
     /** Human-readable question for the confirmation dialog. */
     label: string
     /** For site-consent: the origin to persist a grant for on approval. */
     origin?: string
+    /**
+     * For kind 'choice': the candidate options the user picks from. Always
+     * non-empty when present — a single-candidate fallback (e.g. the literal
+     * name the caller asked for) still requires an explicit click, never an
+     * automatic pick.
+     */
+    choices?: string[]
   }
 }
 
@@ -161,6 +172,9 @@ export const STATE_CHANGING_TOOLS = new Set<string>([
   // never persists a site grant), so it is intentionally NOT in DESTRUCTIVE_TOOLS.
   'research_web',
   'control_calendar',
+  // Sends an email to another person — outward-facing and irreversible, so it
+  // is ALSO in DESTRUCTIVE_TOOLS below (always confirms, never runs on autopilot).
+  'send_email',
   // Filesystem + clipboard mutations. Reads (list_directory, read_file,
   // read_clipboard) are intentionally absent — they observe, never change state.
   'write_file',
@@ -210,6 +224,9 @@ export const DESTRUCTIVE_TOOLS = new Set<string>([
   // Sends a WhatsApp message to another person — outward-facing and cannot be
   // unsent, so it always confirms and never runs under any autonomy mode.
   'send_whatsapp_message',
+  // Sends an email to another person — outward-facing and cannot be unsent,
+  // so it always confirms and never runs under any autonomy mode.
+  'send_email',
   'open_pull_request',
   'merge_pr',
   // Executes code — must be confirmed even under autopilot.
@@ -302,76 +319,9 @@ async function runAppleScript(script: string): Promise<string> {
 }
 
 // ── Windows helpers (PowerShell) ──────────────────────────────────────────────
-
-/**
- * Absolute path to the Windows PowerShell binary.
- *
- * SECURITY: invoking a bare "powershell.exe" lets Windows' CreateProcess search
- * order resolve the name, which — depending on process configuration — can
- * include the current working directory. A planted powershell.exe in the CWD
- * would then run instead of the real interpreter (binary-planting / search-order
- * hijack → code execution). Resolving the full path under %SystemRoot% removes
- * that ambiguity.
- */
-function powerShellPath(): string {
-  const root = process.env.SystemRoot || process.env.windir || 'C:\\Windows'
-  return `${root}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`
-}
-
-// Hard wall-clock bound on every PowerShell child (also guards against a hung
-// Outlook COM call) plus a 1 MiB stdout cap.
-const PS_TIMEOUT_MS = 15_000
-const PS_MAX_BUFFER = 1024 * 1024
-
-/**
- * Spawn PowerShell with a fixed argv and an optional set of EXTRA ENVIRONMENT
- * VARIABLES.
- *
- * SECURITY — parameterization, not concatenation. Untrusted values (app names,
- * search queries, calendar fields) are passed ONLY through the child's
- * environment and read inside the script via `$env:NAME`. They never appear in
- * the command/script text, so they can never be re-parsed as PowerShell code,
- * regardless of their contents. This is the PowerShell equivalent of a
- * parameterized query and replaces all string-building of dynamic values.
- */
-function runPowerShellArgs(
-  args: string[],
-  extraEnv?: Record<string, string>
-): Promise<{ stdout: string }> {
-  return execFileAsync(powerShellPath(), ['-NoProfile', '-NonInteractive', ...args], {
-    maxBuffer: PS_MAX_BUFFER,
-    timeout: PS_TIMEOUT_MS,
-    windowsHide: true,
-    env: extraEnv ? { ...process.env, ...extraEnv } : process.env
-  })
-}
-
-/**
- * Execute a single-line PowerShell command via -Command and return stdout.
- * The `command` text MUST be static; supply any untrusted data through
- * `extraEnv` and reference it as `$env:NAME` inside the command.
- */
-async function runPowerShell(command: string, extraEnv?: Record<string, string>): Promise<string> {
-  const { stdout } = await runPowerShellArgs(['-Command', command], extraEnv)
-  return stdout.trim()
-}
-
-/**
- * Execute a multi-line PowerShell script via -EncodedCommand (base64-encoded
- * UTF-16LE). This sidesteps all command-line quoting issues — the script text
- * is decoded verbatim by PowerShell with no shell interpretation. As with
- * runPowerShell, untrusted data MUST be supplied via `extraEnv` and read as
- * `$env:NAME`; never interpolate it into the script text.
- */
-async function runPowerShellScript(
-  script: string,
-  extraEnv?: Record<string, string>
-): Promise<string> {
-  // PowerShell -EncodedCommand accepts base64(UTF-16LE).
-  const encoded = Buffer.from(script, 'utf16le').toString('base64')
-  const { stdout } = await runPowerShellArgs(['-EncodedCommand', encoded], extraEnv)
-  return stdout.trim()
-}
+// powerShellPath/runPowerShellArgs/runPowerShell/runPowerShellScript now live in
+// ./powershell so appIndex.ts can shell out to PowerShell without importing this
+// whole module; imported below alongside the other top-of-file imports.
 
 // ── common helpers ────────────────────────────────────────────────────────────
 
@@ -531,135 +481,10 @@ try {
 }
 `.trim()
 
-/**
- * Static index script for the OpenUI app resolver: enumerate every installed app
- * the user could open, as JSON. Two sources cover the vast majority of apps:
- *   • Get-StartApps — Store/UWP apps + registered desktop apps, each with an
- *     AppUserModelID we can launch via shell:AppsFolder.
- *   • Start-menu .lnk shortcuts — path-launchable, and a safety net for anything
- *     Get-StartApps misses.
- * Takes NO user input, so nothing untrusted is ever spliced into the script.
- */
-const WIN_LIST_APPS_SCRIPT = `
-$ErrorActionPreference = 'SilentlyContinue'
-$ProgressPreference = 'SilentlyContinue'
-$apps = New-Object System.Collections.ArrayList
-foreach ($a in (Get-StartApps)) {
-  if ($a.Name) {
-    [void]$apps.Add([pscustomobject]@{ name = [string]$a.Name; appId = [string]$a.AppID; path = ''; source = 'startapps' })
-  }
-}
-$roots = @(
-  (Join-Path $env:ProgramData 'Microsoft\\Windows\\Start Menu\\Programs'),
-  (Join-Path $env:AppData 'Microsoft\\Windows\\Start Menu\\Programs')
-)
-foreach ($root in $roots) {
-  if (Test-Path -LiteralPath $root) {
-    Get-ChildItem -LiteralPath $root -Recurse -Filter *.lnk -ErrorAction SilentlyContinue | ForEach-Object {
-      [void]$apps.Add([pscustomobject]@{ name = [string]$_.BaseName; appId = ''; path = [string]$_.FullName; source = 'shortcut' })
-    }
-  }
-}
-# @(...) guarantees a JSON array even when only one app is found.
-ConvertTo-Json -InputObject @($apps) -Compress -Depth 3
-`.trim()
-
-/** Launch a resolved app by its Start-menu AppID (Store/UWP + registered desktop). */
-const WIN_LAUNCH_APPID_SCRIPT = `
-$ErrorActionPreference = 'Stop'
-Start-Process ('shell:AppsFolder\\' + $env:OPENUI_LAUNCH_TARGET)
-`.trim()
-
-/** Launch a resolved app by a full path to its .exe/.lnk. */
-const WIN_LAUNCH_PATH_SCRIPT = `
-$ErrorActionPreference = 'Stop'
-Start-Process -FilePath $env:OPENUI_LAUNCH_TARGET
-`.trim()
-
-// In-memory index of installed apps. Enumerating shells out to PowerShell (a few
-// hundred ms), so a short TTL cache keeps rapid "open X / open Y" sequences snappy
-// without going stale as the user installs/uninstalls apps across a session.
-let _winAppCache: { at: number; apps: InstalledApp[] } | null = null
-const WIN_APP_CACHE_TTL_MS = 60_000
-
-/** Enumerate installed Windows apps (cached), for the resolver + list_apps. */
-async function enumerateWindowsApps(): Promise<InstalledApp[]> {
-  if (_winAppCache && Date.now() - _winAppCache.at < WIN_APP_CACHE_TTL_MS) {
-    return _winAppCache.apps
-  }
-  const out = await runPowerShellScript(WIN_LIST_APPS_SCRIPT)
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(out || '[]')
-  } catch {
-    parsed = []
-  }
-  const arr = Array.isArray(parsed) ? parsed : parsed ? [parsed] : []
-  const apps: InstalledApp[] = []
-  for (const raw of arr) {
-    const a = raw as Record<string, unknown>
-    const name = typeof a?.name === 'string' ? a.name.trim() : ''
-    if (!name) continue
-    apps.push({
-      name,
-      appId: typeof a.appId === 'string' && a.appId ? a.appId : undefined,
-      path: typeof a.path === 'string' && a.path ? a.path : undefined,
-      source: a.source === 'shortcut' ? 'shortcut' : 'startapps'
-    })
-  }
-  _winAppCache = { at: Date.now(), apps }
-  return apps
-}
-
-// Standard locations for .app bundles. readdir (not `mdfind`) so this works
-// even when Spotlight is disabled or still indexing.
-const MAC_APP_DIRS = [
-  '/Applications',
-  '/Applications/Utilities',
-  '/System/Applications',
-  '/System/Applications/Utilities',
-  joinPath(homedir(), 'Applications')
-]
-
-let _macAppCache: { at: number; apps: InstalledApp[] } | null = null
-const MAC_APP_CACHE_TTL_MS = 60_000
-
-/** Enumerate installed macOS apps (cached), for the resolver + list_apps. */
-async function enumerateMacApps(): Promise<InstalledApp[]> {
-  if (_macAppCache && Date.now() - _macAppCache.at < MAC_APP_CACHE_TTL_MS) {
-    return _macAppCache.apps
-  }
-  const apps: InstalledApp[] = []
-  for (const dir of MAC_APP_DIRS) {
-    let entries: string[]
-    try {
-      entries = await readdir(dir)
-    } catch {
-      continue
-    }
-    for (const entry of entries) {
-      if (!entry.endsWith('.app')) continue
-      apps.push({
-        name: entry.slice(0, -'.app'.length),
-        path: joinPath(dir, entry),
-        source: 'app-bundle'
-      })
-    }
-  }
-  _macAppCache = { at: Date.now(), apps }
-  return apps
-}
-
-/** Launch a resolved app by AppID (preferred) or path. Throws on failure. */
-async function launchWindowsApp(match: InstalledApp): Promise<void> {
-  if (match.appId) {
-    await runPowerShellScript(WIN_LAUNCH_APPID_SCRIPT, { OPENUI_LAUNCH_TARGET: match.appId })
-  } else if (match.path) {
-    await runPowerShellScript(WIN_LAUNCH_PATH_SCRIPT, { OPENUI_LAUNCH_TARGET: match.path })
-  } else {
-    throw new Error(`No launch target for "${match.name}".`)
-  }
-}
+// WIN_LIST_APPS_SCRIPT/enumerateWindowsApps/enumerateMacApps/launchWindowsApp now
+// live in ./appIndex (imported above) so editor.ts's named-editor handoff can
+// reuse the same installed-app index and launch path without importing this
+// whole module.
 
 /**
  * List the apps installed on this machine (read-only). Lets the model discover
@@ -1000,7 +825,7 @@ async function open_folder_in_editor(args: Record<string, unknown>): Promise<Too
       }
     } else if (!IS_WIN) {
       try {
-        await execFileAsync('code', [dir], { timeout: 5_000, maxBuffer: PS_MAX_BUFFER })
+        await execFileAsync('code', [dir], { timeout: 5_000, maxBuffer: AS_MAX_BUFFER })
         return { ok: true, output: `Opened ${dir} in Visual Studio Code.` }
       } catch {
         // Fall back to the file manager below.
@@ -1037,17 +862,12 @@ function whatsappTimings(): { launchMs: number; searchMs: number; filterMs: numb
 }
 
 /**
- * Launch/focus WhatsApp and open the top chat matching `contact` using ONLY the
- * keyboard (no screen coordinates). Shared by open_whatsapp_chat and
- * send_whatsapp_message so both resolve a chat the exact same way. Callers must
- * have already passed checkAccessibility() and loaded `nut`. On return the chat
- * is open and WhatsApp Desktop has placed the cursor in the message composer.
+ * Launch or focus WhatsApp Desktop. Reuses the Start-menu resolver on Windows
+ * so the Store/UWP app is found the same way `open_app WhatsApp` finds it.
+ * Callers must have already passed checkAccessibility().
  */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function openWhatsAppChatViaKeyboard(contact: string, nut: any): Promise<void> {
-  const { launchMs, searchMs, filterMs } = whatsappTimings()
-  // 1) Launch or focus WhatsApp. Reuse the Start-menu resolver on Windows so the
-  //    Store/UWP app is found the same way `open_app WhatsApp` finds it.
+async function launchAndFocusWhatsApp(): Promise<void> {
+  const { launchMs } = whatsappTimings()
   if (IS_MAC) {
     await runAppleScript('tell application "WhatsApp" to activate')
   } else if (IS_WIN) {
@@ -1059,24 +879,133 @@ async function openWhatsAppChatViaKeyboard(contact: string, nut: any): Promise<v
   // just refocuses). Keyboard input goes to whatever is focused, so this wait is
   // what makes the difference between typing into WhatsApp vs. into thin air.
   await delay(launchMs)
+}
 
-  // 2) Focus the chat-search box. Escape first clears any open menu/compose
-  //    state so Ctrl+F reliably lands on the top-level "Search" field.
+/**
+ * Focus WhatsApp's chat-search box (Escape first clears any open menu/compose
+ * state so Ctrl+F reliably lands on the top-level "Search" field) and type
+ * `query`, leaving the results list filtered but nothing selected yet.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function searchWhatsAppFor(query: string, nut: any): Promise<void> {
+  const { searchMs, filterMs } = whatsappTimings()
   await tapKeys(nut, nut.Key.Escape)
   await delay(200)
   await tapKeys(nut, nut.Key.LeftControl, nut.Key.F)
   await delay(searchMs)
-
-  // 3) Clear any residual query, then type the contact name.
   await tapKeys(nut, nut.Key.LeftControl, nut.Key.A)
   await tapKeys(nut, nut.Key.Delete)
-  await nut.keyboard.type(contact)
+  await nut.keyboard.type(query)
   await delay(filterMs) // let the results list filter down
+}
 
-  // 4) Open the top match: select the first result, then Enter.
+/** Select and open the top result of an already-filtered WhatsApp search. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function openTopWhatsAppSearchResult(nut: any): Promise<void> {
   await tapKeys(nut, nut.Key.Down)
   await delay(200)
   await tapKeys(nut, nut.Key.Enter)
+}
+
+/**
+ * Launch/focus WhatsApp and open the top chat matching `contact` using ONLY the
+ * keyboard (no screen coordinates), with zero verification of what was found —
+ * used by open_whatsapp_chat, where a wrong guess is low-stakes and reversible
+ * (the user just sees the wrong chat open, nothing is sent). send_whatsapp_message
+ * does NOT use this — see resolveWhatsAppContact for its verify-before-selecting
+ * flow. Callers must have already passed checkAccessibility() and loaded `nut`.
+ * On return the chat is open and WhatsApp Desktop has placed the cursor in the
+ * message composer.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function openWhatsAppChatViaKeyboard(contact: string, nut: any): Promise<void> {
+  await launchAndFocusWhatsApp()
+  await searchWhatsAppFor(contact, nut)
+  await openTopWhatsAppSearchResult(nut)
+}
+
+/**
+ * Screenshot the screen and OCR it (tesseract.js, loaded lazily — mirrors
+ * read_screen's local-OCR path) to read back the chat names WhatsApp's search
+ * is currently showing. Returns plausible name-like lines only (2–60 chars,
+ * contains a letter) — this is deliberately permissive; scoreContactCandidates
+ * does the real filtering by relevance to the query.
+ */
+async function ocrWhatsAppCandidates(): Promise<string[]> {
+  const { pngBuffer } = await captureScreenPng()
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const Tesseract = requireFirst(['tesseract.js']) as any
+  const { data } = (await Tesseract.recognize(pngBuffer, 'eng', {
+    logger: () => {} // suppress progress events
+  })) as { data: { text: string } }
+
+  const seen = new Set<string>()
+  const candidates: string[] = []
+  for (const raw of data.text.split(/\r?\n/)) {
+    const line = raw.trim()
+    if (line.length < 2 || line.length > 60 || !/[a-zA-Z]/.test(line)) continue
+    const key = normalizeAppName(line)
+    if (!key || seen.has(key)) continue
+    seen.add(key)
+    candidates.push(line)
+  }
+  return candidates
+}
+
+interface ContactResolution {
+  /** Set only when a single candidate is confidently the best match. */
+  resolved: string | null
+  /** Ranked OCR candidates (best first, capped at 5), for the fail-closed picker. */
+  candidates: string[]
+}
+
+/**
+ * Score OCR'd on-screen lines against the requested contact using the same
+ * fuzzy engine open_app uses to match installed apps (appResolver.ts) — reused
+ * here unchanged, just applied to chat names instead of app names. Mirrors
+ * resolveApp's own confidence bar: an exact match always wins outright;
+ * otherwise the top score must clear a floor AND be well clear of the runner-up,
+ * so two similarly-plausible contacts never get silently resolved into one.
+ */
+export function scoreContactCandidates(contact: string, lines: string[]): ContactResolution {
+  const qn = normalizeAppName(contact)
+  const scored = lines
+    .map((line) => ({ line, score: scoreAppName(qn, normalizeAppName(line)) }))
+    .filter((s) => s.score > 0)
+    .sort((a, b) => b.score - a.score)
+
+  if (scored.length === 0) return { resolved: null, candidates: [] }
+
+  const [top, second] = scored
+  const confident = top.score === 100 || (top.score >= 70 && (!second || top.score - second.score >= 15))
+  return {
+    resolved: confident ? top.line : null,
+    candidates: scored.slice(0, 5).map((s) => s.line)
+  }
+}
+
+/**
+ * Phase 1 (resolve) of send_whatsapp_message's two-phase contact resolution.
+ * Types `contact` into WhatsApp's search box, then — instead of immediately
+ * pressing Down/Enter like open_whatsapp_chat does — screenshots and OCRs the
+ * results and scores them, so the caller can verify a chat exists and is
+ * unambiguous BEFORE selecting and sending into it. Leaves the search box
+ * filtered but nothing selected; the caller re-searches with the confirmed
+ * string in phase 2 (searchWhatsAppFor + openTopWhatsAppSearchResult).
+ *
+ * Fails closed by construction: any OCR/capture error is swallowed into an
+ * unresolved result (empty candidates), never a guessed selection.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function resolveWhatsAppContact(contact: string, nut: any): Promise<ContactResolution> {
+  await launchAndFocusWhatsApp()
+  await searchWhatsAppFor(contact, nut)
+  try {
+    const lines = await ocrWhatsAppCandidates()
+    return scoreContactCandidates(contact, lines)
+  } catch {
+    return { resolved: null, candidates: [] }
+  }
 }
 
 /**
@@ -1137,11 +1066,24 @@ async function open_whatsapp_chat(args: Record<string, unknown>): Promise<ToolRe
 
 /**
  * Type and SEND a WhatsApp message to a contact/group, driving WhatsApp Desktop
- * by keyboard only (same coordinate-free approach as open_whatsapp_chat). This
- * is an outward, irreversible action — it sends a message to another person — so
- * it lives in DESTRUCTIVE_TOOLS and ALWAYS pauses for the user's confirmation,
- * in every autonomy mode. The HITL prompt shows the contact and a message
- * preview so the human approves the actual content, not just the intent.
+ * by keyboard only. This is an outward, irreversible action — it sends a
+ * message to another person — so it lives in DESTRUCTIVE_TOOLS and ALWAYS
+ * pauses for the user's confirmation, in every autonomy mode. The HITL prompt
+ * shows the contact and a message preview so the human approves the actual
+ * content, not just the intent.
+ *
+ * Contact resolution is two-phase and verifies BEFORE selecting anything —
+ * unlike open_whatsapp_chat, which just trusts the top search hit:
+ *   1) Resolve: search, then OCR + score the results (resolveWhatsAppContact).
+ *      A single confident match proceeds straight to phase 2. Anything else —
+ *      several plausible candidates, nothing recognizable, or an OCR failure —
+ *      escapes out of the search box without selecting anything and returns
+ *      needsConfirmation: {kind: 'choice', choices}, so the agent loop can show
+ *      a picker and this function never sends into an unverified chat.
+ *   2) Confirmed: re-search the exact resolved/picked string (deterministic,
+ *      since it's now a literal match) and open the top hit. `args.resolvedContact`
+ *      lets the caller skip straight to this phase after a user pick — set only
+ *      by the agent loop's HITL re-invoke, never by the model itself.
  *
  * Multi-line / formatted messages are typed line by line with Shift+Enter
  * between lines (a bare Enter is WhatsApp's "send"), so the whole message is
@@ -1185,9 +1127,44 @@ async function send_whatsapp_message(args: Record<string, unknown>): Promise<Too
     }
   }
 
+  // eslint-disable-next-line no-control-regex
+  const resolvedContact = typeof args.resolvedContact === 'string'
+    ? args.resolvedContact.replace(/[\x00-\x1f\x7f]/g, '').trim()
+    : ''
+
   try {
     const nut = loadNut()
-    await openWhatsAppChatViaKeyboard(contact, nut)
+    let target = resolvedContact
+
+    if (!target) {
+      const resolution = await resolveWhatsAppContact(contact, nut)
+      if (resolution.resolved) {
+        target = resolution.resolved
+      } else {
+        // Fail closed: leave the search box empty rather than risk sending
+        // into whatever happened to be selected, and ask the user to pick —
+        // even the single-fallback (literal contact name) case still requires
+        // an explicit click, never an automatic send.
+        await tapKeys(nut, nut.Key.Escape)
+        const choices = resolution.candidates.length > 0 ? resolution.candidates : [contact]
+        return {
+          ok: false,
+          error: `Could not confidently find a single WhatsApp chat for "${contact}".`,
+          needsConfirmation: {
+            kind: 'choice',
+            label: `Which WhatsApp chat did you mean by "${contact}"?`,
+            choices
+          }
+        }
+      }
+    }
+
+    // Confirmed phase: re-search the exact resolved/picked string — deterministic,
+    // since it's now a literal match against what's on screen.
+    await launchAndFocusWhatsApp()
+    await searchWhatsAppFor(target, nut)
+    await openTopWhatsAppSearchResult(nut)
+
     // The chat is open and the composer is focused; give it a beat to settle so
     // the first keystrokes are not swallowed by the focus transition.
     await delay(600)
@@ -1206,9 +1183,7 @@ async function send_whatsapp_message(args: Record<string, unknown>): Promise<Too
 
     return {
       ok: true,
-      output:
-        `Sent your WhatsApp message to the top chat matching "${contact}". ` +
-        `If it opened the wrong chat, tell me the contact's exact name as it appears in WhatsApp so I can be sure next time.`
+      output: `Sent your WhatsApp message to "${target}".`
     }
   } catch (err) {
     const stderr = (err as { stderr?: string }).stderr?.trim()
@@ -1529,6 +1504,74 @@ try {
     ok: false,
     error: 'control_calendar requires macOS (Calendar.app) or Windows (Microsoft Outlook).'
   }
+}
+
+/**
+ * Compose and SEND an email via Gmail. Outward-facing and irreversible once
+ * delivered, so it lives in DESTRUCTIVE_TOOLS and ALWAYS pauses for the user's
+ * confirmation, in every autonomy mode — same treatment as send_whatsapp_message,
+ * no bespoke needsConfirmation logic needed (the blanket pre-execution HITL gate
+ * on STATE_CHANGING_TOOLS + DESTRUCTIVE_TOOLS handles it).
+ *
+ * attachmentPath is resolved through resolveSafePath (read-only), the same
+ * trust boundary read_file uses, before being handed to sendGmailMessage.
+ */
+async function send_email(args: Record<string, unknown>): Promise<ToolResult> {
+  if (!isGmailConnected()) {
+    return {
+      ok: false,
+      error: 'Gmail is not connected. Open Settings → Gmail and click Connect.'
+    }
+  }
+  const rawTo = args.to
+  const to = Array.isArray(rawTo)
+    ? rawTo.map((v) => String(v))
+    : typeof rawTo === 'string'
+      ? rawTo.split(/[,;]/)
+      : []
+  if (to.length === 0) {
+    return { ok: false, error: 'send_email requires at least one "to" address.' }
+  }
+  const body = typeof args.body === 'string' ? args.body : ''
+  if (!body.trim()) {
+    return { ok: false, error: 'send_email requires a non-empty "body".' }
+  }
+  const subject = typeof args.subject === 'string' ? args.subject : undefined
+  const threadId = typeof args.threadId === 'string' ? args.threadId : undefined
+  const inReplyTo = typeof args.inReplyTo === 'string' ? args.inReplyTo : undefined
+
+  let attachmentPath: string | undefined
+  const rawAttachment = args.attachmentPath
+  if (typeof rawAttachment === 'string' && rawAttachment.trim()) {
+    try {
+      attachmentPath = resolveSafePath(rawAttachment, { mutating: false })
+    } catch (e) {
+      return { ok: false, error: `send_email: ${e instanceof Error ? e.message : String(e)}` }
+    }
+  }
+
+  return sendGmailMessage({ to, subject, body, attachmentPath, threadId, inReplyTo })
+}
+
+/** Search recent Gmail messages for a thread to reply into. Read-only. */
+async function find_email_thread(args: Record<string, unknown>): Promise<ToolResult> {
+  if (!isGmailConnected()) {
+    return {
+      ok: false,
+      error: 'Gmail is not connected. Open Settings → Gmail and click Connect.'
+    }
+  }
+  const query = typeof args.query === 'string' ? args.query : ''
+  const result = await gmailFindThread(query)
+  if (!result.ok) return { ok: false, error: result.error }
+  const candidates = result.candidates ?? []
+  if (candidates.length === 0) {
+    return { ok: true, output: `No email threads found matching "${query}".` }
+  }
+  const lines = candidates.map(
+    (c) => `threadId=${c.threadId} subject="${c.subject}" to="${c.to}" date="${c.date}"`
+  )
+  return { ok: true, output: `Found ${candidates.length} thread(s):\n${lines.join('\n')}` }
 }
 
 /** Move the mouse pointer to absolute screen coordinates. */
@@ -2823,6 +2866,59 @@ export const toolSchemas: ToolSchema[] = [
     }
   },
   {
+    name: 'send_email',
+    description:
+      'Compose and SEND an email via Gmail. Use this whenever the user wants to email someone — ' +
+      'e.g. "email my resume to these recruiters", "send a follow-up to Jane". If "subject" is ' +
+      'omitted, one is derived automatically from the body. To attach a file, use the exact path from ' +
+      'a "[Attached file path: ...]" line in the conversation as "attachmentPath" — never ask the user ' +
+      'to re-share a file that is already attached. To reply into an existing conversation, first call ' +
+      'find_email_thread to get a threadId, then pass that threadId (and the original message-id as ' +
+      'inReplyTo) here. This ALWAYS asks the user to confirm before sending, since it emails another person.',
+    parameters: {
+      type: 'object',
+      properties: {
+        to: {
+          type: 'string',
+          description: 'Recipient email address(es), comma- or semicolon-separated for multiple.'
+        },
+        subject: { type: 'string', description: 'Email subject. Derived from the body when omitted.' },
+        body: { type: 'string', description: 'The email body text.' },
+        attachmentPath: {
+          type: 'string',
+          description: 'Absolute path to a file to attach, e.g. from a "[Attached file path: ...]" line.'
+        },
+        threadId: {
+          type: 'string',
+          description: 'Gmail threadId to reply into, from find_email_thread, when following up.'
+        },
+        inReplyTo: {
+          type: 'string',
+          description: 'The Message-Id being replied to, from find_email_thread, when following up.'
+        }
+      },
+      required: ['to', 'body']
+    }
+  },
+  {
+    name: 'find_email_thread',
+    description:
+      'Search recent Gmail messages for a thread to follow up on, e.g. "find my email to the ' +
+      'recruiter at Acme" before sending a follow-up. Returns up to 5 candidate threads with their ' +
+      'threadId, subject, recipient, and date — pass the right threadId into send_email to reply into ' +
+      'that same conversation. Read-only; does not send anything.',
+    parameters: {
+      type: 'object',
+      properties: {
+        query: {
+          type: 'string',
+          description: 'Gmail search query, e.g. a recipient name/email or subject keywords.'
+        }
+      },
+      required: ['query']
+    }
+  },
+  {
     name: 'list_apps',
     description:
       'List the applications installed on this computer (Windows and macOS). Use this to ' +
@@ -3232,6 +3328,8 @@ const registry: Record<string, Executor> = {
   open_folder_in_editor,
   open_whatsapp_chat,
   send_whatsapp_message,
+  send_email,
+  find_email_thread,
   list_apps,
   search_files,
   control_calendar,
@@ -3386,6 +3484,13 @@ export function describeToolCall(name: string, args: Record<string, unknown>): s
       const preview = msg.length > 60 ? `${msg.slice(0, 60)}…` : msg
       return `Send WhatsApp message to ${to}: "${preview}"`
     }
+    case 'send_email': {
+      const to = Array.isArray(args.to) ? args.to.map((v) => String(v)).join(', ') : String(args.to ?? '')
+      const subject = String(args.subject ?? '')
+      return `Send email to ${to}${subject ? `: "${subject}"` : ''}`
+    }
+    case 'find_email_thread':
+      return `Find email thread matching "${String(args.query ?? '')}"`
     case 'list_apps':
       return args.filter ? `List installed apps matching "${String(args.filter)}"` : 'List installed apps'
     case 'search_files':

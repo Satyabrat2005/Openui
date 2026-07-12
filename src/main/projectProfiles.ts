@@ -104,12 +104,13 @@ const PROFILES: Record<ProjectType, ProjectProfile> = {
     promptAddendum: `PROJECT TYPE: website. Guidance:
 - For a simple site, plain HTML/CSS/JS files are better than a framework — no build step to break. Make index.html complete and self-contained where possible.
 - If the task needs a framework, scaffold it fully (package.json with dev/build scripts, config, source) and call install_dependencies before any script.
-- Verify your work: with a package.json, run_script "build" (or "dev" as a boot smoke test) or run_tests if you wrote tests. A plain static site with no package.json cannot be executed here — in that case make read_file/list_files checks and say clearly in your summary that the site is static and was not smoke-run.`,
+- Verify your work: with a package.json, run_script "build" (or "dev" as a boot smoke test) or run_tests if you wrote tests. A plain static site with no package.json cannot be executed here — in that case call list_files once after writing your files; that counts as verification for a static site (it confirms the files actually exist on disk) and say clearly in your summary that the site is static and was not smoke-run.`,
     taskHint:
-      'Build the site in the workspace. Verify it: run the build/dev script (or tests) if it has a package.json.',
+      'Build the site in the workspace. Verify it: run the build/dev script (or tests) if it has a package.json, otherwise call list_files to confirm the files exist.',
     ...markerVerdict({
       run_tests: { pass: 'TESTS PASSED' },
-      run_script: { pass: 'SCRIPT OK' }
+      run_script: { pass: 'SCRIPT OK' },
+      list_files: { pass: 'Workspace files:' }
     })
   },
   ml: {

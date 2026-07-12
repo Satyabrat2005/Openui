@@ -5,6 +5,7 @@ import { SPAWN_SUBAGENTS_TOOL, runParallelSubagents, parseSubTaskSpecs } from '.
 import { codingToolSchemas, executeCodingTool, describeCodingToolCall } from './codingTools'
 import { VerifyGate } from './verifyGate'
 import { detectProjectType, getProjectProfile } from './projectProfiles'
+import { looksLikeMissingPrecondition } from './preconditionClassifier'
 import { getWorkspaceDir, setActiveProject } from './sandbox'
 import { ensureCodebaseIndexed } from './codebaseIndex'
 import { buildCodebaseMap } from './codebaseMap'
@@ -40,6 +41,7 @@ import {
 import {
   parseToolCall as parseToolCallCore,
   extractFirstJsonObject,
+  looksLikeAttemptedToolCall,
   StreamGate,
   type ToolCall
 } from './toolCallParser'
@@ -118,6 +120,45 @@ function waitForHitlApproval(
       args,
       label: labelOverride ?? describeToolCall(tool, args)
     })
+  })
+}
+
+/** Resolvers keyed by request id, awaited while the renderer shows the choice picker. */
+const pendingHitlChoiceRequests = new Map<string, (selected: string | null) => void>()
+let hitlChoiceSeq = 0
+
+/**
+ * Emit a HITL "choice" request to the renderer — a candidate picker, not a
+ * plain Allow/Deny (see ToolResult.needsConfirmation's 'choice' kind, used by
+ * e.g. an ambiguous WhatsApp contact) — and resolve once the user picks a
+ * candidate (its exact string) or cancels (null), or null after the backstop
+ * timeout. Reuses the same 'openui:hitl:request' event as waitForHitlApproval
+ * (HitlModal tells the two apart by whether `choices` is present) but keeps a
+ * separate id/resolver map and a separate response channel
+ * (openui:hitl:choice-response) so this can never cross-wire with the existing
+ * boolean Allow/Deny flow.
+ */
+function waitForHitlChoice(
+  win: BrowserWindow,
+  tool: string,
+  args: Record<string, unknown>,
+  label: string,
+  choices: string[]
+): Promise<string | null> {
+  const id = `hitlc${++hitlChoiceSeq}`
+  return new Promise<string | null>((resolve) => {
+    const timer = setTimeout(() => {
+      if (pendingHitlChoiceRequests.delete(id)) {
+        console.warn(`[agent] HITL choice request ${id} (${tool}) timed out — auto-cancelled`)
+        emit(win, 'openui:hitl:timeout', { id })
+        resolve(null)
+      }
+    }, HITL_BACKSTOP_TIMEOUT_MS)
+    pendingHitlChoiceRequests.set(id, (selected) => {
+      clearTimeout(timer)
+      resolve(selected)
+    })
+    emit(win, 'openui:hitl:request', { id, tool, args, label, choices })
   })
 }
 
@@ -232,6 +273,9 @@ Examples — map the request to a single tool-call message (emit ONLY the JSON):
 - "schedule a meeting tomorrow at 3pm" → {"tool": "control_calendar", "args": {"action": "create", "eventDetails": {"title": "Meeting", "start": "2025-01-01T15:00:00"}}}
 - "message Ashu on WhatsApp that I'll be 10 min late" → {"tool": "send_whatsapp_message", "args": {"contact": "Ashu", "message": "Hey, I'll be about 10 minutes late — see you soon!"}}
 - "open my WhatsApp chat with Mom" (no message to send) → {"tool": "open_whatsapp_chat", "args": {"contact": "Mom"}}
+- "email this to jane@acme.com" → {"tool": "send_email", "args": {"to": "jane@acme.com", "body": "..."}} (omit "subject" to have it derived automatically from the body)
+
+Attached files — if the conversation contains a line like "[Attached file path: C:\\Users\\You\\resume.pdf]", that is a REAL file already saved on disk (the user picked it with a file dialog). Pass that exact path verbatim as send_email's attachmentPath. Never ask the user to upload it again, never invent a different path, and never claim you can't access local files when one is already given to you this way.
 
 CRITICAL — opening an app or browser vs. automating a web page. These are DIFFERENT tools; do not confuse them:
 - When the user asks to OPEN or LAUNCH an application or a browser for THEM to use ("open Edge", "open Chrome", "open my browser", "open WhatsApp"), ALWAYS use open_app. This launches their REAL installed app with their normal profile, logins and extensions.
@@ -493,8 +537,37 @@ function preferredCodeModel(): string {
 const BUILD_RE =
   /\b(build|scaffold|bootstrap|create|make|generate|code|develop)\b[^.!?]{0,60}\b(react|next(?:\.?js)?|vue|svelte|angular|node(?:\.?js)?|express|vite|website|web\s?site|web\s?app|webapp|web\s?page|webpage|landing\s?page|front\s?end|frontend|back\s?end|backend|app|application|project|game|api|cli|dashboard|component|script|program)\b/i
 
+/**
+ * Pull a trailing "...open/edit/continue it in/with/using <tool>" editor name
+ * out of a build request, e.g. "build a snake game and open it in Antigravity"
+ * → "Antigravity". Deliberately requires a hand-off verb (open/edit/continue),
+ * not a bare "with X" — "build a site with react" must NOT be read as "open an
+ * editor named react". A miss or a name nothing resolves to is harmless: it
+ * just falls through to armEditorAutoOpen's default VS Code / file-browser flow.
+ */
+const EDITOR_HANDOFF_RE =
+  /\b(?:open|edit|continue|hand(?:\s+it)?\s+off)\b[^.!?]{0,30}?\b(?:in|with|using)\s+([a-z0-9][a-z0-9 .+#-]{1,40}?)(?=\s*[.!?]|\s*$)/i
+
+function extractEditorHandoff(text: string): string | null {
+  const m = EDITOR_HANDOFF_RE.exec(text)
+  return m ? m[1].trim() : null
+}
+
 /** Per-request step budget for a builder session — matches the autonomous cap. */
 const MAX_BUILDER_TURNS = 20
+
+/** How many times we'll re-prompt a reply that parsed as JSON but wasn't a real tool call. */
+const MAX_MALFORMED_TOOL_CALL_RETRIES = 3
+/** How many times we'll re-prompt a "done" reply that never called a single tool. */
+const MAX_ZERO_TOOL_RETRIES = 2
+
+const MALFORMED_TOOL_CALL_NUDGE =
+  'That was a JSON object but not a tool call — it had no "tool" field, so nothing happened. ' +
+  'Call write_file now with the real file contents. Do not describe the project as JSON; call the tool.'
+
+const ZERO_TOOL_NUDGE =
+  "You replied as if you were done, but you haven't called a single tool yet — nothing has been " +
+  'written. Call write_file now to create the first real file.'
 
 /**
  * System prompt for interactive builder sessions. Mirrors the autonomous coding
@@ -508,6 +581,11 @@ To call a tool, respond with ONLY a raw JSON object and nothing else (no prose, 
 {"tool": "tool_name", "args": {"key": "value"}}
 
 The very first character of a tool-call message MUST be "{". After each tool runs you receive a message starting with "TOOL RESULT". Use it to decide the next step. Call exactly one tool per message.
+
+Example — the first message for a brand-new project must be a real write, e.g.:
+{"tool": "write_file", "args": {"path": "package.json", "content": "{\\n  \\"name\\": \\"my-app\\"\\n}"}}
+Never reply with a JSON object that only DESCRIBES the project (a file list, tech stack, or folder
+structure) instead of calling write_file — that is not a tool call and creates nothing on disk.
 
 Available tools:
 ${codingToolSchemas.map(renderSchema).join('\n')}
@@ -550,7 +628,7 @@ async function runBuilderSession(win: BrowserWindow, tier: Tier, userMessage: st
     status: 'done',
     detail: getWorkspaceDir()
   } satisfies TaskUpdate)
-  armEditorAutoOpen()
+  armEditorAutoOpen(extractEditorHandoff(userMessage))
   // Warm the semantic index + symbol map for this project in the background
   // (the index self-degrades when the native module / Ollama is unavailable).
   void ensureCodebaseIndexed()
@@ -562,27 +640,76 @@ async function runBuilderSession(win: BrowserWindow, tier: Tier, userMessage: st
   const verifyGate = new VerifyGate(profile)
   const systemPrompt = `${BUILDER_SYSTEM_PROMPT}\n\n${profile.promptAddendum}`
 
+  // Zero tool calls ever made is never a legitimate finish for a build session —
+  // BUILD_RE only routes here on an explicit build request, unlike the shared
+  // VerifyGate contract (also used read-only by autonomous.ts), which treats an
+  // untouched tree as "nothing to verify" rather than "nothing was attempted".
+  let toolCallCount = 0
+  let malformedReplies = 0
+  let zeroToolRetries = 0
+
   for (let turn = 0; turn < MAX_BUILDER_TURNS; turn++) {
     const gate = new StreamGate((delta) => emit(win, 'openui:chat:chunk', delta))
     const responseText = await callModel(win, tier, messages, systemPrompt, gate.push)
     messages.push({ role: 'assistant', content: responseText })
 
     const toolCall = parseToolCallCore(responseText, codingNames)
-    gate.finalize(toolCall !== null)
-    if (!toolCall) {
-      // Natural-language reply ⇒ the model thinks it is done. Only let it be done
-      // if it actually ran something against the code as it now stands.
-      if (verifyGate.onFinalReply(responseText) !== 'nudge') return responseText.trim()
+    const malformed = !toolCall && looksLikeAttemptedToolCall(responseText)
+    // Withhold malformed JSON from the UI too — a "project manifest" blob is not
+    // a message the user should ever see; it's a failed tool-call attempt.
+    gate.finalize(toolCall !== null || malformed)
+
+    if (malformed) {
+      if (++malformedReplies > MAX_MALFORMED_TOOL_CALL_RETRIES) {
+        return (
+          "I couldn't start building — the model kept returning a description of the project " +
+          'instead of calling a tool to write files. Try again, or name the tech stack you want used.'
+        )
+      }
       emit(win, 'openui:task:update', {
         id: `b${++taskSeq}`,
-        label: verifyGate.nudgeLabel,
+        label: 'Not a tool call',
         status: 'working',
-        detail: `Summarised without running ${profile.verifiers.join(' / ')} — asking it to verify.`
+        detail: 'Replied with JSON but no "tool" field — asking it to call write_file instead.'
       } satisfies TaskUpdate)
-      messages.push({ role: 'user', content: verifyGate.nudgeMessage() })
+      messages.push({ role: 'user', content: MALFORMED_TOOL_CALL_NUDGE })
       continue
     }
 
+    if (!toolCall) {
+      // Natural-language reply ⇒ the model thinks it is done. Only let it be done
+      // if it actually ran something against the code as it now stands.
+      const decision = verifyGate.onFinalReply(responseText)
+      if (decision === 'nudge') {
+        emit(win, 'openui:task:update', {
+          id: `b${++taskSeq}`,
+          label: verifyGate.nudgeLabel,
+          status: 'working',
+          detail: `Summarised without running ${profile.verifiers.join(' / ')} — asking it to verify.`
+        } satisfies TaskUpdate)
+        messages.push({ role: 'user', content: verifyGate.nudgeMessage() })
+        continue
+      }
+      if (decision === 'accept' && toolCallCount === 0) {
+        if (++zeroToolRetries > MAX_ZERO_TOOL_RETRIES) {
+          return (
+            "I wasn't able to start building this — the model responded without writing any files. " +
+            'Try rephrasing the request, or name the tech stack you want used.'
+          )
+        }
+        emit(win, 'openui:task:update', {
+          id: `b${++taskSeq}`,
+          label: 'Nothing written yet',
+          status: 'working',
+          detail: 'Replied as if done, but no file has been written — asking it to actually build.'
+        } satisfies TaskUpdate)
+        messages.push({ role: 'user', content: ZERO_TOOL_NUDGE })
+        continue
+      }
+      return responseText.trim()
+    }
+
+    toolCallCount++
     const taskId = `b${++taskSeq}`
     const label = describeCodingToolCall(toolCall.tool, toolCall.args)
     emit(win, 'openui:chat:tool', toolCall)
@@ -1159,6 +1286,14 @@ export async function handleChat(win: BrowserWindow, userMessage: string, tier: 
     let continuationNudges = 0
     const MAX_CONTINUATION_NUDGES = 2
 
+    // Precondition-failure tracking: a tool failing because something it needs
+    // (an app, a connection, a config value, a subscription tier) isn't there
+    // will keep failing identically no matter how many more turns we spend on
+    // it. Stop and say so instead of silently burning the rest of the budget.
+    let lastToolError: string | null = null
+    let repeatedPreconditionFailures = 0
+    const MAX_REPEATED_PRECONDITION_FAILURES = 2
+
     for (let turn = 0; turn < maxTurns; turn++) {
       trackEvent(Events.MODEL_ROUTE_SELECTED, {
         tier: effectiveTier,
@@ -1301,19 +1436,39 @@ export async function handleChat(win: BrowserWindow, userMessage: string, tier: 
       // action; a further sensitive step returns here again for its own click.
       if (!result.ok && result.needsConfirmation) {
         const nc = result.needsConfirmation
-        const approved = await waitForHitlApproval(win, toolCall.tool, toolCall.args, nc.label)
-        if (approved) {
-          // Site grants persist per-origin and land in the domain audit log.
-          if (nc.kind === 'site-consent' && nc.origin) grantOrigin(nc.origin, 'hitl')
-          result = (await executeTool(toolCall.tool, toolCall.args, {
-            tier: effectiveTier,
-            bypassHitl: true,
-            sensitiveApproved: true
-          })) as ToolResult
+        if (nc.kind === 'choice') {
+          // A candidate picker, not Allow/Deny (e.g. "which WhatsApp chat did
+          // you mean?") — see waitForHitlChoice. The pick is data, not a
+          // boolean, so it's merged into the retried args as resolvedContact
+          // rather than set on context.
+          const selected = await waitForHitlChoice(win, toolCall.tool, toolCall.args, nc.label, nc.choices ?? [])
+          if (selected) {
+            result = (await executeTool(
+              toolCall.tool,
+              { ...toolCall.args, resolvedContact: selected },
+              { tier: effectiveTier, bypassHitl: true }
+            )) as ToolResult
+          } else {
+            result = {
+              ok: false,
+              error: `User did not pick one of the options for: ${nc.label} Do not retry; let the user know you cannot proceed without their selection.`
+            }
+          }
         } else {
-          result = {
-            ok: false,
-            error: `User declined: ${nc.label} Do not retry; let the user know you cannot proceed without their approval.`
+          const approved = await waitForHitlApproval(win, toolCall.tool, toolCall.args, nc.label)
+          if (approved) {
+            // Site grants persist per-origin and land in the domain audit log.
+            if (nc.kind === 'site-consent' && nc.origin) grantOrigin(nc.origin, 'hitl')
+            result = (await executeTool(toolCall.tool, toolCall.args, {
+              tier: effectiveTier,
+              bypassHitl: true,
+              sensitiveApproved: true
+            })) as ToolResult
+          } else {
+            result = {
+              ok: false,
+              error: `User declined: ${nc.label} Do not retry; let the user know you cannot proceed without their approval.`
+            }
           }
         }
       }
@@ -1372,8 +1527,29 @@ export async function handleChat(win: BrowserWindow, userMessage: string, tier: 
       // Feed the result back so the model can take the next step.
       history.push({ role: 'user', content: formatToolResult(toolCall, result) })
 
+      if (!result.ok && looksLikeMissingPrecondition(result.error)) {
+        repeatedPreconditionFailures++
+        lastToolError = result.error ?? null
+      } else {
+        repeatedPreconditionFailures = 0
+        lastToolError = result.ok ? null : result.error ?? null
+      }
+
+      // Two consecutive "this needs setup" failures won't clear themselves by
+      // retrying — stop before spending another model call and say what's
+      // actually blocking, instead of silently exhausting the turn budget.
+      if (repeatedPreconditionFailures >= MAX_REPEATED_PRECONDITION_FAILURES) {
+        finalText = `I'm stuck: ${lastToolError} I stopped retrying instead of continuing silently — let me know if you'd like a different approach.`
+        reachedLimit = true
+        if (planSteps) settlePlanHonest(win, planSteps, completedStepIds)
+        database.messages.addMessage(convId, 'assistant', finalText)
+        break
+      }
+
       if (turn === maxTurns - 1) {
-        finalText = 'Reached the tool-call limit for this request.'
+        finalText = lastToolError
+          ? `Reached the tool-call limit for this request. Last error: ${lastToolError}`
+          : 'Reached the tool-call limit for this request.'
         reachedLimit = true
         // Don't strand the checklist half-lit: green only the steps actually
         // checked off, mark the rest error rather than leaving them "working".
@@ -1437,6 +1613,20 @@ export function registerAgentIPC(win: BrowserWindow): void {
     if (resolve) {
       pendingHitlRequests.delete(id)
       resolve(approved === true)
+    }
+  })
+
+  // Resolve the waiting agent loop turn when the user responds to a HITL
+  // choice prompt (candidate picker) — a separate channel/map from the
+  // boolean Allow/Deny flow above, so the two can never cross-wire.
+  ipcMain.on('openui:hitl:choice-response', (_event, payload: unknown) => {
+    if (typeof payload !== 'object' || payload === null) return
+    const { id, selected } = payload as Record<string, unknown>
+    if (typeof id !== 'string') return
+    const resolve = pendingHitlChoiceRequests.get(id)
+    if (resolve) {
+      pendingHitlChoiceRequests.delete(id)
+      resolve(typeof selected === 'string' ? selected : null)
     }
   })
 

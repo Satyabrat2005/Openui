@@ -136,6 +136,29 @@ export function objToToolCall(
 }
 
 /**
+ * True when `text` is JSON-shaped (optionally fenced) and parses as an object,
+ * but has no `tool`/`tool_name`/`name` key — i.e. the model was clearly trying
+ * to emit structured output (a project manifest, a file list, a plan) rather
+ * than call a tool or answer in prose. Distinguishes "malformed tool call" from
+ * "natural-language answer" so a caller doesn't mistake a JSON blob describing
+ * work for a finished reply. A call naming an unknown/hallucinated tool is NOT
+ * malformed by this definition — it is a real (if wrong) tool call attempt and
+ * should flow through the normal execute → "Unknown tool" error path instead.
+ */
+export function looksLikeAttemptedToolCall(text: string): boolean {
+  if (!text) return false
+  let candidate = text.trim()
+  const fence = candidate.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i)
+  if (fence) candidate = fence[1].trim()
+  if (!candidate.startsWith('{')) return false
+  const jsonText = extractFirstJsonObject(candidate)
+  if (!jsonText) return false
+  const parsed = tryParseJson(jsonText)
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return false
+  return objToToolCall(parsed, false, new Set()) === null
+}
+
+/**
  * Parse a model response into a tool call, or null for a natural-language answer.
  *
  * Robust by design — real models (especially local Ollama models) rarely follow
