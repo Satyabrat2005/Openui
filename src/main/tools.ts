@@ -43,6 +43,7 @@ import {
   googleListToday,
   normalizeAttendees
 } from './googleCalendar'
+import { isGmailConnected, sendGmailMessage, findEmailThread as gmailFindThread } from './gmail'
 import { createHash } from 'node:crypto'
 import { callChatProxyText } from './edgeFunctions'
 import { trackEvent } from './telemetry/posthog'
@@ -163,6 +164,9 @@ export const STATE_CHANGING_TOOLS = new Set<string>([
   // never persists a site grant), so it is intentionally NOT in DESTRUCTIVE_TOOLS.
   'research_web',
   'control_calendar',
+  // Sends an email to another person — outward-facing and irreversible, so it
+  // is ALSO in DESTRUCTIVE_TOOLS below (always confirms, never runs on autopilot).
+  'send_email',
   // Filesystem + clipboard mutations. Reads (list_directory, read_file,
   // read_clipboard) are intentionally absent — they observe, never change state.
   'write_file',
@@ -212,6 +216,9 @@ export const DESTRUCTIVE_TOOLS = new Set<string>([
   // Sends a WhatsApp message to another person — outward-facing and cannot be
   // unsent, so it always confirms and never runs under any autonomy mode.
   'send_whatsapp_message',
+  // Sends an email to another person — outward-facing and cannot be unsent,
+  // so it always confirms and never runs under any autonomy mode.
+  'send_email',
   'open_pull_request',
   'merge_pr',
   // Executes code — must be confirmed even under autopilot.
@@ -1339,6 +1346,74 @@ try {
     ok: false,
     error: 'control_calendar requires macOS (Calendar.app) or Windows (Microsoft Outlook).'
   }
+}
+
+/**
+ * Compose and SEND an email via Gmail. Outward-facing and irreversible once
+ * delivered, so it lives in DESTRUCTIVE_TOOLS and ALWAYS pauses for the user's
+ * confirmation, in every autonomy mode — same treatment as send_whatsapp_message,
+ * no bespoke needsConfirmation logic needed (the blanket pre-execution HITL gate
+ * on STATE_CHANGING_TOOLS + DESTRUCTIVE_TOOLS handles it).
+ *
+ * attachmentPath is resolved through resolveSafePath (read-only), the same
+ * trust boundary read_file uses, before being handed to sendGmailMessage.
+ */
+async function send_email(args: Record<string, unknown>): Promise<ToolResult> {
+  if (!isGmailConnected()) {
+    return {
+      ok: false,
+      error: 'Gmail is not connected. Open Settings → Gmail and click Connect.'
+    }
+  }
+  const rawTo = args.to
+  const to = Array.isArray(rawTo)
+    ? rawTo.map((v) => String(v))
+    : typeof rawTo === 'string'
+      ? rawTo.split(/[,;]/)
+      : []
+  if (to.length === 0) {
+    return { ok: false, error: 'send_email requires at least one "to" address.' }
+  }
+  const body = typeof args.body === 'string' ? args.body : ''
+  if (!body.trim()) {
+    return { ok: false, error: 'send_email requires a non-empty "body".' }
+  }
+  const subject = typeof args.subject === 'string' ? args.subject : undefined
+  const threadId = typeof args.threadId === 'string' ? args.threadId : undefined
+  const inReplyTo = typeof args.inReplyTo === 'string' ? args.inReplyTo : undefined
+
+  let attachmentPath: string | undefined
+  const rawAttachment = args.attachmentPath
+  if (typeof rawAttachment === 'string' && rawAttachment.trim()) {
+    try {
+      attachmentPath = resolveSafePath(rawAttachment, { mutating: false })
+    } catch (e) {
+      return { ok: false, error: `send_email: ${e instanceof Error ? e.message : String(e)}` }
+    }
+  }
+
+  return sendGmailMessage({ to, subject, body, attachmentPath, threadId, inReplyTo })
+}
+
+/** Search recent Gmail messages for a thread to reply into. Read-only. */
+async function find_email_thread(args: Record<string, unknown>): Promise<ToolResult> {
+  if (!isGmailConnected()) {
+    return {
+      ok: false,
+      error: 'Gmail is not connected. Open Settings → Gmail and click Connect.'
+    }
+  }
+  const query = typeof args.query === 'string' ? args.query : ''
+  const result = await gmailFindThread(query)
+  if (!result.ok) return { ok: false, error: result.error }
+  const candidates = result.candidates ?? []
+  if (candidates.length === 0) {
+    return { ok: true, output: `No email threads found matching "${query}".` }
+  }
+  const lines = candidates.map(
+    (c) => `threadId=${c.threadId} subject="${c.subject}" to="${c.to}" date="${c.date}"`
+  )
+  return { ok: true, output: `Found ${candidates.length} thread(s):\n${lines.join('\n')}` }
 }
 
 /** Move the mouse pointer to absolute screen coordinates. */
@@ -2633,6 +2708,59 @@ export const toolSchemas: ToolSchema[] = [
     }
   },
   {
+    name: 'send_email',
+    description:
+      'Compose and SEND an email via Gmail. Use this whenever the user wants to email someone — ' +
+      'e.g. "email my resume to these recruiters", "send a follow-up to Jane". If "subject" is ' +
+      'omitted, one is derived automatically from the body. To attach a file, use the exact path from ' +
+      'a "[Attached file path: ...]" line in the conversation as "attachmentPath" — never ask the user ' +
+      'to re-share a file that is already attached. To reply into an existing conversation, first call ' +
+      'find_email_thread to get a threadId, then pass that threadId (and the original message-id as ' +
+      'inReplyTo) here. This ALWAYS asks the user to confirm before sending, since it emails another person.',
+    parameters: {
+      type: 'object',
+      properties: {
+        to: {
+          type: 'string',
+          description: 'Recipient email address(es), comma- or semicolon-separated for multiple.'
+        },
+        subject: { type: 'string', description: 'Email subject. Derived from the body when omitted.' },
+        body: { type: 'string', description: 'The email body text.' },
+        attachmentPath: {
+          type: 'string',
+          description: 'Absolute path to a file to attach, e.g. from a "[Attached file path: ...]" line.'
+        },
+        threadId: {
+          type: 'string',
+          description: 'Gmail threadId to reply into, from find_email_thread, when following up.'
+        },
+        inReplyTo: {
+          type: 'string',
+          description: 'The Message-Id being replied to, from find_email_thread, when following up.'
+        }
+      },
+      required: ['to', 'body']
+    }
+  },
+  {
+    name: 'find_email_thread',
+    description:
+      'Search recent Gmail messages for a thread to follow up on, e.g. "find my email to the ' +
+      'recruiter at Acme" before sending a follow-up. Returns up to 5 candidate threads with their ' +
+      'threadId, subject, recipient, and date — pass the right threadId into send_email to reply into ' +
+      'that same conversation. Read-only; does not send anything.',
+    parameters: {
+      type: 'object',
+      properties: {
+        query: {
+          type: 'string',
+          description: 'Gmail search query, e.g. a recipient name/email or subject keywords.'
+        }
+      },
+      required: ['query']
+    }
+  },
+  {
     name: 'list_apps',
     description:
       'List the applications installed on this computer (Windows and macOS). Use this to ' +
@@ -3042,6 +3170,8 @@ const registry: Record<string, Executor> = {
   open_folder_in_editor,
   open_whatsapp_chat,
   send_whatsapp_message,
+  send_email,
+  find_email_thread,
   list_apps,
   search_files,
   control_calendar,
@@ -3196,6 +3326,13 @@ export function describeToolCall(name: string, args: Record<string, unknown>): s
       const preview = msg.length > 60 ? `${msg.slice(0, 60)}…` : msg
       return `Send WhatsApp message to ${to}: "${preview}"`
     }
+    case 'send_email': {
+      const to = Array.isArray(args.to) ? args.to.map((v) => String(v)).join(', ') : String(args.to ?? '')
+      const subject = String(args.subject ?? '')
+      return `Send email to ${to}${subject ? `: "${subject}"` : ''}`
+    }
+    case 'find_email_thread':
+      return `Find email thread matching "${String(args.query ?? '')}"`
     case 'list_apps':
       return args.filter ? `List installed apps matching "${String(args.filter)}"` : 'List installed apps'
     case 'search_files':
