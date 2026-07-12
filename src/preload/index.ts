@@ -505,6 +505,13 @@ const api = {
     ipcRenderer.send('openui:hitl:response', { id, approved })
   },
 
+  // Response for a 'choice' HITL request (HitlRequestPayload.choices present)
+  // — a separate channel from respondHitl above so the candidate-picker flow
+  // can never cross-wire with the boolean Allow/Deny flow.
+  respondHitlChoice: (id: string, selected: string | null): void => {
+    ipcRenderer.send('openui:hitl:choice-response', { id, selected })
+  },
+
   // Main emits openui:hitl:timeout when its backstop auto-denied a request the
   // user never answered — the renderer should dismiss a stale modal for it.
   onHitlTimeout: (cb: (payload: { id: string }) => void): (() => void) => {
