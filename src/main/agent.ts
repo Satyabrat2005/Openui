@@ -993,7 +993,9 @@ async function callOllama(
     console.warn(msg)
     emit(_win, 'openui:chat:warning', { message: msg, estTokens, numCtx })
   } else if (estTokens > numCtx * 0.9) {
-    console.warn(`[agent] Prompt ~${estTokens} tokens is nearing num_ctx ${numCtx}; conversation is close to the truncation limit.`)
+    const msg = `[agent] Prompt ~${estTokens} tokens is nearing num_ctx ${numCtx}; conversation is close to the truncation limit.`
+    console.warn(msg)
+    emit(_win, 'openui:chat:warning', { message: msg, estTokens, numCtx })
   }
 
   // Serialize against every other local inference — one at a time on an 8 GB
