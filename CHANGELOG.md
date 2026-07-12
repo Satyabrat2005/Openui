@@ -5,6 +5,43 @@ the newest work lands under **Unreleased** until the next version bump.
 
 ## [Unreleased]
 
+## v7.1.2 — 2026-07-13
+
+Closes a safety-critical HITL bypass in sub-agent spawning, adds Gmail
+send/reply integration, and fixes 8 defects surfaced by a hands-on QA pass —
+plus the plan-approval hang and MCP approval-gate fixes from the previous
+cycle. 3 PRs, 19 commits since v7.1.1.
+
+### Security
+
+- **`spawn_subagents` bypassed the app's own HITL confirmation entirely**,
+  and sub-agents could write or overwrite files with zero human
+  confirmation — `write_file`/`create_folder` weren't in
+  `DESTRUCTIVE_TOOLS`. The fan-out is now gated through the existing
+  approval pipeline, and both tools are in `DESTRUCTIVE_TOOLS`. (#119)
+- **MCP tools now honour the per-tool approval gate.** The MCP fallback ran
+  *after* the executeTool HITL gate, and MCP tool names aren't in
+  `DESTRUCTIVE_TOOLS`, so an MCP tool (a stdio server can run arbitrary local
+  actions) executed with no confirmation in every autonomy mode. It is now gated
+  like built-in state-changing tools: outside autopilot (full-auto / an approved
+  plan) it requires one human confirmation before running. (#118)
+- **Narrowed the read trust boundary (`pathSafety.ts`).** Reads stay unconfined
+  within the user's own space (project/data files on other drives keep working),
+  but a read of a path *outside* home is now refused if it targets a system-level
+  secret store (`SYSTEM_SECRET_PATH_RE`: Windows registry hives, `/etc/shadow`,
+  private TLS/SSH keys, the macOS local directory DB) or another user's home
+  directory — closing an information-disclosure surface without breaking
+  legitimate cross-drive reads. (#118)
+
+### Added
+
+- **Gmail integration**: new `gmail.ts` module sharing the existing Google
+  OAuth client with Calendar (own refresh token/scope), `send_email` /
+  `find_email_thread` tools, an attachment picker, and a Gmail card in
+  Settings. (#117)
+- Finished or in-progress autonomous builds can now be handed off to a named
+  installed editor (e.g. "...open it in Antigravity"). (#117)
+
 ### Fixed
 
 - **The plan-approval prompt could hang a chat turn forever.** `waitForPlanApproval`
@@ -15,7 +52,7 @@ the newest work lands under **Unreleased** until the next version bump.
   never settled: no `openui:chat:done` fired, the UI stayed stuck in "working,"
   and the pending resolver leaked. Since `approve-plan` is the default autonomy
   level, this sat on the primary path. Added the same 150s backstop the HITL gate
-  uses; on timeout the plan auto-cancels and emits `openui:plan:timeout`.
+  uses; on timeout the plan auto-cancels and emits `openui:plan:timeout`. (#118)
 - **The interactive "build me an app" session ran on the wrong model.**
   `runBuilderSession` (`agent.ts`) — the feature behind any "build/scaffold/create
   a website/app/component" chat request — called `callModel` without
@@ -23,23 +60,40 @@ the newest work lands under **Unreleased** until the next version bump.
   code-tuned model the autonomous coding loop already uses. Reproduced live:
   asking it to build a Pomodoro timer produced JSX/JS with mismatched braces,
   stray escaped quotes, and undefined variables. Now passes `{ coding: true }`,
-  matching `autonomous.ts`.
+  matching `autonomous.ts`. (#118)
+- **Builder sessions could produce a JSON blob describing the project instead
+  of real files.** A build request like "build a website like antigravity or
+  claude" could get a JSON-shaped non-call or a zero-tool "done" reply.
+  `runBuilderSession` now detects both, nudges for a real `write_file` call
+  (bounded retries), and fails honestly instead of looping forever. (#117)
+- **WhatsApp contact resolution blindly trusted WhatsApp's in-app search with
+  zero verification.** It's now a two-phase, OCR-verified resolution (reusing
+  `appResolver.ts`'s scoring engine) that fails closed — ambiguous or
+  unconfident matches always require an explicit user pick via a new
+  candidate-picker UI, never a silent send. (#117)
+- **The main OS-automation loop burned its entire turn budget silently when a
+  precondition was missing** (e.g. an app isn't installed). It now recognizes
+  the known "needs setup" error shapes and stops early with an explanation
+  instead of retrying blindly. (#117)
+- **Malformed tool-call JSON leaked into the visible chat transcript** (e.g.
+  an unescaped backslash in a Windows path) instead of being withheld —
+  fixed the classifier and wired the missing check into the main loop,
+  `autonomous.ts`, and `codingSubagents.ts`. (#119)
+- **Conversation history never appeared in the sidebar for any user** (guest
+  or signed-in), because conversations were always stored under
+  `user_id = NULL` while the query filtered on a non-null match. (#119)
+- Settings modal's close button and first two toggles rendered off-screen on
+  shorter viewports (no `maxHeight`/`overflowY` on the card). (#119)
+- Onboarding progress was lost if you quit partway through — the step state
+  was never persisted. (#119)
+- The "nearing context limit" warning only reached `console.warn`, never the
+  UI (missing `emit` call on the 90% branch, unlike its 100% sibling). (#119)
+- A Google Fonts `@import` that the app's own CSP has always blocked
+  (contradicting its own comment). (#119)
+- Several modals were missing `role="dialog"`/`aria-modal` and
+  Escape-to-close handling. (#119)
 
-### Security
-
-- **MCP tools now honour the per-tool approval gate.** The MCP fallback ran
-  *after* the executeTool HITL gate, and MCP tool names aren't in
-  `DESTRUCTIVE_TOOLS`, so an MCP tool (a stdio server can run arbitrary local
-  actions) executed with no confirmation in every autonomy mode. It is now gated
-  like built-in state-changing tools: outside autopilot (full-auto / an approved
-  plan) it requires one human confirmation before running.
-- **Narrowed the read trust boundary (`pathSafety.ts`).** Reads stay unconfined
-  within the user's own space (project/data files on other drives keep working),
-  but a read of a path *outside* home is now refused if it targets a system-level
-  secret store (`SYSTEM_SECRET_PATH_RE`: Windows registry hives, `/etc/shadow`,
-  private TLS/SSH keys, the macOS local directory DB) or another user's home
-  directory — closing an information-disclosure surface without breaking
-  legitimate cross-drive reads.
+**Full Changelog**: https://github.com/Satyabrat2005/Openui/compare/v7.1.1...v7.1.2
 
 ## v7.1.1 — 2026-07-12
 
