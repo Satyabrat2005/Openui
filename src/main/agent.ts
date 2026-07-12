@@ -5,6 +5,7 @@ import { SPAWN_SUBAGENTS_TOOL, runParallelSubagents, parseSubTaskSpecs } from '.
 import { codingToolSchemas, executeCodingTool, describeCodingToolCall } from './codingTools'
 import { VerifyGate } from './verifyGate'
 import { detectProjectType, getProjectProfile } from './projectProfiles'
+import { looksLikeMissingPrecondition } from './preconditionClassifier'
 import { getWorkspaceDir, setActiveProject } from './sandbox'
 import { ensureCodebaseIndexed } from './codebaseIndex'
 import { buildCodebaseMap } from './codebaseMap'
@@ -1285,6 +1286,14 @@ export async function handleChat(win: BrowserWindow, userMessage: string, tier: 
     let continuationNudges = 0
     const MAX_CONTINUATION_NUDGES = 2
 
+    // Precondition-failure tracking: a tool failing because something it needs
+    // (an app, a connection, a config value, a subscription tier) isn't there
+    // will keep failing identically no matter how many more turns we spend on
+    // it. Stop and say so instead of silently burning the rest of the budget.
+    let lastToolError: string | null = null
+    let repeatedPreconditionFailures = 0
+    const MAX_REPEATED_PRECONDITION_FAILURES = 2
+
     for (let turn = 0; turn < maxTurns; turn++) {
       trackEvent(Events.MODEL_ROUTE_SELECTED, {
         tier: effectiveTier,
@@ -1518,8 +1527,29 @@ export async function handleChat(win: BrowserWindow, userMessage: string, tier: 
       // Feed the result back so the model can take the next step.
       history.push({ role: 'user', content: formatToolResult(toolCall, result) })
 
+      if (!result.ok && looksLikeMissingPrecondition(result.error)) {
+        repeatedPreconditionFailures++
+        lastToolError = result.error ?? null
+      } else {
+        repeatedPreconditionFailures = 0
+        lastToolError = result.ok ? null : result.error ?? null
+      }
+
+      // Two consecutive "this needs setup" failures won't clear themselves by
+      // retrying — stop before spending another model call and say what's
+      // actually blocking, instead of silently exhausting the turn budget.
+      if (repeatedPreconditionFailures >= MAX_REPEATED_PRECONDITION_FAILURES) {
+        finalText = `I'm stuck: ${lastToolError} I stopped retrying instead of continuing silently — let me know if you'd like a different approach.`
+        reachedLimit = true
+        if (planSteps) settlePlanHonest(win, planSteps, completedStepIds)
+        database.messages.addMessage(convId, 'assistant', finalText)
+        break
+      }
+
       if (turn === maxTurns - 1) {
-        finalText = 'Reached the tool-call limit for this request.'
+        finalText = lastToolError
+          ? `Reached the tool-call limit for this request. Last error: ${lastToolError}`
+          : 'Reached the tool-call limit for this request.'
         reachedLimit = true
         // Don't strand the checklist half-lit: green only the steps actually
         // checked off, mark the rest error rather than leaving them "working".
