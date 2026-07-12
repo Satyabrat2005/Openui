@@ -54,6 +54,8 @@ Respond with ONLY a raw JSON object — no prose before/after, no markdown code 
 Rules:
 - Each step is a short imperative phrase a person could tick off (≤ 12 words).
 - Use 2 to ${MAX_STEPS} steps. Order them by dependency (a step that needs a previous result comes later). Merge trivial actions; never pad.
+- ONE step = ONE OpenUI action (one tool call). Writing a file — with ALL its contents — is a SINGLE step; NEVER split it into "create the file", "add line 1", "add line 2", "save". There is no per-line or "save" action: a file is written whole. Likewise "open a folder in an editor" is one step, not "navigate" + "open".
+- Example — "make a folder on my Desktop, open it in VS Code, and write hello.js with two lines" → {"summary":"Create openui-demo and add hello.js","steps":["Create the folder Desktop/openui-demo","Open Desktop/openui-demo in VS Code","Write hello.js in it with the requested lines"]} (3 steps, not 7).
 - Prefer opening a DESKTOP app over its website when both exist (e.g. WhatsApp Desktop before WhatsApp Web).
 - If the request is a single trivial action, or is just conversation / a question that needs no computer actions, return {"summary": "", "steps": []}.`
 

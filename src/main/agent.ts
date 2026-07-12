@@ -725,6 +725,42 @@ function settlePlanHonest(
 }
 
 /**
+ * Read-only / inspection tools. A successful call to one of these is not itself
+ * progress on a plan step (it gathers information for a later action), so it must
+ * NOT auto-advance the checklist.
+ */
+const READ_ONLY_TOOLS = new Set<string>([
+  'list_directory',
+  'list_apps',
+  'search_files',
+  'search_local_files',
+  'read_file',
+  'read_clipboard',
+  'read_screen',
+  'browser_extract_text',
+  'list_open_prs',
+  'get_pr_diff',
+  'get_pr_files',
+  'get_figma_file'
+])
+
+/**
+ * Tick the checklist off from REAL tool execution, not just the model's
+ * self-reported complete_step calls — a small local model reliably runs the
+ * tools (create_folder, open_folder_in_editor, write_file) but routinely forgets
+ * to emit complete_step, which used to leave every row red even though the work
+ * happened. On each successful action tool we mark the next still-pending step
+ * done. A failed tool advances nothing, so a step whose action never succeeded
+ * (e.g. a write_file that was never called) stays honestly incomplete.
+ */
+function autoAdvancePlan(win: BrowserWindow, steps: PlanStepRow[], completedStepIds: Set<string>): void {
+  const next = steps.find((s) => !completedStepIds.has(s.id))
+  if (!next) return
+  completedStepIds.add(next.id)
+  advancePlan(win, steps, next.id)
+}
+
+/**
  * Pushback that keeps a planned run going when the model declares victory before
  * checking every step off. Names the exact unfinished steps and the tool to use,
  * so a weak local model can recover instead of leaving steps stranded.
@@ -1339,9 +1375,9 @@ export async function handleChat(win: BrowserWindow, userMessage: string, tier: 
         })
       }
 
-      // Per-tool rows only outside a plan; inside a plan the checklist (advanced
-      // by complete_step) is the source of truth. A failed tool still reaches the
-      // model via the TOOL RESULT below, so it can recover or explain.
+      // Per-tool rows only outside a plan; inside a plan the checklist is the
+      // source of truth. A failed tool still reaches the model via the TOOL
+      // RESULT below, so it can recover or explain.
       if (!planSteps) {
         emit(win, 'openui:task:update', {
           id: taskId,
@@ -1349,6 +1385,11 @@ export async function handleChat(win: BrowserWindow, userMessage: string, tier: 
           status: result.ok ? 'done' : 'error',
           detail: result.ok ? result.output : result.error
         } satisfies TaskUpdate)
+      } else if (result.ok && !READ_ONLY_TOOLS.has(toolCall.tool)) {
+        // Drive the checklist off real work: a successful action tool ticks the
+        // next pending step, so progress shows even when the model forgets
+        // complete_step (weak local models routinely do).
+        autoAdvancePlan(win, planSteps, completedStepIds)
       }
 
       runLog.toolCall({
