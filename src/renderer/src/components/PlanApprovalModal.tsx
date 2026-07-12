@@ -1,3 +1,4 @@
+import { useEffect } from 'react'
 import type { PlanRequestPayload } from '../env'
 
 interface Props {
@@ -14,8 +15,19 @@ interface Props {
  * replaces the old "confirm one action at a time" friction.
  */
 export default function PlanApprovalModal({ request, onApprove, onCancel }: Props): JSX.Element {
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') onCancel()
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [onCancel])
+
   return (
     <div
+      role="dialog"
+      aria-modal="true"
+      aria-label="Approve plan"
       style={{
         position: 'fixed',
         inset: 0,

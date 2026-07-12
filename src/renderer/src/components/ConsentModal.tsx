@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 
 interface Props {
   /** Called once the user has made a choice (allow or skip) so the host can unmount. */
@@ -30,8 +30,19 @@ export default function ConsentModal({ onClose }: Props): JSX.Element {
     }
   }
 
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') onClose()
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [onClose])
+
   return (
     <div
+      role="dialog"
+      aria-modal="true"
+      aria-label="Privacy consent"
       style={{
         position: 'fixed',
         inset: 0,

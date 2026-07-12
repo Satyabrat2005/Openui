@@ -29,6 +29,9 @@ export default function PermissionModal({ permission, onDismiss }: Props): JSX.E
 
   return (
     <div
+      role="dialog"
+      aria-modal="true"
+      aria-label={title}
       style={{
         position: 'fixed',
         inset: 0,
