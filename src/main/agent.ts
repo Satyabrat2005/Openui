@@ -6,7 +6,7 @@ import { codingToolSchemas, executeCodingTool, describeCodingToolCall } from './
 import { VerifyGate } from './verifyGate'
 import { detectProjectType, getProjectProfile } from './projectProfiles'
 import { looksLikeMissingPrecondition } from './preconditionClassifier'
-import { getWorkspaceDir, setActiveProject } from './sandbox'
+import { getWorkspaceDir, setActiveProject, getActiveProject, activeProjectHasFiles, listSandboxFiles } from './sandbox'
 import { ensureCodebaseIndexed } from './codebaseIndex'
 import { buildCodebaseMap } from './codebaseMap'
 import { deriveProjectSlug } from './projectName'
@@ -573,6 +573,33 @@ const BUILD_RE =
   /\b(build|scaffold|bootstrap|create|make|generate|code|develop)\b[^.!?]{0,60}\b(react|next(?:\.?js)?|vue|svelte|angular|node(?:\.?js)?|express|vite|website|web\s?site|web\s?app|webapp|web\s?page|webpage|landing\s?page|front\s?end|frontend|back\s?end|backend|app|application|project|game|api|cli|dashboard|component|script|program)\b/i
 
 /**
+ * Recognise a FOLLOW-UP to an in-progress build — "now add a signup form",
+ * "also wire up the backend", "make it dark mode", "update the nav". These
+ * carry an edit verb but usually NO build noun, so BUILD_RE misses them and they
+ * fall through to the OS-automation chat loop, which has no coding tools — the
+ * model then just NARRATES the change ("I'll update index.html…") without a
+ * single write. Pairing this with `activeProjectHasFiles()` at the routing site
+ * means it only fires when there is genuinely a current project to continue, so
+ * an unrelated "now add a calendar reminder" (no reference to the build) stays
+ * out of the builder. Deliberately requires the edit verb to point at prior work
+ * (a pronoun or a software/web noun) so it can't grab arbitrary OS requests.
+ */
+const CONTINUATION_EDIT_VERB_RE =
+  /\b(add|update|change|modify|edit|remove|delete|fix|include|wire|connect|hook|integrate|improve|refactor|rename|replace|restyle|redesign|style|animate|adjust|tweak|extend)\b/i
+const CONTINUATION_PRIOR_WORK_RE =
+  /\b(it|this|that|them|the\s+(?:page|site|website|web\s?app|webapp|app|project|code|file|files|form|nav(?:bar)?|header|footer|hero|button|buttons|section|sections|pricing|feature|features|card|cards|layout|theme|colou?r|colou?rs|background|animation|animations|backend|frontend|endpoint|api|server|css|html|js|script|styling|design))\b/i
+const CONTINUATION_MAKE_IT_RE = /\bmake\s+it\b/i
+
+/**
+ * True when `text` reads as an iteration on the current build rather than a new
+ * one. Gated by the caller with `activeProjectHasFiles()` — see the regex note.
+ */
+export function isBuildContinuation(text: string): boolean {
+  if (CONTINUATION_MAKE_IT_RE.test(text)) return true
+  return CONTINUATION_EDIT_VERB_RE.test(text) && CONTINUATION_PRIOR_WORK_RE.test(text)
+}
+
+/**
  * Pull a trailing "...open/edit/continue it in/with/using <tool>" editor name
  * out of a build request, e.g. "build a snake game and open it in Antigravity"
  * → "Antigravity". Deliberately requires a hand-off verb (open/edit/continue),
@@ -665,21 +692,44 @@ async function runBuilderSession(win: BrowserWindow, tier: Tier, userMessage: st
     )
   }
 
-  const messages: Message[] = [{ role: 'user', content: userMessage }]
   const codingNames = knownCodingToolNames()
 
-  // Give this build its own folder under ~/OpenUI Projects (so successive builds
-  // don't overwrite each other) and arm the editor to open on the first write.
-  // Only the interactive session arms it; the unattended runner in autonomous.ts
-  // must never steal focus.
-  const projectSlug = deriveProjectSlug(userMessage)
-  setActiveProject(projectSlug)
+  // Continuation vs. new project. A follow-up ("now add a backend", "make it
+  // dark") must land in the SAME folder as the build it iterates on — deriving a
+  // fresh slug from the follow-up's own words was the bug that scattered a
+  // frontend, its animations, and its backend across three disconnected empty
+  // folders. Only treat it as a continuation when there is genuinely a current
+  // project with files to continue (see isBuildContinuation's regex note).
+  const continuing = isBuildContinuation(userMessage) && (await activeProjectHasFiles())
+  const projectSlug = continuing ? (getActiveProject() as string) : deriveProjectSlug(userMessage)
+  if (!continuing) setActiveProject(projectSlug)
   emit(win, 'openui:task:update', {
     id: 'project-folder',
-    label: `Project folder: ${projectSlug}`,
+    label: continuing ? `Continuing project: ${projectSlug}` : `Project folder: ${projectSlug}`,
     status: 'done',
     detail: getWorkspaceDir()
   } satisfies TaskUpdate)
+
+  // Seed the model with the request. On a continuation, prepend the existing file
+  // list and an explicit "edit in place, don't start over" instruction — the
+  // builder session otherwise starts from a blank single message with no memory
+  // of the previous turn, so a code-tuned model with no view of the tree would
+  // rewrite from scratch (or, worse, do nothing). The files are discoverable via
+  // list_files/read_file, but naming them up front is what reliably turns a
+  // follow-up into edits to the real files rather than a fresh guess.
+  let firstMessage = userMessage
+  if (continuing) {
+    const existing = await listSandboxFiles(60)
+    firstMessage =
+      `CONTINUATION of the existing project in this workspace. Current files:\n` +
+      existing.map((f) => `  ${f}`).join('\n') +
+      `\n\nModify these EXISTING files to satisfy the request. Read a file with read_file ` +
+      `before changing it, and use edit_file to change it in place — never write_file over a ` +
+      `file that already exists (that deletes everything you don't retype). Do not scaffold a ` +
+      `new project or re-create files that are already here.\n\nRequest: ${userMessage}`
+  }
+  const messages: Message[] = [{ role: 'user', content: firstMessage }]
+
   armEditorAutoOpen(extractEditorHandoff(userMessage))
   // Warm the semantic index + symbol map for this project in the background
   // (the index self-degrades when the native module / Ollama is unavailable).
@@ -1185,8 +1235,17 @@ export async function handleChat(win: BrowserWindow, userMessage: string, tier: 
   // scaffolding a project.
   const isPractice = !isPrReview && !isDesigner && PRACTICE_RE.test(userMessage)
   // Builder: scaffold a real project in the sandbox. Never re-planned or routed
-  // through the OS tools — it runs its own coding loop below.
-  const isBuild = !isPrReview && !isDesigner && !isPractice && BUILD_RE.test(userMessage)
+  // through the OS tools — it runs its own coding loop below. As well as an
+  // explicit build request (BUILD_RE), route follow-ups that iterate on the
+  // CURRENT build ("now add a backend", "make it dark") — these carry no build
+  // noun so BUILD_RE misses them, and without this they hit the OS chat loop,
+  // which has no coding tools, so the model narrates the change without writing
+  // a byte. Gated on activeProjectHasFiles() so it only fires mid-build.
+  const isBuild =
+    !isPrReview &&
+    !isDesigner &&
+    !isPractice &&
+    (BUILD_RE.test(userMessage) || (isBuildContinuation(userMessage) && (await activeProjectHasFiles())))
   // PR review / designer want pro-tier models. SECURITY: clamp the final tier to
   // the signed-in user's verified entitlement so the untrusted renderer (or these
   // forced-pro modes) can't route to models the user hasn't paid for. No-op when

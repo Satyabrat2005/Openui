@@ -111,6 +111,28 @@ export function resetActiveProject(): void {
 }
 
 /**
+ * True when an active project is set AND its folder already holds real content
+ * (a file, or a non-node_modules/dot subdirectory). This is how the router
+ * decides a follow-up like "now add a backend" is a CONTINUATION of the current
+ * build rather than a fresh project — it only means "continue" when there is
+ * genuinely something to continue. Deliberately does NOT create the folder (no
+ * ensureWorkspace) so a routing check has no filesystem side effects.
+ */
+export async function activeProjectHasFiles(): Promise<boolean> {
+  if (!activeProject) return false
+  const dir = join(getProjectsRoot(), activeProject)
+  try {
+    const entries = await readdir(dir, { withFileTypes: true })
+    return entries.some(
+      (e) => e.isFile() || (e.isDirectory() && e.name !== 'node_modules' && !e.name.startsWith('.'))
+    )
+  } catch {
+    // Folder doesn't exist yet / unreadable → nothing to continue.
+    return false
+  }
+}
+
+/**
  * Per-worker workspace override (§3). Parallel coding sub-agents each run inside
  * their own git worktree; wrapping a worker in `runInWorkspace(worktreeDir, fn)`
  * makes every sandbox entry point resolve against THAT tree for the dynamic

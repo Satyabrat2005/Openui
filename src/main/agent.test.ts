@@ -128,7 +128,7 @@ vi.mock('./trainingStore', () => ({
   exportDatasetToFile: vi.fn(async () => '')
 }))
 
-import { handleChat, clearHistory, registerAgentIPC, isOllamaRunnerCrash } from './agent'
+import { handleChat, clearHistory, registerAgentIPC, isOllamaRunnerCrash, isBuildContinuation } from './agent'
 
 // A fake BrowserWindow that records everything emitted to the renderer.
 const win = {
@@ -420,5 +420,39 @@ describe('handleChat — GPU runner crash recovery', () => {
     expect(h.ollamaChat).toHaveBeenCalledTimes(1) // no CPU retry
     expect(sent('openui:chat:error')).toBe(true)
     expect(String(lastArg('openui:chat:error'))).toMatch(/OLLAMA_FLASH_ATTENTION=0|qwen3:4b/)
+  })
+})
+
+describe('isBuildContinuation — follow-up vs. new build vs. unrelated', () => {
+  it('recognises follow-ups that iterate on the current build', () => {
+    // These carry an edit verb aimed at prior work but no build noun, so BUILD_RE
+    // misses them — the exact messages that used to fall through to the OS chat
+    // loop and get narrated instead of built.
+    for (const msg of [
+      'Now add scroll animations to the page you just built',
+      'Now add a working signup form and a small Express backend to the app',
+      'also add a dark mode toggle to the nav',
+      'update the pricing table',
+      'make it more colorful',
+      'change the hero background',
+      'wire up the backend to the form',
+      'fix the footer links'
+    ]) {
+      expect(isBuildContinuation(msg), msg).toBe(true)
+    }
+  })
+
+  it('does not fire on unrelated OS/chat requests', () => {
+    // "add"/"make" appear, but nothing points at the build — these must keep
+    // routing to the normal assistant, not the builder.
+    for (const msg of [
+      'now add a reminder for 3pm tomorrow',
+      'add milk to my shopping list',
+      'what is the weather today',
+      'open my email and summarise the latest thread',
+      'make a dinner reservation for two'
+    ]) {
+      expect(isBuildContinuation(msg), msg).toBe(false)
+    }
   })
 })
