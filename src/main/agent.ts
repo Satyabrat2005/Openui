@@ -13,6 +13,8 @@ import { deriveProjectSlug } from './projectName'
 import { armEditorAutoOpen } from './editor'
 import { generatePlan, looksLikeTask, type Plan } from './planner'
 import { getMcpToolSchemas, callMcpTool } from './mcp-client'
+import { getGithubToken, githubToolSchemas } from './github'
+import { getFigmaToken, figmaToolSchemas } from './figma'
 import { database } from './database'
 import { clampTierToEntitlement } from './stripe/pricing'
 import { getCurrentUserId } from './stripe/subscriptionSync'
@@ -260,7 +262,22 @@ function buildSystemPrompt(): string {
 }
 
 export function buildDefaultSystemPrompt(): string {
-  const allSchemas: ToolSchema[] = [...toolSchemas, ...getMcpToolSchemas()]
+  // GitHub/Figma tool schemas + workflow instructions are only worth their chunk
+  // of the (small, 8K-ish) local context budget when the user actually has a
+  // token configured — otherwise the tools are unusable (tokenRequiredError) and
+  // the schemas are pure dead weight. Trimming them leaves more room in num_ctx
+  // for real conversation and tool results before Ollama starts truncating the
+  // middle of the prompt (see the numCtx guard in callOllama below).
+  const hasGithub = getGithubToken().length > 0
+  const hasFigma = getFigmaToken().length > 0
+  const githubNames = new Set(githubToolSchemas.map((s) => s.name))
+  const figmaNames = new Set(figmaToolSchemas.map((s) => s.name))
+  const allSchemas: ToolSchema[] = [
+    ...toolSchemas.filter(
+      (s) => (!githubNames.has(s.name) || hasGithub) && (!figmaNames.has(s.name) || hasFigma)
+    ),
+    ...getMcpToolSchemas()
+  ]
   return `You are OpenUI, an intelligent desktop assistant running as a menu-bar app. You help users get things done on their computer through natural conversation.
 
 You can control the operating system by calling tools. To call a tool, respond with ONLY a raw JSON object — no prose before or after it, and NO markdown code fences:
@@ -335,27 +352,28 @@ Parallel sub-agents — when a request splits into INDEPENDENT sub-tasks that do
 {"tool": "spawn_subagents", "args": {"tasks": [{"title": "Check Netflix usage", "instruction": "Open netflix.com viewing activity and report whether it was used last month.", "app": "netflix"}, {"title": "Check Amazon Prime usage", "instruction": "Open Amazon order/watch history and report Prime usage last month.", "app": "amazon"}]}}
 Each task runs concurrently in its own sub-agent on its own model. Use this ONLY for genuinely independent work (max 4 tasks) — never for sequential steps that depend on one another. When they finish you receive one combined TOOL RESULT summarising every sub-agent; use it to reply to the user.
 
-GitHub PR review workflow — use this when the user asks to "Review my PRs" or "review pull requests":
+${hasGithub ? `GitHub PR review workflow — use this when the user asks to "Review my PRs" or "review pull requests":
 1. Call list_open_prs(repo) — use the repo the user mentions, or the value of GITHUB_REPO env var if they say "my PRs".
 2. For each open PR, call get_pr_diff(repo, pr_number) to fetch the code changes.
 3. Analyse the diff in depth: bugs, security vulnerabilities, architectural concerns, code quality.
 4. Call post_pr_comment(repo, pr_number, comment) to leave a structured review on each PR.
 Repeat steps 2–4 for every open PR. After all PRs are reviewed, give the user a summary of your findings.
-
-Figma design workflow — use this when the user mentions "Figma", asks for a design review, or wants AI feedback on UI frames. The file_key is the alphanumeric string in the Figma URL: figma.com/file/{file_key}/…
+` : ''}
+${hasFigma ? `Figma design workflow — use this when the user mentions "Figma", asks for a design review, or wants AI feedback on UI frames. The file_key is the alphanumeric string in the Figma URL: figma.com/file/{file_key}/…
 1. Call get_figma_file(file_key) to discover the file structure and all top-level frame IDs.
 2. Call export_figma_frames(file_key, node_ids?) to export frames as PNGs and analyse them with Claude Vision. Prefer the most important screens (main view, key flows).
 3. Call create_figma_comment(file_key, message, node_id?) to post AI-generated feedback directly on the Figma file, anchored to specific frames.
 If the user needs to interact with the Figma web UI directly (inspect prototypes, view comments), call browser_navigate("https://www.figma.com/file/{file_key}") to open it in the Playwright browser.
-
-GitHub repo automation workflow — use this when the user asks you to publish a project to GitHub, create a repo, push code, add a README, or open a PR:
+` : ''}
+${hasGithub ? `GitHub repo automation workflow — use this when the user asks you to publish a project to GitHub, create a repo, push code, add a README, or open a PR:
 1. Call check_repo_exists(repo) to see whether "owner/repo" already exists.
 2. If it does NOT exist, call create_repo(name) to create it (the user will be asked to approve).
 3. Call push_files(repo, files) to upload the project files as one commit on the "openui/init" branch.
 4. Call update_readme(repo, content) to write a README on the same branch.
 5. Call open_pull_request(repo, title, body) to open a PR from "openui/init" into the default branch.
 NEVER merge a PR on your own initiative. Call merge_pr(repo, pr_number) ONLY when the user explicitly asks to merge in this conversation — and even then it always shows them a confirmation and runs only after their Allow click, in every autonomy mode. All GitHub writes require the user's approval before they run. Requires a GitHub token (Settings → GitHub token, or GITHUB_TOKEN env) with "repo" scope.
-
+` : `To publish a project to GitHub, create a repo, push code, or open a PR, the user first needs to add a GitHub token in Settings → GitHub token (or GITHUB_TOKEN env) with "repo" scope — tell them that if they ask for this and no token is configured.
+`}
 Design-in-browser workflow — use this when the user asks you to design, mock up, or prototype a web page or site. This is SEPARATE from GitHub: design first, publish later (and only if asked):
 1. Write a complete, self-contained HTML document (inline CSS/JS) and call design_preview(name, html) — it opens in the user's default browser.
 2. Ask what they'd like changed; call design_preview again with the SAME name and the revised HTML (they refresh the tab).
@@ -614,7 +632,8 @@ Workflow:
 4. Verify it works: call run_script to run the build (e.g. {"tool":"run_script","args":{"script":"build"}}) and/or run_tests. For a web app, running the "dev" script performs a boot smoke test (confirms it starts without crashing).
 5. If verification fails ("INSTALL FAILED" / "SCRIPT FAILED" / "TESTS FAILED"), read the offending file(s) with read_file, fix them with edit_file, and re-run the failing step. Iterate until it passes.
 6. Once it passes, commit the work so the user can review and revert it: {"tool":"git","args":{"subcommand":"init"}} on a fresh workspace, then "add" with ["."] and "commit" with ["-m","Short summary"]. Never commit a red build. git here has no network access — it cannot push.
-7. When it works, reply in plain natural language: summarise what you built, the key files, and how to run it. Do NOT wrap the final summary in JSON.
+7. If the user asked to see/open/preview the result (e.g. a web page), call open_in_browser with the entry file's path (e.g. "index.html") before your final summary. There is no other way to show them a live preview — never invent a tool like "open_url" for this.
+8. When it works, reply in plain natural language: summarise what you built, the key files, and how to run it. Do NOT wrap the final summary in JSON.
 
 If after several honest attempts you cannot get it working, reply in plain text beginning with "GIVE UP:" and a short explanation. Never fake a pass or delete tests to make them pass.`
 
@@ -630,6 +649,22 @@ function knownCodingToolNames(): Set<string> {
  * exactly like the OS-automation loop. Returns the final natural-language reply.
  */
 async function runBuilderSession(win: BrowserWindow, tier: Tier, userMessage: string): Promise<string> {
+  // Fail fast and honestly when Ollama itself is unreachable. Without this check,
+  // callModel's "I can't reach the local AI engine..." string comes back as an
+  // ordinary natural-language reply with zero tool calls — indistinguishable from
+  // the model genuinely declining to build — so the zero-tool-retry loop below
+  // nudges a server that was never going to answer, burns its retry budget, and
+  // gives up with a misleading "name the tech stack you want used" message that
+  // hides the real (infrastructure, not prompt) cause from the user.
+  if (!shouldRouteToCloud() && !(await isOllamaRunning())) {
+    const host = process.env.OLLAMA_HOST ?? 'http://127.0.0.1:11434'
+    return (
+      `I can't reach the local AI engine (Ollama) at ${host}, so I can't build this. ` +
+      `Start it with "ollama serve" (or open the Ollama app) and make sure ` +
+      `${await localCodeModel()} is installed, then try again.`
+    )
+  }
+
   const messages: Message[] = [{ role: 'user', content: userMessage }]
   const codingNames = knownCodingToolNames()
 
