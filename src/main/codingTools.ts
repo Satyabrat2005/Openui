@@ -19,6 +19,7 @@
  * Schemas reuse the ToolSchema/ToolResult shapes from tools.ts so they render
  * into the system prompt with the same renderer the interactive agent uses.
  */
+import { shell } from 'electron'
 import {
   writeSandboxFile,
   readSandboxFile,
@@ -27,6 +28,7 @@ import {
   searchSandbox,
   listSandboxFiles,
   getWorkspaceDir,
+  resolveSandboxPath,
   runTests,
   runInstall,
   runScript,
@@ -73,6 +75,25 @@ async function write_file(args: Record<string, unknown>): Promise<ToolResult> {
     return { ok: true, output: `Wrote ${Buffer.byteLength(content, 'utf8')} bytes to ${written}.` }
   } catch (err) {
     return { ok: false, error: `write_file failed: ${err instanceof Error ? err.message : String(err)}` }
+  }
+}
+
+/**
+ * Open a workspace file (typically an HTML entry point) in the user's default
+ * browser/app so they can see the result of a build. This is the builder
+ * session's only way to show a preview — without it the model has no tool to
+ * fulfil "open it in my browser" and either hallucinates one or gives up.
+ */
+async function open_in_browser(args: Record<string, unknown>): Promise<ToolResult> {
+  const path = typeof args.path === 'string' ? args.path : ''
+  if (!path) return { ok: false, error: 'open_in_browser requires a string "path".' }
+  try {
+    const abs = await resolveSandboxPath(path)
+    const err = await shell.openPath(abs)
+    if (err) return { ok: false, error: `open_in_browser failed: ${err}` }
+    return { ok: true, output: `Opened ${path} in your default browser/app.` }
+  } catch (err) {
+    return { ok: false, error: `open_in_browser failed: ${err instanceof Error ? err.message : String(err)}` }
   }
 }
 
@@ -368,6 +389,20 @@ export const codingToolSchemas: ToolSchema[] = [
     }
   },
   {
+    name: 'open_in_browser',
+    description:
+      'Open a workspace file (e.g. an HTML page) in the user\'s default browser so they can see it. ' +
+      'Use this at the end of a build when the user asked to see/open/preview the result — e.g. ' +
+      'call it with "index.html" right after writing a web page.',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Workspace-relative file to open, e.g. "index.html".' }
+      },
+      required: ['path']
+    }
+  },
+  {
     name: 'edit_file',
     description:
       'Change part of an existing workspace file by replacing an exact snippet of text. ' +
@@ -600,6 +635,7 @@ export const codingToolSchemas: ToolSchema[] = [
 const registry: Record<string, CodingExecutor> = {
   write_file,
   read_file,
+  open_in_browser,
   edit_file,
   apply_patch,
   search_code,

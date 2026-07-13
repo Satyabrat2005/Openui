@@ -209,6 +209,17 @@ export async function readSandboxFile(relPath: string): Promise<string> {
 }
 
 /**
+ * Resolve a model-supplied relative path to its absolute location inside the
+ * sandbox, with the same escape/absolute-path checks as every read/write —
+ * for callers (like open_in_browser) that need the real path on disk rather
+ * than its contents.
+ */
+export async function resolveSandboxPath(relPath: string): Promise<string> {
+  const workspace = await ensureWorkspace()
+  return resolveInSandbox(workspace, relPath)
+}
+
+/**
  * Recursively list files in the sandbox (relative paths), skipping node_modules
  * and dot-directories. Capped so a huge tree cannot flood the model context.
  */
