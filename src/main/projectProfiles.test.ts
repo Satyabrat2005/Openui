@@ -75,4 +75,16 @@ describe('project profile verdicts', () => {
       expect(p.type).toBe(type)
     }
   })
+
+  it('website profile carries the premium design system so builds are not plain', () => {
+    // These concrete cues are what steer the small local coder model toward a
+    // modern, multi-section site instead of a bare header + hero. If the design
+    // block is ever dropped, output quality silently regresses — hence the guard.
+    const addendum = getProjectProfile('website').promptAddendum
+    expect(addendum).toMatch(/DESIGN SYSTEM/)
+    expect(addendum).toMatch(/IntersectionObserver/) // scroll reveal animation
+    expect(addendum).toMatch(/Google Fonts/) // real typography, not default serif
+    expect(addendum).toMatch(/pricing/i) // must build full sections, not one hero
+    expect(addendum).toMatch(/never lorem ipsum/i) // real copy, no placeholder boxes
+  })
 })

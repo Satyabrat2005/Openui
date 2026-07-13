@@ -104,7 +104,17 @@ const PROFILES: Record<ProjectType, ProjectProfile> = {
     promptAddendum: `PROJECT TYPE: website. Guidance:
 - For a simple site, plain HTML/CSS/JS files are better than a framework — no build step to break. Make index.html complete and self-contained where possible.
 - If the task needs a framework, scaffold it fully (package.json with dev/build scripts, config, source) and call install_dependencies before any script.
-- Verify your work: with a package.json, run_script "build" (or "dev" as a boot smoke test) or run_tests if you wrote tests. A plain static site with no package.json cannot be executed here — in that case call list_files once after writing your files; that counts as verification for a static site (it confirms the files actually exist on disk) and say clearly in your summary that the site is static and was not smoke-run.`,
+- Verify your work: with a package.json, run_script "build" (or "dev" as a boot smoke test) or run_tests if you wrote tests. A plain static site with no package.json cannot be executed here — in that case call list_files once after writing your files; that counts as verification for a static site (it confirms the files actually exist on disk) and say clearly in your summary that the site is static and was not smoke-run.
+
+DESIGN SYSTEM — for any landing page, marketing site, portfolio, or web UI, follow these rules EXACTLY so the result looks modern and premium, never plain or default-styled:
+- Theme is DARK. Background #07070c, body text #ecebff, muted text #9d9db8. ONE accent: a violet→indigo→pink gradient, linear-gradient(120deg,#a855f7,#6366f1,#e879f9). Put it on the primary button, on ONE word of the hero headline (via background-clip:text with -webkit-text-fill-color:transparent), and on soft glows — do not flood the page with it.
+- Fonts: in <head>, load Google Fonts — 'Inter' for body and 'Space Grotesk' for headings. Headings use letter-spacing:-0.02em, line-height 1.05, and large sizes (hero: font-size clamp(42px,7vw,80px)).
+- Depth & polish: a soft radial glow behind the hero (radial-gradient in a fixed/absolute div); 1px translucent borders (rgba(255,255,255,.08)); translucent card surfaces (rgba(255,255,255,.03)); generous border-radius (16–20px); shadows tinted with the accent (e.g. 0 20px 60px rgba(139,92,246,.3)); section padding around 100px vertical.
+- Sticky nav that becomes a blurred glass bar (backdrop-filter:blur(18px) + border-bottom) once the page is scrolled (toggle a class on scroll).
+- MOTION with vanilla JS only, NO external libraries: give sections a class like .reveal (opacity:0; transform:translateY(30px); transition), and use an IntersectionObserver to add an .in class that animates them in as they scroll into view. Add hover-lift (transform:translateY(-6px)) to cards and buttons.
+- A landing page MUST include, in this order: sticky nav → hero (small eyebrow pill + big gradient headline + one-sentence subtext + two CTA buttons) → features (3–4 cards or a bento grid with icons) → a stats or social-proof strip → a 3-tier pricing section (highlight the middle tier) → a final call-to-action band → a footer with link columns. Write REAL, specific copy for the actual product — never lorem ipsum, never empty placeholder boxes.
+- Fully responsive: multi-column grids collapse to one column under ~800px. Ship everything inline in index.html unless a framework was requested.
+- Do not stop at a bare header + one hero. A finished landing page is several full sections; build them all before you summarise.`,
     taskHint:
       'Build the site in the workspace. Verify it: run the build/dev script (or tests) if it has a package.json, otherwise call list_files to confirm the files exist.',
     ...markerVerdict({
