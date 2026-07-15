@@ -25,7 +25,14 @@ import {
   scoreContactCandidates,
   STATE_CHANGING_TOOLS,
   DESTRUCTIVE_TOOLS,
-  TIER_TOOL_REQUIREMENTS
+  TIER_TOOL_REQUIREMENTS,
+  slugifyForPath,
+  researchKeywords,
+  pickKeySentences,
+  escapeLatexText,
+  detectLoginState,
+  resolveServices,
+  SUBSCRIPTION_SERVICES
 } from './tools'
 
 const IS_WIN = process.platform === 'win32'
@@ -332,6 +339,135 @@ describe('parseDuckDuckGoResults', () => {
     expect(parseDuckDuckGoResults(raw, 5)).toEqual([
       { url: 'https://notitle.com/', title: 'https://notitle.com/' }
     ])
+  })
+})
+
+// ── research_audit helpers (pure, browser-free) ───────────────────────────────
+describe('research_audit helpers', () => {
+  it('slugifyForPath makes a safe, bounded, kebab folder name', () => {
+    expect(slugifyForPath('Transformer Attention: A Survey (2025)!')).toBe('transformer-attention-a-survey-2025')
+    expect(slugifyForPath('   ')).toBe('research')
+    expect(slugifyForPath('x'.repeat(100)).length).toBeLessThanOrEqual(48)
+  })
+
+  it('researchKeywords drops stopwords/short words and dedupes', () => {
+    const kw = researchKeywords('The best attention mechanisms for the transformer transformer')
+    expect(kw).toContain('attention')
+    expect(kw).toContain('mechanisms')
+    expect(kw).toContain('transformer')
+    expect(kw).not.toContain('the')
+    expect(kw).not.toContain('for')
+    expect(kw.filter((k) => k === 'transformer').length).toBe(1)
+  })
+
+  it('pickKeySentences ranks by keyword hits and respects the limit', () => {
+    const text =
+      'Attention is a mechanism. This unrelated sentence talks about weather and clouds today outside. ' +
+      'The transformer attention mechanism scales quadratically with sequence length in practice.'
+    const out = pickKeySentences(text, ['attention', 'transformer', 'mechanism'], 1)
+    expect(out.length).toBe(1)
+    expect(out[0]).toMatch(/transformer attention mechanism/i)
+  })
+
+  it('pickKeySentences returns nothing when no keyword matches', () => {
+    expect(pickKeySentences('Totally unrelated prose about gardening and soil quality.', ['quantum'], 3)).toEqual([])
+  })
+})
+
+// ── write_latex — LaTeX escaping (pure) ───────────────────────────────────────
+describe('escapeLatexText', () => {
+  it('escapes LaTeX special characters in plain-text fields', () => {
+    expect(escapeLatexText('50% off & more #1 for $5')).toBe('50\\% off \\& more \\#1 for \\$5')
+  })
+  it('escapes backslashes and tilde/caret', () => {
+    expect(escapeLatexText('a~b^c')).toBe('a\\textasciitilde{}b\\textasciicircum{}c')
+  })
+})
+
+// ── Assisted account tasks — login detection + service resolution + gating ─────
+describe('assisted account tools', () => {
+  const netflix = SUBSCRIPTION_SERVICES.find((s) => s.id === 'netflix')!
+
+  it('detectLoginState reads signed-in from the account page text', () => {
+    expect(detectLoginState('Membership & Billing — Sign out', netflix)).toBe('logged-in')
+  })
+  it('detectLoginState reads signed-out from a login prompt', () => {
+    expect(detectLoginState('Please Sign In to continue', netflix)).toBe('logged-out')
+  })
+  it('detectLoginState returns unknown when no hint matches', () => {
+    expect(detectLoginState('some unrelated page', netflix)).toBe('unknown')
+  })
+
+  it('resolveServices filters by id/name and defaults to all', () => {
+    expect(resolveServices(['netflix', 'spotify']).map((s) => s.id)).toEqual(['netflix', 'spotify'])
+    expect(resolveServices(['does-not-exist'])).toEqual(SUBSCRIPTION_SERVICES) // no match → all
+    expect(resolveServices(undefined)).toEqual(SUBSCRIPTION_SERVICES)
+  })
+
+  it('assisted account tools require up-front approval; refund send stays with send_email', () => {
+    expect(STATE_CHANGING_TOOLS.has('scan_accounts')).toBe(true)
+    expect(STATE_CHANGING_TOOLS.has('open_cancellation')).toBe(true)
+    expect(STATE_CHANGING_TOOLS.has('draft_refund_email')).toBe(true)
+    // The assisted tools themselves take no irreversible step, so they are NOT
+    // in DESTRUCTIVE_TOOLS — only the actual send (send_email) is.
+    expect(DESTRUCTIVE_TOOLS.has('draft_refund_email')).toBe(false)
+    expect(DESTRUCTIVE_TOOLS.has('send_email')).toBe(true)
+  })
+
+  it('draft_refund_email rejects an empty request (fails before any file write)', async () => {
+    const r = await executeTool('draft_refund_email', {}, { tier: 'free', bypassHitl: true })
+    expect(r).toMatchObject({ ok: false })
+  })
+})
+
+// ── Full browser-control tools — wiring + gating (no live browser needed) ──────
+describe('full browser-control tools', () => {
+  it('read-only browser tools are NOT gated and reach the not-connected path', async () => {
+    for (const tool of ['browser_list_tabs', 'browser_read_elements', 'browser_screenshot']) {
+      expect(STATE_CHANGING_TOOLS.has(tool)).toBe(false)
+      const r = await executeTool(tool, {}, { tier: 'free' })
+      expect(r).toMatchObject({ ok: false })
+      expect((r as { error: string }).error).toMatch(/No browser session/)
+    }
+  })
+
+  it('browser_wait_for is read-only and reaches the not-connected path (with required arg)', async () => {
+    expect(STATE_CHANGING_TOOLS.has('browser_wait_for')).toBe(false)
+    const r = await executeTool('browser_wait_for', { selector: '#x' }, { tier: 'free' })
+    expect(r).toMatchObject({ ok: false })
+    expect((r as { error: string }).error).toMatch(/No browser session/)
+  })
+
+  it('state-changing browser actions require up-front approval', async () => {
+    for (const tool of [
+      'browser_open_tab',
+      'browser_switch_tab',
+      'browser_close_tab',
+      'browser_scroll',
+      'browser_history',
+      'browser_press_key'
+    ]) {
+      expect(STATE_CHANGING_TOOLS.has(tool)).toBe(true)
+      const r = await executeTool(tool, {}, { tier: 'free' })
+      expect(r).toMatchObject({ status: 'pending_approval', tool })
+    }
+  })
+
+  it('none of the new browser tools are destructive (no irreversible step)', () => {
+    for (const tool of [
+      'browser_list_tabs',
+      'browser_read_elements',
+      'browser_screenshot',
+      'browser_wait_for',
+      'browser_open_tab',
+      'browser_switch_tab',
+      'browser_close_tab',
+      'browser_scroll',
+      'browser_history',
+      'browser_press_key'
+    ]) {
+      expect(DESTRUCTIVE_TOOLS.has(tool)).toBe(false)
+    }
   })
 })
 
