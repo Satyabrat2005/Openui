@@ -1,6 +1,9 @@
 # ── Dependencies ──────────────────────────────────────────────
 node_modules
 
+# ── Runtime-downloaded OCR models (tesseract.js fetches these) ─
+*.traineddata
+
 # ── Build / packaging output ──────────────────────────────────
 out
 dist
