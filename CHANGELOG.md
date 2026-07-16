@@ -5,6 +5,83 @@ the newest work lands under **Unreleased** until the next version bump.
 
 ## [Unreleased]
 
+## v7.1.3 — 2026-07-16
+
+Turns the browser layer into a full CDP-driven automation surface — your
+real Edge/Chrome profile, not a throwaway one — with an assisted,
+human-gated flow for account cancellation and refunds, plus four
+local-build reliability fixes surfaced while smoke-testing the
+local-Ollama chat/builder path. 2 PRs, 4 commits since v7.1.2.
+
+### Added
+
+- **`connect_browser` now drives your real Edge/Chrome** via a DevTools
+  debug port + CDP — your actual profile, logins, and multiple profiles
+  (via `profile` arg / `OPENUI_BROWSER_*` env), falling back to an
+  isolated profile if attach fails. Previously it launched an empty
+  throwaway profile. (#122)
+- **Full browser control surface**: `browser_read_elements` (structured
+  interactive elements with ready-to-use selectors — reliable clicking
+  without cloud vision), `browser_list_tabs` / `browser_open_tab` /
+  `browser_switch_tab` / `browser_close_tab`, `browser_scroll`,
+  `browser_screenshot`, `browser_wait_for`, `browser_history`,
+  `browser_press_key`. (#122)
+- **`research_audit`**: opens one tab per source (kept open), scrolls,
+  highlights query terms on-page, and saves an `audit.md` plus
+  per-source screenshots to `~/OpenUI Research/`. (#122)
+- **`write_latex`**: assembles and saves a compilable LaTeX paper, with
+  an optional Overleaf open for manual import. (#122)
+- **Assisted account tasks, gated to never take the irreversible step**:
+  `scan_accounts` (read-only login scan across 56 built-in services —
+  streaming, AI, productivity, gaming, fitness, cloud/dev, VPN,
+  learning, India streaming/reading), `open_cancellation` (drives to a
+  service's cancellation page and stops before the final click), and
+  `draft_refund_email` (drafts only — sending still goes through the
+  HITL-gated `send_email`). Every irreversible click stays behind
+  `SENSITIVE_ACTION_RE`, `browser_press_key` is limited to non-submit
+  keys so it can't bypass that gate, and read-only tools
+  (`browser_read_elements`, `browser_list_tabs`, `browser_screenshot`,
+  `browser_wait_for`, `scan_accounts`) skip the HITL gate while
+  state-changing ones stay behind it. (#122)
+- New `open_in_browser` coding tool for Builder Mode (`shell.openPath`
+  on a sandbox-resolved path, via a new escape-checked
+  `resolveSandboxPath` in `sandbox.ts`) — previously asking to "open it
+  in my browser" made the model hallucinate a nonexistent `open_url`
+  tool. (#121)
+
+### Fixed
+
+- **`openTopWhatsAppSearchResult` now waits for the results list to
+  render** before sending `Down`/`Enter` (tunable via
+  `OPENUI_WA_SELECT_MS`), fixing a bug where the chat was searched but
+  never opened. (#122)
+- **Dead GitHub/Figma prompt weight trimmed from
+  `buildDefaultSystemPrompt`.** Tool schemas and workflow prose for
+  GitHub/Figma were always included even with no token configured,
+  though those tools are unusable in that state (instant
+  `tokenRequiredError`). On local models with an 8192 `num_ctx`, that
+  dead weight pushed a brand-new one-line chat to ~7968/8192 tokens — a
+  hair from Ollama silently truncating the prompt. Now gated on
+  `getGithubToken()` / `getFigmaToken()` actually returning something.
+  (#121)
+- **An unreachable Ollama server used to masquerade as the model
+  declining to build.** `callModel`'s "can't reach the local AI engine"
+  string came back as a zero-tool-call reply, so the zero-tool-retry
+  loop nudged a dead server and gave up with a misleading "name the
+  tech stack you want used." `runBuilderSession` now checks
+  reachability up front and reports the real cause. (#121)
+- **Build follow-ups ("now add a backend", "make it dark mode") no
+  longer scatter across new project folders.** A follow-up carrying an
+  edit verb but no build noun missed `BUILD_RE` and fell into the OS
+  chat loop, which has no coding tools, so the model narrated the
+  change without writing anything; even when it did reach the builder,
+  it derived a new project folder from its own wording.
+  `isBuildContinuation()` + `activeProjectHasFiles()` now route
+  follow-ups to the builder and reuse the current project, seeding the
+  model with the existing file list and an "edit in place, don't start
+  over" instruction; the UI shows "Continuing project: &lt;slug&gt;".
+  (#121)
+
 ## v7.1.2 — 2026-07-13
 
 Closes a safety-critical HITL bypass in sub-agent spawning, adds Gmail
