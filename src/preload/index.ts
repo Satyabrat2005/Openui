@@ -34,6 +34,24 @@ type SubagentStatusPayload = { groupId: string; subId: string; status: string }
 type SubagentDonePayload = { groupId: string; subId: string; status: string; summary: string }
 type ScreenThumbnail = { ok: boolean; dataUrl?: string; error?: string }
 
+/** A live per-session grant to control one app via synthesised OS input. */
+type OsAppGrant = {
+  app: string
+  displayName: string
+  grantedAt: number
+  source: string
+}
+
+/** One line of the local OS-automation audit trail. */
+type OsAuditEntry = {
+  ts: string
+  event: string
+  app: string
+  detail?: string
+  /** Truncated hash of the screenshot the action was decided from. */
+  screenshotHash?: string
+}
+
 /** Signed-in user profile pushed/returned by the main auth layer. */
 type AuthUser = {
   id: string
@@ -421,6 +439,20 @@ const api = {
   // ── Auto-update (electron-updater) ──────────────────────────────────────────
   // Invokers are no-ops in dev (autoUpdater only runs packaged); the on* event
   // streams stay silent there too. Driven by the UpdateBanner component.
+  // ── OS-automation consent (per-session, per-app) ────────────────────────────
+  /** Apps OpenUI is currently allowed to control. Empty unless a task is live. */
+  listOsGrants: (): Promise<OsAppGrant[]> => ipcRenderer.invoke('openui:os-consent:list'),
+  /** Revoke one app's grant. Aborts any automation running against it. */
+  revokeOsGrant: (appName: string): Promise<boolean> =>
+    ipcRenderer.invoke('openui:os-consent:revoke', appName),
+  /** Revoke every grant — the "stop controlling my computer" button. */
+  revokeAllOsGrants: (): Promise<number> => ipcRenderer.invoke('openui:os-consent:revoke-all'),
+  /** Read the local audit trail of every OS-level action taken. */
+  readOsAuditLog: (limit?: number): Promise<OsAuditEntry[]> =>
+    ipcRenderer.invoke('openui:os-consent:audit', limit),
+  /** Path of the audit log, for a "reveal in folder" affordance. */
+  osAuditLogPath: (): Promise<string> => ipcRenderer.invoke('openui:os-consent:audit-path'),
+
   getAppVersion: (): Promise<string> => ipcRenderer.invoke('openui:get-app-version'),
   checkForUpdates: (): Promise<{ currentVersion: string }> =>
     ipcRenderer.invoke('openui:check-for-updates'),

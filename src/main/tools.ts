@@ -29,6 +29,13 @@ import { homedir } from 'node:os'
 import { SENSITIVE_PATH_RE, resolveSafePath } from './fs/pathSafety'
 import { app, desktopCapturer, clipboard, shell, BrowserWindow } from 'electron'
 import { checkAccessibility, checkScreenRecording, type PermissionTarget } from './permissions'
+import { ocrImage, ocrLines } from './ocr'
+import { runOsLoop, describe as describeVisionAction, type CapturedFrame } from './osLoop/loop'
+import { decodePngToRawFrame } from './osLoop/capture'
+import { activeWindow } from './osLoop/windowTarget'
+import { trailingSegment } from './osLoop/windowMatch'
+import { isAppGranted, signalFor, auditAction, audit } from './osConsent'
+import type { RunLog } from './runLog'
 import { resolveApp, scoreAppName, normalizeAppName, type InstalledApp } from './appResolver'
 import { runPowerShell, runPowerShellScript } from './powershell'
 import { enumerateWindowsApps, enumerateMacApps, launchWindowsApp } from './appIndex'
@@ -98,11 +105,17 @@ export interface ToolResult {
    * it into a HitlModal prompt and re-runs the tool after the human click.
    */
   needsConfirmation?: {
-    kind: 'site-consent' | 'sensitive-action' | 'choice'
+    kind: 'site-consent' | 'app-consent' | 'sensitive-action' | 'choice'
     /** Human-readable question for the confirmation dialog. */
     label: string
     /** For site-consent: the origin to persist a grant for on approval. */
     origin?: string
+    /**
+     * For app-consent: the app whose control is being requested. The grant is
+     * per-session only (see osConsent) — unlike `origin`, it is deliberately
+     * not persisted across restarts.
+     */
+    app?: string
     /**
      * For kind 'choice': the candidate options the user picks from. Always
      * non-empty when present — a single-candidate fallback (e.g. the literal
@@ -142,6 +155,17 @@ export interface ExecutorContext {
    * autonomy modes never set it.
    */
   sensitiveApproved?: boolean
+  /**
+   * Journal for long-running tools, so a desktop-automation or browser run can
+   * be reconstructed after the fact rather than only being visible live.
+   */
+  runLog?: RunLog
+  /**
+   * Cooperative cancellation for long-running loops. Checked at every step
+   * boundary of the OS automation loop — this is the channel a mid-task consent
+   * revoke travels down (see osConsent.revokeApp).
+   */
+  signal?: AbortSignal
 }
 
 /**
@@ -1237,15 +1261,11 @@ async function openWhatsAppChatViaKeyboard(contact: string, nut: any): Promise<v
  */
 async function ocrWhatsAppCandidates(): Promise<string[]> {
   const { pngBuffer } = await captureScreenPng()
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const Tesseract = requireFirst(['tesseract.js']) as any
-  const { data } = (await Tesseract.recognize(pngBuffer, 'eng', {
-    logger: () => {} // suppress progress events
-  })) as { data: { text: string } }
+  const text = await ocrImage(pngBuffer)
 
   const seen = new Set<string>()
   const candidates: string[] = []
-  for (const raw of data.text.split(/\r?\n/)) {
+  for (const raw of text.split(/\r?\n/)) {
     const line = raw.trim()
     if (line.length < 2 || line.length > 60 || !/[a-zA-Z]/.test(line)) continue
     const key = normalizeAppName(line)
@@ -2283,14 +2303,10 @@ async function read_screen(
     }
   }
 
-  // Free tier: local OCR via tesseract.js (loaded lazily — may not be installed)
+  // Free tier: local OCR via tesseract.js, pinned to the bundled traineddata by
+  // ocrImage() so this path stays offline and makes no third-party request.
   try {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const Tesseract = requireFirst(['tesseract.js']) as any
-    const { data } = (await Tesseract.recognize(pngBuffer, 'eng', {
-      logger: () => {} // suppress progress events
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    })) as { data: { text: string } }
+    const text = await ocrImage(pngBuffer)
     trackEvent(Events.SCREEN_CAPTURED, { tier: 'free', method: 'local_ocr' })
     // Proactively tell the UI this read used local OCR, not Claude Vision —
     // so the user understands the coarser result is a free-tier limit, not a
@@ -2299,7 +2315,7 @@ async function read_screen(
     return {
       ok: true,
       output:
-        `Screen OCR text:\n${defangPageText(data.text)}\n\n` +
+        `Screen OCR text:\n${defangPageText(text)}\n\n` +
         `Note: For precise UI-element coordinates, screen analysis with Claude Vision ` +
         `requires a Pro subscription. Consider recommending an upgrade if OCR is insufficient.`
     }
@@ -2333,12 +2349,18 @@ async function askVisionAction(opts: {
   capture: ScreenCapture
   goal: string
   priorActions: string[]
+  /** Verifier feedback when the previous step provably had no effect. */
+  feedback?: string
   tier: Tier
 }): Promise<VisionAction> {
-  const { capture, goal, priorActions, tier } = opts
+  const { capture, goal, priorActions, feedback, tier } = opts
   const historyText = priorActions.length
     ? `Actions already taken:\n${priorActions.join('\n')}`
     : 'No actions taken yet.'
+  // Surfacing the concrete failure is what stops the model re-issuing the same
+  // coordinates: without it, the previous step looks indistinguishable from a
+  // successful one in the screenshot it is handed.
+  const feedbackText = feedback ? `\n\nIMPORTANT: ${feedback}` : ''
 
   const reply = await callChatProxyText({
     system: buildVisionSystemPrompt(capture.width, capture.height),
@@ -2353,7 +2375,7 @@ async function askVisionAction(opts: {
           },
           {
             type: 'text',
-            text: `GOAL: ${goal}\n\n${historyText}\n\nReturn the next single action as one JSON object.`
+            text: `GOAL: ${goal}\n\n${historyText}${feedbackText}\n\nReturn the next single action as one JSON object.`
           }
         ]
       }
@@ -2414,82 +2436,218 @@ async function computer_use(
     }
   }
 
-  // Real display size, used to scale image-space coordinates to true pixels. If
-  // nut-js can't report it we fall back to a 1:1 mapping inside scaleToScreen().
-  let screenW = 0
-  let screenH = 0
-  try {
-    const nut = loadNut()
-    screenW = await nut.screen.width()
-    screenH = await nut.screen.height()
-  } catch {
-    /* dimensions unknown — scaleToScreen() degrades to 1:1 */
+  // ── Per-app consent gate ────────────────────────────────────────────────────
+  // The STATE_CHANGING approval on this tool authorises "control my computer"
+  // in the abstract. Before we synthesise a single input event we additionally
+  // require a grant naming the SPECIFIC app, so approving Word never becomes
+  // permission to type into Slack. The grant is per-session and revocable.
+  const targetApp = typeof args.app === 'string' && args.app.trim()
+    ? args.app.trim()
+    : (await activeWindowAppName()) ?? 'the active window'
+
+  if (!isAppGranted(targetApp)) {
+    return {
+      ok: false,
+      needsConfirmation: {
+        kind: 'app-consent',
+        app: targetApp,
+        label:
+          `Allow OpenUI to control "${targetApp}" for the rest of this session? ` +
+          `It will move the mouse and type into that app to: ${goal}`
+      },
+      error: `Awaiting the user's consent to control "${targetApp}".`
+    }
   }
 
-  const priorActions: string[] = []
+  // The grant's AbortSignal is what makes revocation stop work already in
+  // flight: the loop checks it at every step boundary.
+  const consentSignal = signalFor(targetApp)
 
-  for (let i = 0; i < COMPUTER_USE_MAX_ITERATIONS; i++) {
-    let capture: ScreenCapture
+  // Real display size, used to scale image-space coordinates to true pixels.
+  //
+  // Resolved LAZILY, on the first click that actually needs it, and memoised.
+  // Doing it up front made every run load the native screen module even when it
+  // went on to fail at capture or never click at all — and on a headless box
+  // (CI) that call aborts the process rather than throwing, so no try/catch
+  // could contain it. Nothing on this path touches native code until a real
+  // click is about to be executed.
+  let screenSize: { w: number; h: number } | null = null
+  const screenDims = async (): Promise<{ w: number; h: number }> => {
+    if (screenSize) return screenSize
     try {
-      capture = await captureScreenPng()
-    } catch (err) {
-      return { ok: false, error: `computer_use: screen capture failed — ${errText(err)}` }
+      const nut = loadNut()
+      screenSize = { w: await nut.screen.width(), h: await nut.screen.height() }
+    } catch {
+      screenSize = { w: 0, h: 0 } // unknown — scaleToScreen() degrades to 1:1
     }
+    return screenSize
+  }
 
-    let action: VisionAction
-    try {
-      action = await askVisionAction({ capture, goal, priorActions, tier })
-    } catch (err) {
-      return { ok: false, error: `computer_use: vision step failed — ${errText(err)}` }
-    }
+  // Dimensions of the LAST captured frame, so executeVisionAction can scale
+  // image-space coordinates without re-capturing. Set by capture() below.
+  let lastCapW = 0
+  let lastCapH = 0
+  // Frame the current action was decided from — hashed into the audit log so a
+  // reviewer can correlate actions without the log storing screen contents.
+  let lastCapPng: Buffer | undefined
 
-    if (action.action === 'done') {
-      const trail = priorActions.length ? `\nSteps:\n${priorActions.join('\n')}` : ''
-      return {
-        ok: true,
-        output: `Completed "${goal}" in ${i + 1} step(s). ${action.summary ?? ''}`.trim() + trail
-      }
-    }
-    if (action.action === 'fail') {
-      return {
-        ok: false,
-        error: `computer_use could not complete "${goal}": ${action.reason ?? 'the model reported it was stuck'}.`
-      }
-    }
+  const result = await runOsLoop(
+    {
+      capture: async (): Promise<CapturedFrame> => {
+        const shot = await captureScreenPng()
+        lastCapW = shot.width
+        lastCapH = shot.height
+        lastCapPng = shot.pngBuffer
+        return {
+          raw: await decodePngToRawFrame(shot.pngBuffer),
+          pngBuffer: shot.pngBuffer,
+          base64Image: shot.base64Image,
+          width: shot.width,
+          height: shot.height
+        }
+      },
 
-    if (action.action === 'click') {
+      ask: async (input) =>
+        askVisionAction({
+          capture: {
+            pngBuffer: input.frame.pngBuffer,
+            base64Image: input.frame.base64Image,
+            width: input.frame.width,
+            height: input.frame.height
+          },
+          goal: input.goal,
+          priorActions: input.priorActions,
+          feedback: input.feedback,
+          tier
+        }),
+
+      execute: async (action) => {
+        // Log BEFORE acting: an action that crashes the process must still
+        // appear in the audit trail, or the log understates what was attempted.
+        auditAction(targetApp, action.action, {
+          detail: describeVisionAction(action),
+          pngBuffer: lastCapPng
+        })
+        // Only a click needs display dimensions; type/key/scroll have no
+        // coordinates to scale, so they never trigger the native lookup.
+        const { w, h } = action.action === 'click' ? await screenDims() : { w: 0, h: 0 }
+        return executeVisionAction(action, {
+          imgW: lastCapW,
+          imgH: lastCapH,
+          screenW: w,
+          screenH: h
+        })
+      },
+
+      ocr: ocrLines,
+
+      sleep,
+
+      log: (event, payload) => {
+        // Trace to the shared run journal so a desktop-automation run can be
+        // reconstructed after the fact, like every other unit of agent work.
+        try {
+          context?.runLog?.event(event, payload)
+        } catch {
+          /* logging must never break a running automation */
+        }
+      },
+
+      // Two independent stop channels: the task queue cancelling the job, and
+      // the user revoking consent for this app mid-task. Either must halt the
+      // loop at its next step boundary.
+      isAborted: () => context?.signal?.aborted === true || consentSignal?.aborted === true
+    },
+    {
+      goal,
+      maxIterations: COMPUTER_USE_MAX_ITERATIONS,
+      settleMs: COMPUTER_USE_SETTLE_MS
+    }
+  )
+
+  audit('RUN_END', { app: targetApp, detail: `${result.outcome}: ${result.message}` })
+
+  const trail = result.steps.length ? `\nSteps:\n${result.steps.join('\n')}` : ''
+
+  if (result.outcome === 'aborted' && consentSignal?.aborted) {
+    return {
+      ok: false,
+      error: `Stopped: you revoked OpenUI's permission to control "${targetApp}".${trail}`
+    }
+  }
+
+  if (result.outcome === 'done') {
+    return {
+      ok: true,
+      output: `Completed "${goal}" in ${result.iterations} step(s). ${result.message}`.trim() + trail
+    }
+  }
+  return {
+    ok: false,
+    error: `computer_use could not complete "${goal}": ${result.message}${trail}`
+  }
+}
+
+/**
+ * Name of the app owning the foreground window, for the consent prompt.
+ *
+ * Window titles are "<document> - <app>", so the trailing segment is the app
+ * name the user would recognise. Returns null when the window cannot be read,
+ * in which case the caller falls back to a generic label — consent is still
+ * required, it is just described less precisely.
+ */
+async function activeWindowAppName(): Promise<string | null> {
+  try {
+    const win = await activeWindow()
+    if (!win?.title.trim()) return null
+    return trailingSegment(win.title).trim() || null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Execute one validated VisionAction through the existing input primitives.
+ *
+ * Coordinates arrive in SCREENSHOT space and are scaled to real display pixels
+ * here (the thumbnail rarely matches the monitor's resolution). Every primitive
+ * re-checks the Accessibility permission itself, so this stays a thin dispatch.
+ */
+async function executeVisionAction(
+  action: VisionAction,
+  dims: { imgW: number; imgH: number; screenW: number; screenH: number }
+): Promise<ToolResult> {
+  switch (action.action) {
+    case 'click': {
       const { x, y } = scaleToScreen(
         action.x ?? 0,
         action.y ?? 0,
-        capture.width,
-        capture.height,
-        screenW,
-        screenH
+        dims.imgW,
+        dims.imgH,
+        dims.screenW,
+        dims.screenH
       )
       const moved = await move_mouse({ x, y })
       if (!moved.ok) return moved
-      const clicked = await left_click({})
-      if (!clicked.ok) return clicked
-      priorActions.push(
-        `${i + 1}. click (${action.x},${action.y})${action.why ? ` — ${action.why}` : ''}`
-      )
-    } else {
-      // action.action === 'type'
-      const typed = await type_text({ text: action.text ?? '' })
-      if (!typed.ok) return typed
-      priorActions.push(
-        `${i + 1}. type "${(action.text ?? '').slice(0, 60)}"${action.why ? ` — ${action.why}` : ''}`
-      )
+      return left_click({})
     }
 
-    await sleep(COMPUTER_USE_SETTLE_MS)
-  }
+    case 'type':
+      return type_text({ text: action.text ?? '' })
 
-  return {
-    ok: false,
-    error:
-      `computer_use reached the ${COMPUTER_USE_MAX_ITERATIONS}-step limit without completing "${goal}". ` +
-      `Steps taken:\n${priorActions.join('\n')}`
+    // Both delegate to the registered OS-input tools rather than re-implementing
+    // them: those own the key-combo parsing, modifier ordering, clamping and
+    // permission checks. The vision loop's contribution is the ALLOW-LIST in
+    // visionAction.ts, which narrows what model output may reach them.
+    case 'key':
+      return press_keys({ keys: (action.keys ?? []).join('+') })
+
+    case 'scroll':
+      return scroll_screen({ direction: action.direction ?? 'down', amount: action.amount ?? 3 })
+
+    default:
+      // done/fail never reach the executor — the loop returns on them first.
+      return { ok: false, error: `executeVisionAction cannot execute "${action.action}".` }
   }
 }
 
@@ -5099,6 +5257,12 @@ export const toolSchemas: ToolSchema[] = [
           type: 'string',
           description:
             'A single concrete on-screen objective, e.g. "in the Settings window, turn on Dark Mode" or "compose a new note titled Groceries".'
+        },
+        app: {
+          type: 'string',
+          description:
+            'The app this goal targets, e.g. "Microsoft Word". The user is asked to approve control of THIS app specifically, ' +
+            'and the approval covers only it. Omit to target whichever app is currently in the foreground.'
         }
       },
       required: ['goal']

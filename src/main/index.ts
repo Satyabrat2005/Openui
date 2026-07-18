@@ -7,6 +7,8 @@ import { startPromptRefiner, stopPromptRefiner } from './promptRefiner'
 import { registerVoiceIPC } from './voice'
 import { registerInterviewerIPC } from './interviewer'
 import { startScheduler } from './scheduler'
+import { resumeInterrupted } from './durableTasks'
+import { listActiveGrants, revokeApp, revokeAllApps, readAuditLog, auditLogPath } from './osConsent'
 import { openSettingsPane, type PermissionTarget } from './permissions'
 import { registerStripeIPC, isPaymentFlowWebContents } from './stripe/checkout'
 import { registerWaitlistIPC } from './waitlist'
@@ -488,6 +490,26 @@ app.whenReady().then(async () => {
   registerWaitlistIPC()
 
   // ── Auto-update IPC (electron-updater) ──────────────────────────────────────
+  // ── OS-automation consent: review and revoke ────────────────────────────────
+  // A consent model the user cannot see or withdraw is not a trust layer, so
+  // the grants, the audit trail and the revoke path are all reachable from the
+  // renderer. Revoking aborts anything currently running under that grant.
+  ipcMain.handle('openui:os-consent:list', () => listActiveGrants())
+
+  ipcMain.handle('openui:os-consent:revoke', (_event, appName: unknown) => {
+    if (typeof appName !== 'string' || !appName.trim()) return false
+    return revokeApp(appName)
+  })
+
+  ipcMain.handle('openui:os-consent:revoke-all', () => revokeAllApps())
+
+  ipcMain.handle('openui:os-consent:audit', (_event, limit: unknown) => {
+    const n = typeof limit === 'number' && Number.isFinite(limit) ? limit : undefined
+    return readAuditLog(n)
+  })
+
+  ipcMain.handle('openui:os-consent:audit-path', () => auditLogPath())
+
   ipcMain.handle('openui:get-app-version', () => app.getVersion())
   ipcMain.handle('openui:check-for-updates', async () => {
     await checkForUpdates()
@@ -620,6 +642,15 @@ app.whenReady().then(async () => {
     // Auto-update via electron-updater + GitHub Releases. Schedules its own
     // checks (30s after launch, every 4h, and on focus) and is inert in dev.
     initUpdater(win)
+
+    // Re-offer background tasks that a crash or quit interrupted. Must run
+    // AFTER every registerTaskHandler() call, since a task whose kind has no
+    // handler yet is left pending rather than resumed. Inert while no kinds
+    // are registered.
+    const resumed = resumeInterrupted()
+    if (resumed.length) {
+      console.log(`[startup] resumed ${resumed.length} interrupted background task(s)`)
+    }
   }
 
   app.on('activate', () => {

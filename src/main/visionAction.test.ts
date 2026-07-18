@@ -92,9 +92,110 @@ describe('scaleToScreen', () => {
 })
 
 describe('buildVisionSystemPrompt', () => {
-  it('embeds the screenshot dimensions and the four action verbs', () => {
+  it('embeds the screenshot dimensions and every action verb', () => {
     const p = buildVisionSystemPrompt(1280, 800)
     expect(p).toContain('1280x800')
-    for (const verb of ['click', 'type', 'done', 'fail']) expect(p).toContain(`"${verb}"`)
+    for (const verb of ['click', 'type', 'key', 'scroll', 'done', 'fail']) {
+      expect(p).toContain(`"${verb}"`)
+    }
+  })
+
+  it('tells the model not to repeat a step that reported no effect', () => {
+    // Without this the model reliably re-issues the same failing coordinates,
+    // which is what the retry policy is trying to avoid paying for.
+    expect(buildVisionSystemPrompt(800, 600)).toMatch(/do NOT simply repeat it/)
+  })
+})
+
+describe('parseVisionAction — key', () => {
+  it('normalises key tokens to the spelling parseKeyCombo understands', () => {
+    const r = parseVisionAction('{"action":"key","keys":["ctrl","f"],"why":"open find"}')
+    expect(r).toEqual({
+      ok: true,
+      action: { action: 'key', keys: ['ctrl', 'f'], why: 'open find' }
+    })
+  })
+
+  it('accepts aliases and is case-insensitive', () => {
+    // Aliases collapse to one canonical token so the combo handed to
+    // press_keys is stable regardless of how the model spelled it.
+    expect(parseVisionAction('{"action":"key","keys":["ESC"]}')).toEqual({
+      ok: true,
+      action: { action: 'key', keys: ['escape'], why: undefined }
+    })
+    expect(parseVisionAction('{"action":"key","keys":["Return"]}')).toEqual({
+      ok: true,
+      action: { action: 'key', keys: ['enter'], why: undefined }
+    })
+  })
+
+  it('makes every OS launcher unreachable', () => {
+    // Each of these ends in arbitrary code execution when chained with this
+    // loop's own `type` action, so the Super/Command modifier is not on the
+    // allow-list at all — not merely restricted in what it can combine with.
+    for (const combo of [
+      '["meta","r"]', // Run dialog
+      '["cmd","space"]', // Spotlight
+      '["win"]', // Start menu
+      '["cmd"]',
+      '["super","e"]'
+    ]) {
+      const r = parseVisionAction(`{"action":"key","keys":${combo}}`)
+      expect(r.ok, `${combo} must be rejected`).toBe(false)
+    }
+  })
+
+  it('still allows ordinary in-app editing and navigation shortcuts', () => {
+    expect(parseVisionAction('{"action":"key","keys":["ctrl","a"]}').ok).toBe(true)
+    expect(parseVisionAction('{"action":"key","keys":["ctrl","v"]}').ok).toBe(true)
+    expect(parseVisionAction('{"action":"key","keys":["tab"]}').ok).toBe(true)
+    expect(parseVisionAction('{"action":"key","keys":["pagedown"]}').ok).toBe(true)
+  })
+
+  it('rejects keys outside the allow-list', () => {
+    // The allow-list is a security boundary: page content steers the model, so
+    // an unconstrained key field is a route to Win+R / Cmd+Space → run command.
+    const r = parseVisionAction('{"action":"key","keys":["meta","r"]}')
+    expect(r.ok).toBe(false)
+    if (!r.ok) expect(r.error).toMatch(/not permitted/)
+  })
+
+  it('rejects an empty, oversized, or non-string key list', () => {
+    expect(parseVisionAction('{"action":"key","keys":[]}').ok).toBe(false)
+    expect(parseVisionAction('{"action":"key","keys":["ctrl","shift","alt","f"]}').ok).toBe(false)
+    expect(parseVisionAction('{"action":"key","keys":[123]}').ok).toBe(false)
+    expect(parseVisionAction('{"action":"key"}').ok).toBe(false)
+  })
+})
+
+describe('parseVisionAction — scroll', () => {
+  it('parses a direction and amount', () => {
+    expect(parseVisionAction('{"action":"scroll","direction":"down","amount":5}')).toEqual({
+      ok: true,
+      action: { action: 'scroll', direction: 'down', amount: 5, why: undefined }
+    })
+  })
+
+  it('defaults a missing amount to a modest scroll', () => {
+    const r = parseVisionAction('{"action":"scroll","direction":"up"}')
+    expect(r.ok).toBe(true)
+    if (r.ok) expect(r.action.amount).toBe(3)
+  })
+
+  it('clamps the amount into range', () => {
+    const big = parseVisionAction('{"action":"scroll","direction":"down","amount":9999}')
+    expect(big.ok).toBe(true)
+    if (big.ok) expect(big.action.amount).toBe(10)
+
+    // 0 would be a silent no-op that the verifier then reads as a failed step.
+    const zero = parseVisionAction('{"action":"scroll","direction":"down","amount":0}')
+    expect(zero.ok).toBe(true)
+    if (zero.ok) expect(zero.action.amount).toBe(1)
+  })
+
+  it('rejects a missing or unknown direction', () => {
+    expect(parseVisionAction('{"action":"scroll"}').ok).toBe(false)
+    expect(parseVisionAction('{"action":"scroll","direction":"sideways"}').ok).toBe(false)
+    expect(parseVisionAction('{"action":"scroll","direction":"down","amount":"abc"}').ok).toBe(false)
   })
 })
