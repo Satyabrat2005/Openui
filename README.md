@@ -52,7 +52,7 @@ That's it — no `.env` file is required to start chatting. `.env.example` docum
 
 | Category | Capabilities |
 |---|---|
-| **Desktop control** | Open/close/list apps, mouse & keyboard automation, screenshots with OCR (Tesseract), clipboard read/write, filesystem tools confined to the home directory with human-in-the-loop confirmation on destructive actions |
+| **Desktop control** | Open/close/list apps; full mouse control (move, left/right/double-click, wheel scroll in native apps); keyboard automation (type text **and** OS-level shortcuts like Ctrl+C, Alt+Tab, Win, F5); screenshots with OCR (Tesseract); clipboard read/write; filesystem tools confined to the home directory with human-in-the-loop confirmation on destructive actions |
 | **Browser automation** | Playwright-driven browsing that asks per-site consent before automating a new domain, sanitizes page content pulled into context, and falls back to an in-page vision pass when structured extraction fails |
 | **GitHub** | 9 tools — read (list open PRs, get PR diff, post PR comment) and write (check/create repo, update README, push files, open PR, merge). Opening and merging a PR is **always** a human click, regardless of autonomy level |
 | **Coding** | `edit_file`, `search_code`, local `git` tools, and a per-project **semantic codebase index** (HNSW vector search over a `.gitignore`-aware, incrementally re-embedded store) via `search_codebase_semantic` |

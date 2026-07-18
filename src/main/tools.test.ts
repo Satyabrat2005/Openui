@@ -32,7 +32,8 @@ import {
   escapeLatexText,
   detectLoginState,
   resolveServices,
-  SUBSCRIPTION_SERVICES
+  SUBSCRIPTION_SERVICES,
+  parseKeyCombo
 } from './tools'
 
 const IS_WIN = process.platform === 'win32'
@@ -381,6 +382,47 @@ describe('escapeLatexText', () => {
   })
   it('escapes backslashes and tilde/caret', () => {
     expect(escapeLatexText('a~b^c')).toBe('a\\textasciitilde{}b\\textasciicircum{}c')
+  })
+})
+
+// ── press_keys — OS-level shortcut parsing (pure) ─────────────────────────────
+describe('parseKeyCombo', () => {
+  const members = (combo: string) => {
+    const r = parseKeyCombo(combo)
+    if (!r.ok) throw new Error(`expected ok for "${combo}": ${r.error}`)
+    return r.members
+  }
+
+  it('maps single letters and digits to nut Key member names', () => {
+    expect(members('a')).toEqual(['A'])
+    expect(members('3')).toEqual(['Num3'])
+    expect(members('f5')).toEqual(['F5'])
+  })
+
+  it('resolves modifier aliases to their Left* member', () => {
+    expect(members('ctrl+c')).toEqual(['LeftControl', 'C'])
+    expect(members('cmd+s')).toEqual(['LeftSuper', 'S'])
+    expect(members('win')).toEqual(['LeftSuper'])
+  })
+
+  it('orders modifiers first regardless of input order', () => {
+    // key typed before the modifier still comes out after it
+    expect(members('escape+ctrl+shift')).toEqual(['LeftControl', 'LeftShift', 'Escape'])
+  })
+
+  it('accepts named navigation/editing keys', () => {
+    expect(members('alt+tab')).toEqual(['LeftAlt', 'Tab'])
+    expect(members('ctrl+shift+esc')).toEqual(['LeftControl', 'LeftShift', 'Escape'])
+    expect(members('pgdn')).toEqual(['PageDown'])
+  })
+
+  it('rejects empty, unknown, and over-long combos', () => {
+    expect(parseKeyCombo('')).toEqual({ ok: false, error: 'no keys given' })
+    expect(parseKeyCombo('   ')).toEqual({ ok: false, error: 'no keys given' })
+    const bad = parseKeyCombo('ctrl+splat')
+    expect(bad.ok).toBe(false)
+    if (!bad.ok) expect(bad.error).toContain('splat')
+    expect(parseKeyCombo('a+b+c+d+e+f').ok).toBe(false)
   })
 })
 

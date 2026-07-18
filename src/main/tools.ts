@@ -158,6 +158,12 @@ export const STATE_CHANGING_TOOLS = new Set<string>([
   // is ALSO in DESTRUCTIVE_TOOLS below (always confirms, never runs on autopilot).
   'send_whatsapp_message',
   'move_mouse',
+  // Synthesised mouse/keyboard actions — same input-synthesis boundary as
+  // left_click/type_text, so each takes one HITL approval per call.
+  'right_click',
+  'double_click',
+  'scroll_screen',
+  'press_keys',
   // computer_use hands the loop autonomous mouse/keyboard control; the whole loop
   // takes ONE approval up front rather than gating each synthesised action.
   'computer_use',
@@ -1872,6 +1878,145 @@ async function find_email_thread(args: Record<string, unknown>): Promise<ToolRes
   return { ok: true, output: `Found ${candidates.length} thread(s):\n${lines.join('\n')}` }
 }
 
+/**
+ * OS-level keyboard-combo support for press_keys.
+ *
+ * Maps user-facing key tokens ("ctrl", "esc", "f5", "a", "3") to @nut-tree Key
+ * enum MEMBER NAMES. The enum value is resolved at call time via nut.Key[member],
+ * so this stays a plain data table with no nut-js import — which is what lets
+ * parseKeyCombo below be a pure, unit-testable function that never touches the
+ * native addon.
+ */
+const KEY_ALIASES: Record<string, string> = {
+  // modifiers (all map to the LEFT variant — the one apps expect for shortcuts)
+  ctrl: 'LeftControl',
+  control: 'LeftControl',
+  alt: 'LeftAlt',
+  option: 'LeftAlt',
+  opt: 'LeftAlt',
+  shift: 'LeftShift',
+  win: 'LeftSuper',
+  windows: 'LeftSuper',
+  cmd: 'LeftSuper',
+  command: 'LeftSuper',
+  meta: 'LeftSuper',
+  super: 'LeftSuper',
+  // whitespace / editing
+  enter: 'Enter',
+  return: 'Enter',
+  esc: 'Escape',
+  escape: 'Escape',
+  tab: 'Tab',
+  space: 'Space',
+  spacebar: 'Space',
+  backspace: 'Backspace',
+  bksp: 'Backspace',
+  delete: 'Delete',
+  del: 'Delete',
+  insert: 'Insert',
+  ins: 'Insert',
+  // navigation
+  home: 'Home',
+  end: 'End',
+  pageup: 'PageUp',
+  pgup: 'PageUp',
+  pagedown: 'PageDown',
+  pgdn: 'PageDown',
+  up: 'Up',
+  down: 'Down',
+  left: 'Left',
+  right: 'Right',
+  arrowup: 'Up',
+  arrowdown: 'Down',
+  arrowleft: 'Left',
+  arrowright: 'Right',
+  // misc
+  capslock: 'CapsLock',
+  printscreen: 'Print',
+  print: 'Print',
+  menu: 'Menu',
+  pause: 'Pause',
+  scrolllock: 'ScrollLock',
+  plus: 'Add',
+  minus: 'Minus',
+  equal: 'Equal',
+  comma: 'Comma',
+  period: 'Period'
+}
+
+/** nut Key member names that are modifier keys (pressed first in a combo). */
+const NUT_MODIFIER_MEMBERS = new Set(['LeftControl', 'LeftAlt', 'LeftShift', 'LeftSuper'])
+
+/** Resolve one key token to a nut Key member name, or null if unrecognised. */
+function keyTokenToMember(raw: string): string | null {
+  const t = raw.trim().toLowerCase()
+  if (!t) return null
+  if (KEY_ALIASES[t]) return KEY_ALIASES[t]
+  if (/^[a-z]$/.test(t)) return t.toUpperCase() // a → A
+  if (/^[0-9]$/.test(t)) return `Num${t}` // 3 → Num3 (top-row digit)
+  if (/^f([1-9]|1[0-9]|2[0-4])$/.test(t)) return t.toUpperCase() // f5 → F5
+  return null
+}
+
+/**
+ * Parse a "Ctrl+Shift+Esc"-style combo into ordered nut Key member names, with
+ * modifiers moved to the front so the combo is pressed in the order apps expect
+ * (hold modifiers, then tap the key). Pure and exported for unit testing.
+ */
+export function parseKeyCombo(
+  combo: string
+): { ok: true; members: string[] } | { ok: false; error: string } {
+  if (typeof combo !== 'string' || !combo.trim()) return { ok: false, error: 'no keys given' }
+  const tokens = combo
+    .split('+')
+    .map((s) => s.trim())
+    .filter(Boolean)
+  if (!tokens.length) return { ok: false, error: 'no keys given' }
+  if (tokens.length > 5) return { ok: false, error: 'too many keys in one combo (max 5)' }
+  const members: string[] = []
+  for (const tok of tokens) {
+    const m = keyTokenToMember(tok)
+    if (!m) return { ok: false, error: `unrecognised key "${tok}"` }
+    members.push(m)
+  }
+  const mods = members.filter((m) => NUT_MODIFIER_MEMBERS.has(m))
+  const rest = members.filter((m) => !NUT_MODIFIER_MEMBERS.has(m))
+  return { ok: true, members: [...mods, ...rest] }
+}
+
+/**
+ * Shared Accessibility guard for the synthesised-input tools. Returns an error
+ * ToolResult when access is missing (so the caller can early-return), or null
+ * when input synthesis is allowed to proceed.
+ */
+function requireInputAccess(kind: 'mouse' | 'keyboard'): ToolResult | null {
+  if (checkAccessibility()) return null
+  return {
+    ok: false,
+    error:
+      `Tool execution failed: Missing OS permissions — Accessibility access is required for ${kind} control. ` +
+      'Please grant access in System Settings → Privacy & Security → Accessibility.',
+    permissionDenied: 'accessibility'
+  }
+}
+
+/**
+ * Optionally reposition the pointer to args.x/args.y before a click. Returns an
+ * error ToolResult if only one coordinate is finite / they are malformed, or
+ * null when there was nothing to do or the move succeeded.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function maybeMoveTo(nut: any, args: Record<string, unknown>): Promise<ToolResult | null> {
+  if (args.x === undefined && args.y === undefined) return null
+  const x = Number(args.x)
+  const y = Number(args.y)
+  if (!Number.isFinite(x) || !Number.isFinite(y)) {
+    return { ok: false, error: 'x and y must both be finite numbers when moving before a click.' }
+  }
+  await nut.mouse.setPosition(new nut.Point(x, y))
+  return null
+}
+
 /** Move the mouse pointer to absolute screen coordinates. */
 async function move_mouse(args: Record<string, unknown>): Promise<ToolResult> {
   const x = Number(args.x)
@@ -1879,15 +2024,8 @@ async function move_mouse(args: Record<string, unknown>): Promise<ToolResult> {
   if (!Number.isFinite(x) || !Number.isFinite(y)) {
     return { ok: false, error: 'move_mouse requires numeric "x" and "y".' }
   }
-  if (!checkAccessibility()) {
-    return {
-      ok: false,
-      error:
-        'Tool execution failed: Missing OS permissions — Accessibility access is required for mouse control. ' +
-        'Please grant access in System Settings → Privacy & Security → Accessibility.',
-      permissionDenied: 'accessibility'
-    }
-  }
+  const denied = requireInputAccess('mouse')
+  if (denied) return denied
   try {
     const nut = loadNut()
     await nut.mouse.setPosition(new nut.Point(x, y))
@@ -1900,26 +2038,70 @@ async function move_mouse(args: Record<string, unknown>): Promise<ToolResult> {
   }
 }
 
-/** Perform a single left-button click at the current pointer position. */
-async function left_click(_args: Record<string, unknown>): Promise<ToolResult> {
-  if (!checkAccessibility()) {
-    return {
-      ok: false,
-      error:
-        'Tool execution failed: Missing OS permissions — Accessibility access is required for mouse control. ' +
-        'Please grant access in System Settings → Privacy & Security → Accessibility.',
-      permissionDenied: 'accessibility'
-    }
-  }
+/** Perform a single left-button click at the current pointer position (or at x,y if given). */
+async function left_click(args: Record<string, unknown>): Promise<ToolResult> {
+  const denied = requireInputAccess('mouse')
+  if (denied) return denied
   try {
     const nut = loadNut()
+    const moveErr = await maybeMoveTo(nut, args)
+    if (moveErr) return moveErr
     await nut.mouse.leftClick()
     return { ok: true, output: 'Performed a left click.' }
   } catch (err) {
-    return {
-      ok: false,
-      error: `Tool execution failed: ${err instanceof Error ? err.message : String(err)}`
-    }
+    return { ok: false, error: `Tool execution failed: ${errText(err)}` }
+  }
+}
+
+/** Right-click to open a context menu, at the current pointer or at x,y if given. */
+async function right_click(args: Record<string, unknown>): Promise<ToolResult> {
+  const denied = requireInputAccess('mouse')
+  if (denied) return denied
+  try {
+    const nut = loadNut()
+    const moveErr = await maybeMoveTo(nut, args)
+    if (moveErr) return moveErr
+    await nut.mouse.rightClick()
+    return { ok: true, output: 'Performed a right click.' }
+  } catch (err) {
+    return { ok: false, error: `Tool execution failed: ${errText(err)}` }
+  }
+}
+
+/** Double-click (open an item / select a word), at the current pointer or at x,y if given. */
+async function double_click(args: Record<string, unknown>): Promise<ToolResult> {
+  const denied = requireInputAccess('mouse')
+  if (denied) return denied
+  try {
+    const nut = loadNut()
+    const moveErr = await maybeMoveTo(nut, args)
+    if (moveErr) return moveErr
+    await nut.mouse.doubleClick(nut.Button.LEFT)
+    return { ok: true, output: 'Performed a double click.' }
+  } catch (err) {
+    return { ok: false, error: `Tool execution failed: ${errText(err)}` }
+  }
+}
+
+/** Scroll the focused window/app via the mouse wheel (native apps, not just web pages). */
+async function scroll_screen(args: Record<string, unknown>): Promise<ToolResult> {
+  const denied = requireInputAccess('mouse')
+  if (denied) return denied
+  const direction = String(args.direction ?? 'down').toLowerCase()
+  if (!['up', 'down', 'left', 'right'].includes(direction)) {
+    return { ok: false, error: 'scroll_screen "direction" must be one of: up, down, left, right.' }
+  }
+  const raw = Number(args.amount)
+  const amount = Number.isFinite(raw) ? Math.max(1, Math.min(50, Math.floor(raw))) : 3
+  try {
+    const nut = loadNut()
+    if (direction === 'down') await nut.mouse.scrollDown(amount)
+    else if (direction === 'up') await nut.mouse.scrollUp(amount)
+    else if (direction === 'left') await nut.mouse.scrollLeft(amount)
+    else await nut.mouse.scrollRight(amount)
+    return { ok: true, output: `Scrolled ${direction} ${amount} step(s).` }
+  } catch (err) {
+    return { ok: false, error: `Tool execution failed: ${errText(err)}` }
   }
 }
 
@@ -1927,24 +2109,46 @@ async function left_click(_args: Record<string, unknown>): Promise<ToolResult> {
 async function type_text(args: Record<string, unknown>): Promise<ToolResult> {
   const text = String(args.text ?? '')
   if (!text) return { ok: false, error: 'type_text requires non-empty "text".' }
-  if (!checkAccessibility()) {
-    return {
-      ok: false,
-      error:
-        'Tool execution failed: Missing OS permissions — Accessibility access is required for keyboard control. ' +
-        'Please grant access in System Settings → Privacy & Security → Accessibility.',
-      permissionDenied: 'accessibility'
-    }
-  }
+  const denied = requireInputAccess('keyboard')
+  if (denied) return denied
   try {
     const nut = loadNut()
     await nut.keyboard.type(text)
     return { ok: true, output: `Typed ${text.length} character(s).` }
   } catch (err) {
-    return {
-      ok: false,
-      error: `Tool execution failed: ${err instanceof Error ? err.message : String(err)}`
+    return { ok: false, error: `Tool execution failed: ${errText(err)}` }
+  }
+}
+
+/**
+ * Press an OS-level keyboard shortcut, e.g. "Ctrl+C", "Alt+Tab", "Ctrl+Shift+Escape",
+ * "Win", "Enter", "F5". Modifiers are held while the final key is tapped, then all
+ * are released. This is the shortcut counterpart to type_text (which types literal
+ * characters) — use it for copy/paste/save/undo, window switching, menus, etc.
+ */
+async function press_keys(args: Record<string, unknown>): Promise<ToolResult> {
+  const denied = requireInputAccess('keyboard')
+  if (denied) return denied
+  const parsed = parseKeyCombo(String(args.keys ?? ''))
+  if (!parsed.ok) return { ok: false, error: `press_keys: ${parsed.error}.` }
+  const rawRepeat = Number(args.repeat)
+  const repeat = Number.isFinite(rawRepeat) ? Math.max(1, Math.min(20, Math.floor(rawRepeat))) : 1
+  try {
+    const nut = loadNut()
+    const keyVals = parsed.members.map((m) => nut.Key[m])
+    if (keyVals.some((k: unknown) => k === undefined)) {
+      return { ok: false, error: 'press_keys: a key in the combo is not supported on this platform.' }
     }
+    for (let i = 0; i < repeat; i++) {
+      await tapKeys(nut, ...keyVals)
+      if (repeat > 1) await delay(30)
+    }
+    return {
+      ok: true,
+      output: `Pressed ${parsed.members.join('+')}${repeat > 1 ? ` ×${repeat}` : ''}.`
+    }
+  } catch (err) {
+    return { ok: false, error: `Tool execution failed: ${errText(err)}` }
   }
 }
 
@@ -4778,8 +4982,88 @@ export const toolSchemas: ToolSchema[] = [
   },
   {
     name: 'left_click',
-    description: 'Perform a single left mouse-button click at the current pointer position.',
-    parameters: { type: 'object', properties: {}, required: [] }
+    description:
+      'Perform a single left mouse-button click. Clicks at the current pointer position, ' +
+      'or pass x and y to move there first (in one step instead of move_mouse + left_click).',
+    parameters: {
+      type: 'object',
+      properties: {
+        x: { type: 'number', description: 'Optional X coordinate to move to before clicking.' },
+        y: { type: 'number', description: 'Optional Y coordinate to move to before clicking.' }
+      },
+      required: []
+    }
+  },
+  {
+    name: 'right_click',
+    description:
+      'Right-click to open a context menu (rename / copy / properties / etc.). ' +
+      'Clicks at the current pointer position, or pass x and y to move there first.',
+    parameters: {
+      type: 'object',
+      properties: {
+        x: { type: 'number', description: 'Optional X coordinate to move to before clicking.' },
+        y: { type: 'number', description: 'Optional Y coordinate to move to before clicking.' }
+      },
+      required: []
+    }
+  },
+  {
+    name: 'double_click',
+    description:
+      'Double-click the left mouse button to open an item (desktop icon, file in Explorer/Finder) ' +
+      'or select a word. Clicks at the current pointer position, or pass x and y to move there first.',
+    parameters: {
+      type: 'object',
+      properties: {
+        x: { type: 'number', description: 'Optional X coordinate to move to before clicking.' },
+        y: { type: 'number', description: 'Optional Y coordinate to move to before clicking.' }
+      },
+      required: []
+    }
+  },
+  {
+    name: 'scroll_screen',
+    description:
+      'Scroll the focused window or app using the mouse wheel — works in native apps ' +
+      '(PDF viewers, Settings, file managers), not just web pages. Use browser_scroll for web content.',
+    parameters: {
+      type: 'object',
+      properties: {
+        direction: {
+          type: 'string',
+          description: 'Direction to scroll.',
+          enum: ['up', 'down', 'left', 'right']
+        },
+        amount: {
+          type: 'number',
+          description: 'Number of wheel "steps" (1–50, default 3). Step size is OS-dependent.'
+        }
+      },
+      required: ['direction']
+    }
+  },
+  {
+    name: 'press_keys',
+    description:
+      'Press an OS-level keyboard shortcut and release it. Use for actions no character can express: ' +
+      'copy/paste/save/undo (Ctrl+C / Ctrl+V / Ctrl+S / Ctrl+Z), switch windows (Alt+Tab), open Start/Spotlight (Win), ' +
+      'Enter, Escape, Tab, F5, arrow keys, etc. This is the shortcut counterpart to type_text (which types literal text). ' +
+      'Combine keys with "+" (e.g. "Ctrl+Shift+Escape"). Modifiers: Ctrl, Alt, Shift, Win/Cmd.',
+    parameters: {
+      type: 'object',
+      properties: {
+        keys: {
+          type: 'string',
+          description: 'The shortcut, e.g. "Ctrl+C", "Alt+Tab", "Win", "Enter", "F5", "Ctrl+Shift+T".'
+        },
+        repeat: {
+          type: 'number',
+          description: 'How many times to press the combo (1–20, default 1) — e.g. Tab ×3.'
+        }
+      },
+      required: ['keys']
+    }
   },
   {
     name: 'type_text',
@@ -5382,6 +5666,10 @@ const registry: Record<string, Executor> = {
   control_calendar,
   move_mouse,
   left_click,
+  right_click,
+  double_click,
+  scroll_screen,
+  press_keys,
   type_text,
   read_screen,
   computer_use,
@@ -5567,7 +5855,21 @@ export function describeToolCall(name: string, args: Record<string, unknown>): s
     case 'move_mouse':
       return `Move mouse to (${Number(args.x)}, ${Number(args.y)})`
     case 'left_click':
-      return 'Left click'
+      return args.x !== undefined && args.y !== undefined
+        ? `Left click at (${Number(args.x)}, ${Number(args.y)})`
+        : 'Left click'
+    case 'right_click':
+      return args.x !== undefined && args.y !== undefined
+        ? `Right click at (${Number(args.x)}, ${Number(args.y)})`
+        : 'Right click'
+    case 'double_click':
+      return args.x !== undefined && args.y !== undefined
+        ? `Double click at (${Number(args.x)}, ${Number(args.y)})`
+        : 'Double click'
+    case 'scroll_screen':
+      return `Scroll ${String(args.direction ?? 'down')}${args.amount ? ` ${Number(args.amount)} step(s)` : ''}`
+    case 'press_keys':
+      return `Press ${String(args.keys ?? '')}${args.repeat ? ` ×${Number(args.repeat)}` : ''}`
     case 'type_text':
       return 'Type text'
     case 'read_screen':
