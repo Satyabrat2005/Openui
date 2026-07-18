@@ -2463,16 +2463,24 @@ async function computer_use(
   // flight: the loop checks it at every step boundary.
   const consentSignal = signalFor(targetApp)
 
-  // Real display size, used to scale image-space coordinates to true pixels. If
-  // nut-js can't report it we fall back to a 1:1 mapping inside scaleToScreen().
-  let screenW = 0
-  let screenH = 0
-  try {
-    const nut = loadNut()
-    screenW = await nut.screen.width()
-    screenH = await nut.screen.height()
-  } catch {
-    /* dimensions unknown — scaleToScreen() degrades to 1:1 */
+  // Real display size, used to scale image-space coordinates to true pixels.
+  //
+  // Resolved LAZILY, on the first click that actually needs it, and memoised.
+  // Doing it up front made every run load the native screen module even when it
+  // went on to fail at capture or never click at all — and on a headless box
+  // (CI) that call aborts the process rather than throwing, so no try/catch
+  // could contain it. Nothing on this path touches native code until a real
+  // click is about to be executed.
+  let screenSize: { w: number; h: number } | null = null
+  const screenDims = async (): Promise<{ w: number; h: number }> => {
+    if (screenSize) return screenSize
+    try {
+      const nut = loadNut()
+      screenSize = { w: await nut.screen.width(), h: await nut.screen.height() }
+    } catch {
+      screenSize = { w: 0, h: 0 } // unknown — scaleToScreen() degrades to 1:1
+    }
+    return screenSize
   }
 
   // Dimensions of the LAST captured frame, so executeVisionAction can scale
@@ -2520,11 +2528,14 @@ async function computer_use(
           detail: describeVisionAction(action),
           pngBuffer: lastCapPng
         })
+        // Only a click needs display dimensions; type/key/scroll have no
+        // coordinates to scale, so they never trigger the native lookup.
+        const { w, h } = action.action === 'click' ? await screenDims() : { w: 0, h: 0 }
         return executeVisionAction(action, {
           imgW: lastCapW,
           imgH: lastCapH,
-          screenW,
-          screenH
+          screenW: w,
+          screenH: h
         })
       },
 

@@ -600,6 +600,12 @@ describe('computer_use — per-app consent gate', () => {
     // is mocked as {} in this environment. What matters is that it is no longer
     // blocked ON CONSENT.
     expect((r as { needsConfirmation?: unknown }).needsConfirmation).toBeUndefined()
+
+    // It must fail at CAPTURE specifically, having touched no native code. The
+    // screen-size lookup used to run eagerly here, and on a headless CI runner
+    // libnut aborts the process rather than throwing — which killed the whole
+    // test worker. Asserting the failure point keeps that regression visible.
+    expect((r as { error: string }).error).toMatch(/getSources/)
   })
 
   it('stops immediately when consent is revoked before the loop runs', async () => {
