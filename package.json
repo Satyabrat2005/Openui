@@ -48,6 +48,10 @@
             {
                 "from": "resources",
                 "to": "resources"
+            },
+            {
+                "from": "eng.traineddata",
+                "to": "eng.traineddata"
             }
         ],
         "npmRebuild": true,
@@ -154,7 +158,9 @@
         "electron-updater": "^6.8.9",
         "exceljs": "^4.4.0",
         "gsap": "^3.12.5",
+        "jimp": "^0.22.10",
         "ollama": "^0.5.0",
+        "pixelmatch": "^4.0.2",
         "openai": "^4.0.0",
         "pdf-parse": "^2.4.5",
         "playwright": "^1.44.0",

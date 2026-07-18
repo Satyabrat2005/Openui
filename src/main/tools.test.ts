@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, afterEach } from 'vitest'
+import { describe, it, expect, vi, afterEach, beforeAll, afterAll } from 'vitest'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { mkdtemp, rm, stat } from 'node:fs/promises'
@@ -35,6 +35,12 @@ import {
   SUBSCRIPTION_SERVICES,
   parseKeyCombo
 } from './tools'
+import {
+  grantApp,
+  revokeApp,
+  resetGrantsForTests,
+  setOsConsentDirForTests
+} from './osConsent'
 
 const IS_WIN = process.platform === 'win32'
 const IS_MAC = process.platform === 'darwin'
@@ -529,5 +535,84 @@ describe('run_python — HITL gating and arg validation', () => {
     const r = await executeTool('run_python', {}, { tier: 'enterprise', bypassHitl: true })
     expect(r).toMatchObject({ ok: false })
     expect((r as { error: string }).error).toMatch(/requires "code"|path/)
+  })
+})
+
+describe('computer_use — per-app consent gate', () => {
+  let consentDir: string
+
+  beforeAll(async () => {
+    // Point the audit log at a temp dir: electron's app.getPath is not
+    // available here, and an unwritable log must not colour these assertions.
+    consentDir = await mkdtemp(join(homedir(), '.openui-consent-test-'))
+    setOsConsentDirForTests(consentDir)
+  })
+
+  afterAll(async () => {
+    setOsConsentDirForTests(null)
+    await rm(consentDir, { recursive: true, force: true })
+  })
+
+  afterEach(() => {
+    resetGrantsForTests()
+  })
+
+  it('refuses to synthesise any input until the specific app is approved', async () => {
+    const r = await executeTool(
+      'computer_use',
+      { goal: 'turn on dark mode', app: 'Microsoft Word' },
+      { tier: 'pro', bypassHitl: true }
+    )
+
+    // The blanket "control my computer" approval (bypassHitl) is NOT enough —
+    // the loop must additionally name the app it wants and get a yes for it.
+    expect(r).toMatchObject({
+      ok: false,
+      needsConfirmation: { kind: 'app-consent', app: 'Microsoft Word' }
+    })
+    expect((r as { needsConfirmation: { label: string } }).needsConfirmation.label).toMatch(
+      /Microsoft Word/
+    )
+  })
+
+  it('does not treat approval of one app as approval of another', async () => {
+    grantApp('Microsoft Word', 'test')
+
+    const r = await executeTool(
+      'computer_use',
+      { goal: 'post a message', app: 'Slack' },
+      { tier: 'pro', bypassHitl: true }
+    )
+
+    expect(r).toMatchObject({ needsConfirmation: { kind: 'app-consent', app: 'Slack' } })
+  })
+
+  it('proceeds past the consent gate once the app is granted', async () => {
+    grantApp('Microsoft Word', 'test')
+
+    const r = await executeTool(
+      'computer_use',
+      { goal: 'turn on dark mode', app: 'Microsoft Word' },
+      { tier: 'pro', bypassHitl: true }
+    )
+
+    // It gets past consent and fails later, on screen capture — desktopCapturer
+    // is mocked as {} in this environment. What matters is that it is no longer
+    // blocked ON CONSENT.
+    expect((r as { needsConfirmation?: unknown }).needsConfirmation).toBeUndefined()
+  })
+
+  it('stops immediately when consent is revoked before the loop runs', async () => {
+    grantApp('Microsoft Word', 'test')
+    revokeApp('Microsoft Word')
+
+    const r = await executeTool(
+      'computer_use',
+      { goal: 'turn on dark mode', app: 'Microsoft Word' },
+      { tier: 'pro', bypassHitl: true }
+    )
+
+    // A revoked grant must fall back to asking again, never to running.
+    expect(r).toMatchObject({ needsConfirmation: { kind: 'app-consent' } })
   })
 })

@@ -25,6 +25,7 @@ import { Events } from './telemetry/events'
 import { classifyFeedbackSignal, getCustomSystemPrompt } from './improvement'
 import { startRun } from './runLog'
 import { grantOrigin } from './browser/consent'
+import { grantApp } from './osConsent'
 import {
   resolveOllamaModel,
   resolveGeneralModel,
@@ -1528,6 +1529,9 @@ export async function handleChat(win: BrowserWindow, userMessage: string, tier: 
           if (approved) {
             // Site grants persist per-origin and land in the domain audit log.
             if (nc.kind === 'site-consent' && nc.origin) grantOrigin(nc.origin, 'hitl')
+            // App grants authorise OS-level input into ONE app and last only
+            // for this session; they are revocable mid-task (see osConsent).
+            if (nc.kind === 'app-consent' && nc.app) grantApp(nc.app, 'hitl')
             result = (await executeTool(toolCall.tool, toolCall.args, {
               tier: effectiveTier,
               bypassHitl: true,
