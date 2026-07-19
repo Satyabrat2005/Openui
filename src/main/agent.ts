@@ -15,6 +15,7 @@ import { generatePlan, looksLikeTask, type Plan } from './planner'
 import { getMcpToolSchemas, callMcpTool } from './mcp-client'
 import { getGithubToken, githubToolSchemas } from './github'
 import { getFigmaToken, figmaToolSchemas } from './figma'
+import { figmaBuildToolSchemas } from './figmaBuild'
 import { database } from './database'
 import { clampTierToEntitlement } from './stripe/pricing'
 import { getCurrentUserId } from './stripe/subscriptionSync'
@@ -360,11 +361,13 @@ ${hasGithub ? `GitHub PR review workflow — use this when the user asks to "Rev
 4. Call post_pr_comment(repo, pr_number, comment) to leave a structured review on each PR.
 Repeat steps 2–4 for every open PR. After all PRs are reviewed, give the user a summary of your findings.
 ` : ''}
-${hasFigma ? `Figma design workflow — use this when the user mentions "Figma", asks for a design review, or wants AI feedback on UI frames. The file_key is the alphanumeric string in the Figma URL: figma.com/file/{file_key}/…
-1. Call get_figma_file(file_key) to discover the file structure and all top-level frame IDs.
-2. Call export_figma_frames(file_key, node_ids?) to export frames as PNGs and analyse them with Claude Vision. Prefer the most important screens (main view, key flows).
-3. Call create_figma_comment(file_key, message, node_id?) to post AI-generated feedback directly on the Figma file, anchored to specific frames.
-If the user needs to interact with the Figma web UI directly (inspect prototypes, view comments), call browser_navigate("https://www.figma.com/file/{file_key}") to open it in the Playwright browser.
+${hasFigma ? `Figma workflow — use when the user mentions "Figma", wants a design review, or wants a design turned into code. The file_key is the alphanumeric string in the Figma URL: figma.com/file/{file_key}/…
+ALWAYS start with get_figma_file(file_key) — it lists every top-level frame with the node ID the other tools need.
+- Review/critique: get_figma_design_system(file_key) for the real palette/type/spacing + WCAG contrast, then export_figma_frames(file_key, node_ids?) for Vision analysis of key screens. Call list_figma_comments(file_key) before create_figma_comment(file_key, message, node_id?) so you don't repeat existing feedback.
+- Build it as a website/component: export_figma_tokens(file_key, format) to write the design system into the workspace, then figma_frame_to_code(file_key, node_id, framework) — it uses exact node geometry, so the result is pixel-faithful. HTML opens in the browser.
+- Exact values ("make it match"): get_figma_node_details(file_key, node_ids) reports real bounds, auto-layout gap/padding, hex fills, radii and text styling. Use them verbatim — never estimate what you can look up.
+To CREATE a design in Figma, use build_figma_design — it builds real, editable layers via the OpenUI Builder plugin. If it reports the plugin is not running, call setup_figma_builder and pass on the one-time import steps. The REST API itself is read-only for file content, so editing or deleting EXISTING layers is still impossible — offer a comment or a fresh build instead, and never claim to have edited a Figma file you did not build.
+If the user needs the Figma web UI directly (prototypes, comments), call browser_navigate("https://www.figma.com/file/{file_key}").
 ` : ''}
 ${hasGithub ? `GitHub repo automation workflow — use this when the user asks you to publish a project to GitHub, create a repo, push code, add a README, or open a PR:
 1. Call check_repo_exists(repo) to see whether "owner/repo" already exists.
@@ -433,21 +436,28 @@ const PR_REVIEW_RE = /\breview\b.*\bprs?\b|\bprs?\b.*\breview|\bpull\s+request/i
 const DESIGNER_RE =
   /\bfigma\b|\bdesign(?:er)?\s+(?:file|review|frame)|\bfigma\s+(?:file|frame|comment)|review.*\bfigma\b|\bfigma.*\breview\b/i
 
-const DESIGNER_TOOL_NAMES = [
-  'get_figma_file',
-  'export_figma_frames',
-  'create_figma_comment',
+// Derived from the schemas rather than hardcoded: a hardcoded list silently
+// drifts the moment a Figma tool is added, leaving the new tool registered but
+// invisible to the very mode that exists to use it.
+export const DESIGNER_TOOL_NAMES = [
+  ...figmaToolSchemas.map((s) => s.name),
+  // The build-into-Figma tools need no REST token (they go through the plugin
+  // bridge), so they are always available — but designer mode is exactly where
+  // "design me a landing page in Figma" lands, so they must be listed here.
+  ...figmaBuildToolSchemas.map((s) => s.name),
   'browser_navigate',
   'browser_extract_text',
   'browser_click',
-  'browser_fill_input'
+  'browser_fill_input',
+  // The designer often wants the generated page opened/iterated on locally.
+  'design_preview'
 ]
 
 /**
  * A focused system prompt used when the user triggers the designer workflow.
  * Forces pro tier (Claude Vision) and exposes only Figma + browser tools.
  */
-const DESIGNER_SYSTEM_PROMPT = `You are OpenUI, an AI design partner embedded in a menu-bar app. Your role is to help designers review, analyse, and improve their Figma files using computer vision and structured feedback.
+export const DESIGNER_SYSTEM_PROMPT = `You are OpenUI, an AI design partner embedded in a menu-bar app. You work in both directions: you review and analyse existing Figma files, turn them into production code, and build new designs INTO Figma as real, editable layers.
 
 You can call tools in the same JSON format: {"tool": "tool_name", "args": {"key": "value"}}
 
@@ -457,12 +467,34 @@ ${toolSchemas
   .map(renderSchema)
   .join('\n')}
 
-Design review workflow — follow this order when reviewing a Figma file:
-1. Call get_figma_file(file_key) to understand the file structure and list all top-level frames with their node IDs.
-2. Call export_figma_frames(file_key, node_ids?) to export the most important frames as PNGs and analyse them with Claude Vision. Prefer key screens (home, checkout, main flow).
-3. Synthesise findings across all analysed frames — identify patterns and the highest-impact issues.
-4. Call create_figma_comment(file_key, message, node_id?) to leave targeted, actionable feedback anchored to specific frames. One comment per frame with issues.
-5. After posting all comments, reply in plain text with a summary table of findings and comment IDs.
+Always start with get_figma_file(file_key) — it lists the pages and every top-level frame with its node ID, which every other tool needs.
+
+REVIEWING a design (the user wants critique/feedback):
+1. get_figma_file(file_key) to list frames.
+2. get_figma_design_system(file_key) for the real palette, type scale, spacing and a WCAG contrast check — this grounds the critique in the file's actual values instead of impressions.
+3. export_figma_frames(file_key, node_ids?) to render and analyse key screens with Vision (home, checkout, main flow).
+4. list_figma_comments(file_key) BEFORE commenting, so you build on the existing conversation instead of repeating feedback that is already there.
+5. Synthesise across frames — identify patterns and the highest-impact issues.
+6. create_figma_comment(file_key, message, node_id?) — one comment per frame with issues, anchored to that frame.
+7. Reply in plain text with a summary table of findings and comment IDs.
+
+BUILDING from a design (the user wants the design turned into a working site/component):
+1. get_figma_file(file_key) to find the frame to build.
+2. export_figma_tokens(file_key, format) to write the design system into the workspace ("css" unless the user names a stack). Do this FIRST so the generated code reuses the real palette and scale.
+3. figma_frame_to_code(file_key, node_id, framework) to build the frame. It combines exact node geometry with the rendered image, so the output is pixel-faithful. HTML opens in the browser automatically.
+4. Iterate with design_preview(name, html) on feedback, reusing the same name so the user just refreshes the tab.
+
+MATCHING an existing design precisely (the user says "make it match", or numbers matter):
+Call get_figma_node_details(file_key, node_ids) — it reports exact bounds, auto-layout direction/gap/padding, hex fills, radii, borders and every text layer's font, size, weight and literal copy. Use these numbers verbatim. Never estimate a value you can look up.
+
+Use get_figma_components(file_key) to see what published components and styles already exist before proposing anything new.
+
+BUILDING a design INTO Figma (the user wants you to design, create, generate or mock something up in Figma):
+1. build_figma_design(spec) — describe the design as frames/auto-layout/text/shapes and it appears as real, editable layers in the user's document. Prefer auto-layout over absolute x/y so the result stays editable.
+2. If it reports the OpenUI Builder plugin is not running, call setup_figma_builder and relay the one-time import steps, then retry. The plugin only needs importing once; after that builds are automatic.
+3. Report what was actually created (the tool tells you the layer count and page) — never claim a build you did not get a success result for.
+
+IMPORTANT — the boundary between the two directions. The Figma REST API is READ-ONLY for file content, so you cannot edit, move or delete layers that already exist, and comments are the only thing the API writes back. build_figma_design is the one exception and it works by ADDING new layers through a plugin, not by mutating existing ones. So: "make me a pricing page" → build_figma_design. "Change the padding on this existing frame" → not possible; post a comment describing the change, or rebuild that section as new layers, and say which you did. Never claim to have edited a Figma file.
 
 If the user asks to open or directly inspect the Figma file, call browser_navigate("https://www.figma.com/file/{file_key}") to open it in the Playwright browser, then use browser_extract_text and browser_click to interact with the Figma web UI.
 
