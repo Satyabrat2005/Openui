@@ -660,10 +660,20 @@ app.whenReady().then(async () => {
 })
 
 // ── MCP connect: input validation (defense in depth) ─────────────────────────
-// There is currently no UI path that reaches this handler, but any renderer (or a
-// compromised one) could invoke it. We fully validate the untrusted `config`
-// before it reaches connectMcpServer(), which would otherwise spawn an arbitrary
-// local process for the stdio transport.
+// This handler IS reachable from the UI: ConnectAppsModal.tsx calls it through
+// `window.openui.mcpConnect`. The renderer's own validate() is a UX affordance
+// only — the checks below are the real boundary, since any renderer (or a
+// compromised one) can invoke the channel directly. We fully validate the
+// untrusted `config` before it reaches connectMcpServer(), which would otherwise
+// spawn an arbitrary local process for the stdio transport.
+//
+// KNOWN RESIDUAL RISK — the allowlist constrains the EXECUTABLE, not what it
+// runs. `npx <any-package>` / `node <any-script>` / `uvx <any-tool>` are still
+// arbitrary code execution by design: that is what an MCP launcher does, and
+// narrowing it further would break the "connect any MCP server" feature. The
+// allowlist's job is to stop a config from naming an arbitrary binary outright.
+// If this ever needs to be tighter, pin `args[0]` to a package allowlist (see
+// the ConnectAppsModal source list) rather than widening ALLOWED_MCP_STDIO_COMMANDS.
 
 // Only these executables may launch a stdio MCP server. Matched against the
 // command's basename (path and .exe/.cmd/.bat extension stripped, lower-cased),

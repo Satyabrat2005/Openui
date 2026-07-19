@@ -38,7 +38,11 @@ const h = vi.hoisted(() => {
     }),
     executeTool: vi.fn(async (..._args: unknown[]) => ({ ok: true, output: 'done' }) as unknown),
     looksLikeTask: vi.fn(() => false),
-    generatePlan: vi.fn(async () => null as unknown)
+    generatePlan: vi.fn(async () => null as unknown),
+    // Cloud routing is opt-in (flag + user setting + key). Tests flip this to
+    // drive the OTHER branch of the router without touching env or Settings.
+    route: { toCloud: false },
+    streamAnthropic: vi.fn(async (..._args: unknown[]) => 'cloud reply')
   }
 })
 
@@ -112,6 +116,17 @@ vi.mock('./database', () => ({
 vi.mock('./stripe/pricing', () => ({ clampTierToEntitlement: (t: string) => t }))
 vi.mock('./stripe/subscriptionSync', () => ({ getCurrentUserId: () => null }))
 vi.mock('./telemetry/posthog', () => ({ trackEvent: vi.fn() }))
+// Pin model resolution so telemetry assertions compare against a known id
+// instead of whatever Ollama happens to have installed on the machine running
+// the suite. Only the routing surface is stubbed; the rest of models.ts is real.
+vi.mock('./models', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./models')>()),
+  resolveGeneralModel: async () => 'qwen3.5:latest',
+  resolveOllamaModel: async (preferred: string) => preferred,
+  shouldRouteToCloud: () => h.route.toCloud,
+  resolveCloudModel: () => 'claude-sonnet-5',
+  streamAnthropic: h.streamAnthropic
+}))
 vi.mock('./cloudFreeTier', () => ({ emitLocalUsage: vi.fn() }))
 vi.mock('./improvement', () => ({
   classifyFeedbackSignal: () => null,
@@ -129,6 +144,8 @@ vi.mock('./trainingStore', () => ({
 }))
 
 import { handleChat, clearHistory, registerAgentIPC, isOllamaRunnerCrash } from './agent'
+import { trackEvent } from './telemetry/posthog'
+import { Events } from './telemetry/events'
 
 // A fake BrowserWindow that records everything emitted to the renderer.
 const win = {
@@ -161,6 +178,9 @@ beforeEach(() => {
   h.executeTool.mockClear().mockResolvedValue({ ok: true, output: 'done' })
   h.looksLikeTask.mockReset().mockReturnValue(false)
   h.generatePlan.mockReset().mockResolvedValue(null)
+  h.route.toCloud = false
+  h.streamAnthropic.mockClear()
+  vi.mocked(trackEvent).mockClear()
   // isOllamaRunning() probes GET /api/tags — report the local engine as up so
   // the loop streams from our mocked Ollama transport instead of the "start
   // ollama" fallback message.
@@ -172,6 +192,41 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllGlobals()
+})
+
+// ── Telemetry reports the model the turn actually ran on ──────────────────────
+// Regression: the tracked `model` property used to be derived from a constant
+// that had nothing to do with the route the turn took, so dashboards attributed
+// every turn to a model that was never called.
+describe('handleChat — tracked model matches the actual route', () => {
+  /** The `model` property on the last event of this name, or undefined. */
+  const trackedModel = (event: string): unknown => {
+    const call = [...vi.mocked(trackEvent).mock.calls].reverse().find((c) => c[0] === event)
+    return (call?.[1] as Record<string, unknown> | undefined)?.model
+  }
+
+  it('reports the local Ollama model for a free-tier turn', async () => {
+    h.state.responses = ['Hello there.']
+    await handleChat(win, 'hi', 'free')
+
+    expect(trackedModel(Events.CHAT_MESSAGE_SENT)).toBe('qwen3.5:latest')
+    expect(trackedModel(Events.CHAT_RESPONSE_RECEIVED)).toBe('qwen3.5:latest')
+    // The renderer's model tag is fed from the same value, so it agrees too.
+    expect(lastArg('openui:chat:model')).toMatchObject({ model: 'qwen3.5:latest', tier: 'free' })
+    // Free tier is local: the cloud transport is never touched.
+    expect(h.streamAnthropic).not.toHaveBeenCalled()
+  })
+
+  it('reports the cloud model when the turn is routed to the BYOK cloud tier', async () => {
+    h.route.toCloud = true
+    h.streamAnthropic.mockResolvedValueOnce('Hello from the cloud.')
+    await handleChat(win, 'hi', 'free')
+
+    expect(h.streamAnthropic).toHaveBeenCalled()
+    expect(trackedModel(Events.CHAT_MESSAGE_SENT)).toBe('claude-sonnet-5')
+    expect(trackedModel(Events.CHAT_RESPONSE_RECEIVED)).toBe('claude-sonnet-5')
+    expect(lastArg('openui:chat:model')).toMatchObject({ model: 'claude-sonnet-5' })
+  })
 })
 
 // ── Tool call extraction + StreamGate integration ─────────────────────────────
