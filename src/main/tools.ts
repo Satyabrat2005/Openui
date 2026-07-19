@@ -41,6 +41,7 @@ import { runPowerShell, runPowerShellScript } from './powershell'
 import { enumerateWindowsApps, enumerateMacApps, launchWindowsApp } from './appIndex'
 import { githubToolSchemas, githubRegistry } from './github'
 import { figmaToolSchemas, figmaRegistry } from './figma'
+import { figmaBuildToolSchemas, figmaBuildRegistry } from './figmaBuild'
 import { designToolSchemas, designRegistry } from './designFlow'
 import { spreadsheetToolSchemas, spreadsheetRegistry } from './spreadsheet'
 import { runInteractivePython, writeSandboxFile } from './sandbox'
@@ -4904,6 +4905,7 @@ async function run_python(args: Record<string, unknown>): Promise<ToolResult> {
 export const toolSchemas: ToolSchema[] = [
   ...githubToolSchemas,
   ...figmaToolSchemas,
+  ...figmaBuildToolSchemas,
   ...designToolSchemas,
   ...spreadsheetToolSchemas,
   {
@@ -5872,6 +5874,7 @@ const registry: Record<string, Executor> = {
   run_python,
   ...githubRegistry,
   ...figmaRegistry,
+  ...figmaBuildRegistry,
   ...designRegistry,
   ...spreadsheetRegistry
 }
