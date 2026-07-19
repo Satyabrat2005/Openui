@@ -8,6 +8,16 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
  * The pool is cached for 30s inside models.ts, so each test re-imports the module
  * with a fresh mock rather than fighting the cache.
  */
+/**
+ * Nothing here touches the network — the Ollama SDK is mocked below — but each
+ * case calls vi.resetModules() and re-imports models.ts to defeat its 30 s pool
+ * cache, so every test pays a fresh module-graph transform. Under a full
+ * parallel suite run that legitimately exceeds Vitest's 5 s default and the
+ * tests failed as timeouts rather than on any assertion. The work is genuinely
+ * slow, not hung, so give this file (and only this file) a wider budget.
+ */
+vi.setConfig({ testTimeout: 30_000 })
+
 const list = vi.fn()
 vi.mock('ollama', () => ({
   Ollama: class {

@@ -328,3 +328,92 @@ describe('StreamGate — text responses stream live', () => {
     expect(forward).not.toHaveBeenCalled()
   })
 })
+
+// The classifier is a three-state machine (null → 'tool' | 'text'), and the
+// interesting bugs live in the transitions rather than the steady states: a
+// stream that ends while still undecided, a text stream holding a tail that
+// never resolves, and repeated braces after the hold point.
+describe('StreamGate — classification edge cases', () => {
+  it('emits nothing for an empty response (never classified)', () => {
+    const forward = vi.fn()
+    const gate = new StreamGate(forward)
+    gate.finalize(false) // stream ended before a single delta arrived
+    expect(forward).not.toHaveBeenCalled()
+  })
+
+  it('does not leak a whitespace-only response as a visible message', () => {
+    // Whitespace alone never classifies, so nothing is forwarded — the user
+    // sees no empty bubble.
+    const forward = vi.fn()
+    const gate = new StreamGate(forward)
+    gate.push('  \n\t ')
+    gate.finalize(false)
+    expect(forward).not.toHaveBeenCalled()
+  })
+
+  // A stream ending on 1–2 leading backticks stays undecided forever, so the
+  // buffer is dropped. Documented deliberately: withholding a truncated fence
+  // is the safe direction (it can only ever be a fence or inline code, and
+  // showing a dangling ``` is worse than showing nothing).
+  it('withholds a truncated 1–2 backtick response rather than guessing', () => {
+    const forward = vi.fn()
+    const gate = new StreamGate(forward)
+    gate.push('``')
+    gate.finalize(false)
+    expect(forward).not.toHaveBeenCalled()
+  })
+
+  it('classifies as text on the first non-whitespace, non-brace, non-backtick char', () => {
+    const chunks: string[] = []
+    const gate = new StreamGate((d) => chunks.push(d))
+    gate.push('\n\n') // still undecided
+    expect(chunks).toHaveLength(0)
+    gate.push('Here you go.')
+    expect(chunks.join('')).toBe('\n\nHere you go.')
+  })
+
+  // Once text mode holds at the first `{`, everything after it stays held —
+  // including later prose and further braces. finalize must then reveal that
+  // whole tail exactly once, with no duplication and nothing dropped.
+  it('reveals a multi-brace tail exactly once, losing no characters', () => {
+    const chunks: string[] = []
+    const gate = new StreamGate((d) => chunks.push(d))
+    gate.push('Totals: ')
+    gate.push('{a} then {b} ')
+    gate.push('and done.')
+    expect(chunks.join('')).toBe('Totals: ') // held from the first brace on
+
+    gate.finalize(false)
+    expect(chunks.join('')).toBe('Totals: {a} then {b} and done.')
+  })
+
+  it('drops the whole held tail when it was a real tool call, keeping the prose', () => {
+    const chunks: string[] = []
+    const gate = new StreamGate((d) => chunks.push(d))
+    gate.push('On it. ')
+    gate.push('{"tool":"open_app",')
+    gate.push('"args":{"name":"Slack"}}')
+    gate.finalize(true)
+    expect(chunks.join('')).toBe('On it. ')
+    expect(chunks.join('')).not.toContain('{')
+  })
+
+  // A brace arriving in the very same delta that classifies the response must
+  // not slip through: classification and the hold point are computed from the
+  // buffer, not from the individual delta.
+  it('holds a brace that arrives in the same delta as the classifying text', () => {
+    const chunks: string[] = []
+    const gate = new StreamGate((d) => chunks.push(d))
+    gate.push('Sure: {"tool":"open_app","args":{}}')
+    expect(chunks.join('')).toBe('Sure: ')
+    gate.finalize(true)
+    expect(chunks.join('')).toBe('Sure: ')
+  })
+
+  it('a tool-classified stream forwards nothing mid-stream, however many deltas arrive', () => {
+    const forward = vi.fn()
+    const gate = new StreamGate(forward)
+    for (const d of ['{', '"tool"', ':', '"delete_file"', ',"args":{"path":"~/a"}}']) gate.push(d)
+    expect(forward).not.toHaveBeenCalled()
+  })
+})

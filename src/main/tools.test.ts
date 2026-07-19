@@ -91,6 +91,45 @@ describe('executeTool — HITL approval gate', () => {
     expect(r).toMatchObject({ status: 'pending_approval', tool: 'create_folder' })
   })
 
+  // The gate is deliberately the FIRST thing after the tier check — before the
+  // registry lookup and before arg validation. That ordering matters: a
+  // malformed state-changing call must never reach an executor, and the user
+  // must not be shown a validation error for an action they never approved.
+  it('gates before arg validation — invalid args still pause rather than erroring', async () => {
+    const r = await executeTool('delete_file', {}, { tier: 'enterprise' })
+    expect(r).toMatchObject({ status: 'pending_approval', tool: 'delete_file' })
+    expect(r).not.toHaveProperty('ok')
+  })
+
+  it('gates before the registry lookup — args are passed through untouched', async () => {
+    // Whatever the model sent is what the approval modal shows, verbatim, so the
+    // user approves the actual call and not a normalised version of it.
+    const args = { path: '~/notes.txt', extra: 'unvalidated', n: 1 }
+    const r = await executeTool('delete_file', args, { tier: 'enterprise' })
+    expect(r).toMatchObject({ status: 'pending_approval', tool: 'delete_file', args })
+  })
+
+  it('bypassHitl actually bypasses the gate (the post-Allow re-run path)', async () => {
+    // After the user clicks Allow, agent.ts re-runs with bypassHitl: true. That
+    // call must reach the executor — here it fails on its own validation, which
+    // proves it got past the gate rather than pausing again.
+    const r = await executeTool('run_python', {}, { tier: 'enterprise', bypassHitl: true })
+    expect(r).not.toMatchObject({ status: 'pending_approval' })
+    expect(r).toMatchObject({ ok: false })
+  })
+
+  // agent.ts routes to MCP by matching `result.error.startsWith('Unknown tool')`.
+  // That string is a cross-module contract: reword it and every MCP tool call
+  // silently stops working, with no type error to catch it.
+  it('reports an unrecognised tool with the exact prefix agent.ts routes MCP on', async () => {
+    const r = await executeTool('definitely_not_a_real_tool', {}, { tier: 'enterprise' })
+    expect(r).toMatchObject({ ok: false })
+    expect((r as { error: string }).error.startsWith('Unknown tool')).toBe(true)
+    // An unknown name is not in the gate set, so it falls through to this error
+    // rather than pausing — which is exactly what makes the MCP path reachable.
+    expect(STATE_CHANGING_TOOLS.has('definitely_not_a_real_tool')).toBe(false)
+  })
+
   it('classifies open_pull_request and delete_file as always-confirm destructive tools', () => {
     // agent.ts refuses to auto-bypass anything in DESTRUCTIVE_TOOLS, so a PR can
     // never be opened (and a file never deleted) without a human click — even
