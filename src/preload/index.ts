@@ -72,13 +72,6 @@ type AutonomousStatus = {
   currentTask?: string
   detail?: string
 }
-type User = {
-  id: string
-  email: string | null
-  name: string | null
-  avatar_url: string | null
-  tier: Tier
-}
 type TierUpgradePayload = {
   requestedTier: Tier
   effectiveTier: Tier

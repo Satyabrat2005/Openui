@@ -111,7 +111,6 @@ function getDsn(): string | null {
 async function hasConsent(): Promise<boolean> {
   try {
     // Lazy so importing this module never touches the settings DB (tests).
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
     const consent = require('./consent') as typeof import('./consent')
     return (await consent.getConsentStatus()) === consent.ConsentStatus.GRANTED
   } catch {
@@ -122,9 +121,7 @@ async function hasConsent(): Promise<boolean> {
 function startSdk(dsn: string): void {
   if (active) return
   try {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
     sdk = require('@sentry/electron/main') as SentryMain
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
     const { app } = require('electron') as typeof import('electron')
     sdk.init({
       dsn,

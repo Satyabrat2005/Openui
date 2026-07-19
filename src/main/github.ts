@@ -51,7 +51,6 @@ function getToken(): string | null {
   const env = process.env.GITHUB_TOKEN?.trim()
   if (env) return env
   try {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
     const { database } = require('./database') as typeof import('./database')
     const stored: unknown = database.settings.getSetting('github_token')
     return typeof stored === 'string' && stored.trim() ? stored.trim() : null
@@ -98,7 +97,6 @@ function errStatus(err: unknown): number | undefined {
 function getOctokitClass(): any {
   try {
     // @octokit/rest v20 exports `{ Octokit }` as a named export.
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
     const mod = require('@octokit/rest') as Record<string, unknown>
     const Cls = mod.Octokit ?? (mod.default as Record<string, unknown>)?.Octokit ?? mod.default ?? mod
     if (typeof Cls !== 'function') {
@@ -146,7 +144,7 @@ export async function list_open_prs(args: Record<string, unknown>): Promise<Tool
 
   try {
     const octokit = buildClient()
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     const { data } = await octokit.pulls.list({
       ...parsed,
       state: 'open',

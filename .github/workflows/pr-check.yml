@@ -1,7 +1,8 @@
 # Runs on every pull request into main to make sure the build isn't broken.
-# Type-checks, runs the unit tests, and builds the app shell on Linux (fast, no
-# packaging step). The test step guards the highest-risk logic — the filesystem
-# path-safety gate and the tool-call parser that decides what the LLM may run.
+# Lints, type-checks, runs the unit tests, and builds the app shell on Linux
+# (fast, no packaging step). The test step guards the highest-risk logic — the
+# filesystem path-safety gate and the tool-call parser that decides what the LLM
+# may run. Lint is error-gated only; warnings do not fail the build.
 name: PR Check
 
 on:
@@ -18,6 +19,7 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - run: npm run lint
       - run: npm run typecheck
       - run: npm test
       - run: npm run build

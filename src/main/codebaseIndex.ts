@@ -96,7 +96,6 @@ export function setCodebaseIndexRootForTests(dir: string | null): void {
 
 function indexRoot(): string {
   if (rootOverride) return rootOverride
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
   const { app } = require('electron') as typeof import('electron')
   return join(app.getPath('userData'), 'codebase-index')
 }

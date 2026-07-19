@@ -17,7 +17,6 @@ function formatTime(ts: number): string {
 
 /** Bucket a timestamp into a Claude-style day group. */
 function dayGroup(ts: number): string {
-  const d = new Date(ts)
   const now = new Date()
   const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime()
   const dayMs = 86_400_000

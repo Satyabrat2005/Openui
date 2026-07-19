@@ -74,7 +74,7 @@ export function resolveLangPath(): string | null {
  * "OCR is broken".
  */
 export async function ocrImage(pngBuffer: Buffer): Promise<string> {
-  // eslint-disable-next-line @typescript-eslint/no-var-requires, @typescript-eslint/no-explicit-any
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const Tesseract = require('tesseract.js') as any
   const langPath = resolveLangPath()
   const options: Record<string, unknown> = { logger: () => {} }

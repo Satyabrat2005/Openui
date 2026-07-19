@@ -29,7 +29,6 @@ export function setConsentDirForTests(dir: string | null): void {
 function getConsentDir(): string {
   if (consentDirOverride) return consentDirOverride
   // Lazy-required so this module stays importable outside Electron (vitest).
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
   const { app } = require('electron') as typeof import('electron')
   return app.getPath('userData')
 }

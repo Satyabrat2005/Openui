@@ -1,7 +1,6 @@
 import { resolve } from 'path'
 import { defineConfig, loadEnv } from 'electron-vite'
 import react from '@vitejs/plugin-react'
-import tailwindcss from 'tailwindcss'
 import autoprefixer from 'autoprefixer'
 
 // electron-vite builds three separate bundles: main, preload and renderer.
@@ -83,7 +82,7 @@ export default defineConfig(({ mode }) => {
       plugins: [react()],
       css: {
         postcss: {
-          plugins: [tailwindcss(), autoprefixer()]
+          plugins: [autoprefixer()]
         }
       }
     }

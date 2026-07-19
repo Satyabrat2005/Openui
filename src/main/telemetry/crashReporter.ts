@@ -56,7 +56,7 @@ function report(kind: 'uncaughtException' | 'unhandledRejection', err: unknown):
   const stamp = new Date().toISOString()
   const line = `[${stamp}] ${kind}: ${error.message}\n${error.stack ?? '(no stack)'}\n\n`
 
-  // eslint-disable-next-line no-console
+   
   console.error(`[openui] ${kind}:`, error)
   appendCrashLog(line)
 

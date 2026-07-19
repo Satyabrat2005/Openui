@@ -1781,7 +1781,7 @@ export function registerAgentIPC(win: BrowserWindow): void {
   })
 }
 
-export function registerConversationIPC(win: BrowserWindow): void {
+export function registerConversationIPC(_win: BrowserWindow): void {
   ipcMain.handle('openui:get-conversations', async () => {
     return database.conversations.getConversationsByUser(getCurrentUserId())
   })
@@ -1806,6 +1806,4 @@ export function registerConversationIPC(win: BrowserWindow): void {
     currentConversationId = conversationId
     return messages
   })
-
-  win // referenced to satisfy linter — win is used for future push events
 }

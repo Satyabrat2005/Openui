@@ -68,7 +68,6 @@ function errText(e: unknown): string {
 
 function readSetting(key: string): string {
   try {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
     const { database } = require('./database') as typeof import('./database')
     const v: unknown = database.settings.getSetting(key)
     return typeof v === 'string' ? v.trim() : ''
@@ -78,7 +77,6 @@ function readSetting(key: string): string {
 }
 
 function writeSetting(key: string, value: string): void {
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
   const { database } = require('./database') as typeof import('./database')
   database.settings.setSetting(key, value)
 }
