@@ -789,12 +789,23 @@ async function runBuilderSession(win: BrowserWindow, tier: Tier, userMessage: st
 }
 
 /**
- * The model every tier runs on. OpenUI is now fully local: chat, planning, and
- * the autonomous agent all run on the self-hosted Ollama server. Override the
- * model with the OLLAMA_MODEL env var. Tiers no longer map to different cloud
- * models — they only affect metering/entitlement plumbing.
+ * The model this turn will actually run on — the value the UI's model tag and
+ * every telemetry event report. Tiers no longer map to different models (they
+ * only drive metering/entitlement plumbing); the ROUTE does, so this mirrors the
+ * same branch callModel takes:
+ *
+ *   • opt-in BYOK cloud routing on  → the resolved Anthropic model;
+ *   • otherwise (the default)       → the local Ollama general model.
+ *
+ * Reporting the local model for a cloud-routed turn is what made the tracked
+ * `model` property a lie, so the branch has to live here rather than being
+ * assumed. One residual gap is unavoidable at this point in the turn: callModel
+ * degrades to local if the cloud call throws, and that fallback is surfaced to
+ * the user on `openui:chat:warning` — telemetry still shows the cloud model it
+ * set out to use.
  */
 async function modelForTier(_tier: Tier): Promise<string> {
+  if (shouldRouteToCloud()) return resolveCloudModel()
   return localGeneralModel()
 }
 
