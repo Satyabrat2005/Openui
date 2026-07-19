@@ -21,7 +21,12 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 
 const h = vi.hoisted(() => {
-  const state = { responses: [] as string[] }
+  const state = {
+    responses: [] as string[],
+    // Drives getAutonomyLevel() via the mocked settings repo. undefined → the
+    // safe default (approve-plan), which is what most tests want.
+    autonomy: undefined as string | undefined
+  }
   return {
     state,
     sends: [] as Array<{ channel: string; args: unknown[] }>,
@@ -108,7 +113,9 @@ vi.mock('./database', () => ({
       recordTurn: vi.fn(() => 'fb-1'),
       setExplicitRatingOnLast: vi.fn(() => 'fb-1')
     },
-    settings: { getSetting: vi.fn(() => undefined) },
+    settings: {
+      getSetting: vi.fn((key: string) => (key === 'autonomy_level' ? h.state.autonomy : undefined))
+    },
     training: { getStats: vi.fn(() => ({ total: 0 })) }
   }
 }))
@@ -146,6 +153,8 @@ vi.mock('./trainingStore', () => ({
 import { handleChat, clearHistory, registerAgentIPC, isOllamaRunnerCrash } from './agent'
 import { trackEvent } from './telemetry/posthog'
 import { Events } from './telemetry/events'
+import { callMcpTool } from './mcp-client'
+import { grantOrigin } from './browser/consent'
 
 // A fake BrowserWindow that records everything emitted to the renderer.
 const win = {
@@ -156,6 +165,19 @@ const win = {
 } as never
 
 const tick = (): Promise<void> => new Promise((r) => setImmediate(r))
+/**
+ * Drive the loop forward until `pred` holds. The number of microtask turns
+ * between handleChat() and a given emit varies with the path taken (model
+ * stream → parse → executeTool → gate), so polling is far less brittle than a
+ * fixed number of tick()s. Returns false if it never became true.
+ */
+const waitFor = async (pred: () => boolean, maxTicks = 60): Promise<boolean> => {
+  for (let i = 0; i < maxTicks; i++) {
+    if (pred()) return true
+    await tick()
+  }
+  return pred()
+}
 const chunks = (): string => h.sends.filter((s) => s.channel === 'openui:chat:chunk').map((s) => String(s.args[0])).join('')
 const sent = (channel: string): boolean => h.sends.some((s) => s.channel === channel)
 const lastArg = (channel: string): Record<string, unknown> | undefined => {
@@ -179,8 +201,11 @@ beforeEach(() => {
   h.looksLikeTask.mockReset().mockReturnValue(false)
   h.generatePlan.mockReset().mockResolvedValue(null)
   h.route.toCloud = false
+  h.state.autonomy = undefined
   h.streamAnthropic.mockClear()
   vi.mocked(trackEvent).mockClear()
+  vi.mocked(callMcpTool).mockClear().mockResolvedValue({ ok: false, error: 'no mcp' })
+  vi.mocked(grantOrigin).mockClear()
   // isOllamaRunning() probes GET /api/tags — report the local engine as up so
   // the loop streams from our mocked Ollama transport instead of the "start
   // ollama" fallback message.
@@ -405,6 +430,346 @@ describe('handleChat — premature "done" on a planned run', () => {
 
     // The user-facing reply is honest about the steps that didn't complete.
     expect(String(lastArg('openui:chat:done')?.text)).toContain('could not confirm')
+  })
+})
+
+// ── HITL approval gate: the promise-resolution path ───────────────────────────
+// This is the boundary that decides whether an LLM-proposed state-changing
+// action actually touches the user's machine. executeTool returns
+// pending_approval, the loop emits openui:hitl:request and AWAITS a resolver
+// stored in a module-level map; the renderer's openui:hitl:response resolves it.
+// Nothing here was covered before: these tests drive a real pending_approval
+// through Allow, Deny, the backstop timeout, and the stale/garbage-id cases.
+describe('handleChat — HITL approval gate', () => {
+  /** Tools our stubbed executeTool treats as state-changing (mirrors tools.ts). */
+  const GATED = new Set(['open_app', 'delete_file'])
+
+  beforeEach(() => {
+    registerAgentIPC(win)
+    // Behave like the real executeTool: pause for approval unless bypassHitl.
+    h.executeTool.mockImplementation(async (...a: unknown[]) => {
+      const name = a[0] as string
+      const args = a[1] as Record<string, unknown>
+      const ctx = (a[2] ?? {}) as { bypassHitl?: boolean }
+      if (GATED.has(name) && !ctx.bypassHitl) {
+        return { status: 'pending_approval', tool: name, args }
+      }
+      return { ok: true, output: 'done' }
+    })
+  })
+
+  /** Answer the outstanding HITL prompt exactly as the renderer would. */
+  function respondHitl(approved: unknown, idOverride?: string): void {
+    const req = lastArg('openui:hitl:request')
+    const handler = h.ipc.get('openui:hitl:response')
+    expect(handler, 'hitl:response IPC handler should be registered').toBeDefined()
+    handler?.(null, { id: idOverride ?? req?.id, approved })
+  }
+
+  /** Calls to executeTool that actually ran the tool (i.e. past the gate). */
+  const bypassCalls = (): unknown[][] =>
+    h.executeTool.mock.calls.filter((c) => (c[2] as { bypassHitl?: boolean } | undefined)?.bypassHitl)
+
+  it('pauses on a state-changing tool and does not run it before the user answers', async () => {
+    h.state.responses = ['{"tool":"open_app","args":{"name":"Slack"}}', 'Opened it.']
+    const pending = handleChat(win, 'open slack', 'free')
+
+    expect(await waitFor(() => sent('openui:hitl:request'))).toBe(true)
+    // The prompt carries the tool + args the user is being asked to authorise.
+    expect(lastArg('openui:hitl:request')).toMatchObject({
+      tool: 'open_app',
+      args: { name: 'Slack' }
+    })
+    // Gated: the tool has been *offered* to executeTool but never executed.
+    expect(bypassCalls()).toHaveLength(0)
+
+    respondHitl(true)
+    await pending
+
+    // Allow → re-executed, this time with bypassHitl so it really runs.
+    expect(bypassCalls()).toHaveLength(1)
+    expect(bypassCalls()[0][0]).toBe('open_app')
+    expect(bypassCalls()[0][1]).toEqual({ name: 'Slack' })
+    expect(sent('openui:chat:done')).toBe(true)
+  })
+
+  it('never executes the tool when the user denies, and tells the model not to retry', async () => {
+    h.state.responses = ['{"tool":"open_app","args":{"name":"Slack"}}', 'Understood.']
+    const pending = handleChat(win, 'open slack', 'free')
+
+    expect(await waitFor(() => sent('openui:hitl:request'))).toBe(true)
+    respondHitl(false)
+    await pending
+
+    // The critical assertion: a denied action is NEVER run.
+    expect(bypassCalls()).toHaveLength(0)
+    expect(sent('openui:chat:done')).toBe(true)
+    expect(sent('openui:chat:error')).toBe(false)
+    // The task row reflects the refusal rather than silently going green.
+    // (Row ids come from a module-level counter, so assert on the last update.)
+    expect(lastArg('openui:task:update')).toMatchObject({ status: 'error' })
+  })
+
+  // A non-boolean payload must fail CLOSED. The resolver compares `approved ===
+  // true`, so a truthy-but-not-true value (a stringified "true" from a sloppy
+  // renderer, say) must still deny rather than authorise an OS action.
+  it('treats a non-boolean approval payload as a denial', async () => {
+    h.state.responses = ['{"tool":"open_app","args":{}}', 'Understood.']
+    const pending = handleChat(win, 'open slack', 'free')
+
+    expect(await waitFor(() => sent('openui:hitl:request'))).toBe(true)
+    respondHitl('true') // string, not boolean
+    await pending
+
+    expect(bypassCalls()).toHaveLength(0)
+  })
+
+  // Regression guard for the loop hanging forever: if the renderer never
+  // answers (crash, reload, closed window, dropped IPC), the main-process
+  // backstop must auto-DENY and let the turn finish.
+  it('auto-denies and completes the turn if the prompt is never answered', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      h.state.responses = ['{"tool":"open_app","args":{}}', 'Understood.']
+      const pending = handleChat(win, 'open slack', 'free')
+
+      expect(await waitFor(() => sent('openui:hitl:request'))).toBe(true)
+      vi.advanceTimersByTime(200_000) // past HITL_BACKSTOP_TIMEOUT_MS (150s)
+      await pending
+
+      expect(sent('openui:hitl:timeout')).toBe(true)
+      expect(bypassCalls()).toHaveLength(0) // timed out ⇒ denied ⇒ never ran
+      expect(sent('openui:chat:done')).toBe(true)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  // The resolver map is keyed by request id. A response for an id that is not
+  // outstanding (a late click on a stale modal, a duplicate send) must be
+  // ignored — not crash, and not resolve the request that IS outstanding.
+  it('ignores a response carrying an unknown id, then still honours the real one', async () => {
+    h.state.responses = ['{"tool":"open_app","args":{}}', 'Opened it.']
+    const pending = handleChat(win, 'open slack', 'free')
+
+    expect(await waitFor(() => sent('openui:hitl:request'))).toBe(true)
+    respondHitl(true, 'hitl-nonexistent') // stale/garbage id → no effect
+    await tick()
+    expect(bypassCalls()).toHaveLength(0) // still waiting on the real prompt
+
+    respondHitl(true)
+    await pending
+    expect(bypassCalls()).toHaveLength(1)
+  })
+
+  it('ignores a malformed response payload without crashing the turn', async () => {
+    h.state.responses = ['{"tool":"open_app","args":{}}', 'Opened it.']
+    const pending = handleChat(win, 'open slack', 'free')
+
+    expect(await waitFor(() => sent('openui:hitl:request'))).toBe(true)
+    const handler = h.ipc.get('openui:hitl:response')
+    expect(() => {
+      handler?.(null, null)
+      handler?.(null, 'not an object')
+      handler?.(null, { id: 42, approved: true }) // non-string id
+    }).not.toThrow()
+    await tick()
+    expect(bypassCalls()).toHaveLength(0)
+
+    respondHitl(true)
+    await pending
+    expect(bypassCalls()).toHaveLength(1)
+  })
+
+  // A second gated tool in the same turn must take its OWN approval — one
+  // Allow authorises one action, never a standing grant for the rest of the turn.
+  it('requires a separate approval for each gated tool in the same turn', async () => {
+    h.state.responses = [
+      '{"tool":"open_app","args":{"name":"Slack"}}',
+      '{"tool":"open_app","args":{"name":"Notes"}}',
+      'Both open.'
+    ]
+    const pending = handleChat(win, 'open both', 'free')
+
+    expect(await waitFor(() => sent('openui:hitl:request'))).toBe(true)
+    const firstId = lastArg('openui:hitl:request')?.id
+    respondHitl(true)
+
+    expect(await waitFor(() => lastArg('openui:hitl:request')?.id !== firstId)).toBe(true)
+    const secondId = lastArg('openui:hitl:request')?.id
+    expect(secondId).not.toBe(firstId) // a fresh request, not the stale one
+    respondHitl(true)
+    await pending
+
+    expect(bypassCalls()).toHaveLength(2)
+  })
+})
+
+// ── Autonomy vs. DESTRUCTIVE_TOOLS ────────────────────────────────────────────
+// agent.ts computes `bypassHitl = autopilot && !DESTRUCTIVE_TOOLS.has(tool)`.
+// That single expression is what stops full-auto from silently deleting files;
+// if it ever inverted, an autonomous run could destroy user data with no prompt.
+describe('handleChat — autonomy never bypasses a destructive tool', () => {
+  const GATED = new Set(['open_app', 'delete_file'])
+
+  beforeEach(() => {
+    registerAgentIPC(win)
+    h.executeTool.mockImplementation(async (...a: unknown[]) => {
+      const name = a[0] as string
+      const ctx = (a[2] ?? {}) as { bypassHitl?: boolean }
+      if (GATED.has(name) && !ctx.bypassHitl) {
+        return { status: 'pending_approval', tool: name, args: a[1] }
+      }
+      return { ok: true, output: 'done' }
+    })
+  })
+
+  it('runs a non-destructive tool with no prompt under full-auto', async () => {
+    h.state.autonomy = 'full-auto'
+    h.state.responses = ['{"tool":"open_app","args":{"name":"Slack"}}', 'Done.']
+    await handleChat(win, 'open slack', 'free')
+
+    expect(sent('openui:hitl:request')).toBe(false) // autopilot — no human click
+    expect(h.executeTool.mock.calls[0][2]).toMatchObject({ bypassHitl: true })
+  })
+
+  it('STILL prompts for a destructive tool under full-auto', async () => {
+    h.state.autonomy = 'full-auto'
+    h.state.responses = ['{"tool":"delete_file","args":{"path":"~/x.txt"}}', 'Done.']
+    const pending = handleChat(win, 'delete x', 'free')
+
+    // delete_file is in DESTRUCTIVE_TOOLS, so autopilot must NOT bypass it.
+    expect(await waitFor(() => sent('openui:hitl:request'))).toBe(true)
+    expect(lastArg('openui:hitl:request')).toMatchObject({ tool: 'delete_file' })
+    expect(h.executeTool.mock.calls[0][2]).toMatchObject({ bypassHitl: false })
+
+    const handler = h.ipc.get('openui:hitl:response')
+    handler?.(null, { id: lastArg('openui:hitl:request')?.id, approved: false })
+    await pending
+
+    // Denied under full-auto ⇒ the deletion never ran.
+    expect(
+      h.executeTool.mock.calls.filter(
+        (c) => c[0] === 'delete_file' && (c[2] as { bypassHitl?: boolean })?.bypassHitl
+      )
+    ).toHaveLength(0)
+  })
+
+  it('prompts for every state-changing tool under the default (approve-plan, no plan)', async () => {
+    // Outside an approved plan, approve-plan behaves like ask-each.
+    h.state.autonomy = undefined
+    h.state.responses = ['{"tool":"open_app","args":{}}', 'Done.']
+    const pending = handleChat(win, 'open slack', 'free')
+
+    expect(await waitFor(() => sent('openui:hitl:request'))).toBe(true)
+    expect(h.executeTool.mock.calls[0][2]).toMatchObject({ bypassHitl: false })
+    const handler = h.ipc.get('openui:hitl:response')
+    handler?.(null, { id: lastArg('openui:hitl:request')?.id, approved: true })
+    await pending
+  })
+})
+
+// ── Sensitive-action re-entry (needsConfirmation) ─────────────────────────────
+// A tool can refuse mid-execution and ask for one human click (per-site browser
+// consent, a payment/password step). This gate sits BELOW autonomy — full-auto
+// included — so it must fire even when bypassHitl was already true.
+describe('handleChat — tool-requested confirmation (needsConfirmation)', () => {
+  beforeEach(() => registerAgentIPC(win))
+
+  it('re-runs with sensitiveApproved and persists the site grant on approval', async () => {
+    h.state.autonomy = 'full-auto' // even here the tool-level gate must fire
+    h.executeTool
+      .mockResolvedValueOnce({
+        ok: false,
+        error: 'needs consent',
+        needsConfirmation: {
+          kind: 'site-consent',
+          label: 'Allow OpenUI to use example.com?',
+          origin: 'https://example.com'
+        }
+      })
+      .mockResolvedValue({ ok: true, output: 'navigated' })
+
+    h.state.responses = ['{"tool":"browser_navigate","args":{"url":"https://example.com"}}', 'Done.']
+    const pending = handleChat(win, 'go to example', 'free')
+
+    expect(await waitFor(() => sent('openui:hitl:request'))).toBe(true)
+    expect(lastArg('openui:hitl:request')).toMatchObject({
+      label: 'Allow OpenUI to use example.com?'
+    })
+
+    const handler = h.ipc.get('openui:hitl:response')
+    handler?.(null, { id: lastArg('openui:hitl:request')?.id, approved: true })
+    await pending
+
+    // The origin grant is persisted, and the retry carries sensitiveApproved.
+    expect(vi.mocked(grantOrigin)).toHaveBeenCalledWith('https://example.com', 'hitl')
+    expect(h.executeTool.mock.calls[1][2]).toMatchObject({ sensitiveApproved: true })
+  })
+
+  it('does not grant the origin or re-run when the user declines', async () => {
+    h.executeTool.mockResolvedValue({
+      ok: false,
+      error: 'needs consent',
+      needsConfirmation: {
+        kind: 'site-consent',
+        label: 'Allow OpenUI to use evil.example?',
+        origin: 'https://evil.example'
+      }
+    })
+
+    h.state.responses = ['{"tool":"browser_navigate","args":{"url":"https://evil.example"}}', 'OK.']
+    const pending = handleChat(win, 'go there', 'free')
+
+    expect(await waitFor(() => sent('openui:hitl:request'))).toBe(true)
+    const handler = h.ipc.get('openui:hitl:response')
+    handler?.(null, { id: lastArg('openui:hitl:request')?.id, approved: false })
+    await pending
+
+    expect(vi.mocked(grantOrigin)).not.toHaveBeenCalled()
+    expect(
+      h.executeTool.mock.calls.filter(
+        (c) => (c[2] as { sensitiveApproved?: boolean } | undefined)?.sensitiveApproved
+      )
+    ).toHaveLength(0)
+  })
+})
+
+// ── MCP fallback is gated too ─────────────────────────────────────────────────
+// An unknown tool falls through to an MCP server, which can run arbitrary local
+// actions. Because it is not a built-in, executeTool's own HITL gate never
+// fires for it — agent.ts has to gate it separately. That substitute gate is
+// what these tests pin down.
+describe('handleChat — unknown tool → MCP fallback', () => {
+  beforeEach(() => {
+    registerAgentIPC(win)
+    h.executeTool.mockResolvedValue({ ok: false, error: 'Unknown tool "mcp_thing".' })
+  })
+
+  it('asks for approval before invoking an MCP tool, and invokes it on Allow', async () => {
+    h.state.responses = ['{"tool":"mcp_thing","args":{"a":1}}', 'Done.']
+    const pending = handleChat(win, 'do the mcp thing', 'free')
+
+    expect(await waitFor(() => sent('openui:hitl:request'))).toBe(true)
+    expect(vi.mocked(callMcpTool)).not.toHaveBeenCalled() // gated first
+
+    const handler = h.ipc.get('openui:hitl:response')
+    handler?.(null, { id: lastArg('openui:hitl:request')?.id, approved: true })
+    await pending
+
+    expect(vi.mocked(callMcpTool)).toHaveBeenCalledWith('mcp_thing', { a: 1 })
+  })
+
+  it('never invokes the MCP tool when denied', async () => {
+    h.state.responses = ['{"tool":"mcp_thing","args":{}}', 'OK.']
+    const pending = handleChat(win, 'do the mcp thing', 'free')
+
+    expect(await waitFor(() => sent('openui:hitl:request'))).toBe(true)
+    const handler = h.ipc.get('openui:hitl:response')
+    handler?.(null, { id: lastArg('openui:hitl:request')?.id, approved: false })
+    await pending
+
+    expect(vi.mocked(callMcpTool)).not.toHaveBeenCalled()
   })
 })
 

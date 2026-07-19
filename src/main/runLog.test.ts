@@ -4,7 +4,43 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { buildLogLine, startRun, setRunLogDirForTests } from './runLog'
 
-const waitForFlush = (): Promise<void> => new Promise((r) => setTimeout(r, 50))
+/**
+ * Wait for the run log to flush, by polling for the lines rather than sleeping
+ * a fixed interval.
+ *
+ * runLog appends fire-and-forget (an un-awaited appendFile per entry), so there
+ * is no handle to await from the test side. This used to be a flat 50 ms sleep,
+ * which raced the flush under parallel test load: readdirSync found no .jsonl
+ * yet and the assertions failed intermittently — green alone, red in a full
+ * suite run. Polling returns as soon as the writes land (normally single-digit
+ * ms) and only spends the full budget when something is genuinely wrong.
+ *
+ * Only whole lines are parsed: every append ends in "\n", so splitting and
+ * dropping the trailing element discards a half-written final line instead of
+ * throwing inside JSON.parse.
+ */
+const FLUSH_TIMEOUT_MS = 5000
+
+async function readFlushedLines(
+  dir: string,
+  expected: number
+): Promise<Array<Record<string, unknown>>> {
+  const deadline = Date.now() + FLUSH_TIMEOUT_MS
+  let complete: string[] = []
+  for (;;) {
+    const file = readdirSync(dir).find((f) => f.endsWith('.jsonl'))
+    if (file) {
+      complete = readFileSync(join(dir, file), 'utf8').split('\n').slice(0, -1)
+      if (complete.length >= expected) return complete.map((l) => JSON.parse(l))
+    }
+    if (Date.now() >= deadline) {
+      throw new Error(
+        `run log flushed ${complete.length}/${expected} lines within ${FLUSH_TIMEOUT_MS}ms`
+      )
+    }
+    await new Promise((r) => setTimeout(r, 10))
+  }
+}
 
 describe('runLog — structured JSONL task logging', () => {
   it('serialises entries as single JSON lines with clipped fields', () => {
@@ -30,11 +66,10 @@ describe('runLog — structured JSONL task logging', () => {
     run.toolCall({ tool: 'write_file', ok: true, ms: 12, argsSummary: 'Write app.js' })
     run.event('rollback', { detail: 'restored 2 files' })
     run.end('failure', 'tests failed after 20 turns')
-    await waitForFlush()
 
-    const files = readdirSync(dir).filter((f) => f.endsWith('.jsonl'))
-    expect(files.length).toBe(1)
-    const lines = readFileSync(join(dir, files[0]), 'utf8').trim().split('\n').map((l) => JSON.parse(l))
+    // run_start, tool_call, event, run_end
+    const lines = await readFlushedLines(dir, 4)
+    expect(readdirSync(dir).filter((f) => f.endsWith('.jsonl')).length).toBe(1)
     const types = lines.map((l) => l.type)
     expect(types).toEqual(['run_start', 'tool_call', 'event', 'run_end'])
     expect(lines[0].taskId).toBe('t-9')
@@ -56,13 +91,9 @@ describe('runLog — structured JSONL task logging', () => {
     run.event('resume', { taskId: 't-42', completed: 1, of: 3, lastGoodCommit: 'deadbee' })
     run.event('checkpoint', { sha: 'abc1234', task: 't-42' })
     run.end('success', 'all sub-tasks merged and verified')
-    await waitForFlush()
 
-    const file = readdirSync(dir).find((f) => f.endsWith('.jsonl'))!
-    const lines = readFileSync(join(dir, file), 'utf8')
-      .trim()
-      .split('\n')
-      .map((l) => JSON.parse(l))
+    // run_start, resume, checkpoint, run_end
+    const lines = await readFlushedLines(dir, 4)
 
     const resume = lines.find((l) => l.event === 'resume')
     expect(resume).toMatchObject({ type: 'event', completed: 1, of: 3, lastGoodCommit: 'deadbee' })
