@@ -55,7 +55,6 @@ export function setCheckpointDirForTests(dir: string | null): void {
 
 function getCheckpointDir(): string {
   if (dirOverride) return dirOverride
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
   const { app } = require('electron') as typeof import('electron')
   return join(app.getPath('userData'), 'autonomous-resume')
 }

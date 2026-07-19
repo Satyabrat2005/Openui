@@ -26,10 +26,8 @@ const WINDOW_CALL_TIMEOUT_MS = 2_000
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function loadNut(): any {
   try {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
     return require('@nut-tree/nut-js')
   } catch {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
     return require('@nut-tree-fork/nut-js')
   }
 }

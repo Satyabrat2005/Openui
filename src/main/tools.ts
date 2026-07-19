@@ -24,7 +24,7 @@ import { execFile, spawn } from 'node:child_process'
 import { promisify } from 'node:util'
 import { existsSync } from 'node:fs'
 import { readFile, writeFile, mkdir, rename, copyFile, unlink, readdir, stat } from 'node:fs/promises'
-import { resolve as resolvePath, join as joinPath, dirname, sep } from 'node:path'
+import { join as joinPath, dirname } from 'node:path'
 import { homedir } from 'node:os'
 import { SENSITIVE_PATH_RE, resolveSafePath } from './fs/pathSafety'
 import { app, desktopCapturer, clipboard, shell, BrowserWindow } from 'electron'
@@ -36,7 +36,7 @@ import { activeWindow } from './osLoop/windowTarget'
 import { trailingSegment } from './osLoop/windowMatch'
 import { isAppGranted, signalFor, auditAction, audit } from './osConsent'
 import type { RunLog } from './runLog'
-import { resolveApp, scoreAppName, normalizeAppName, type InstalledApp } from './appResolver'
+import { resolveApp, scoreAppName, normalizeAppName } from './appResolver'
 import { runPowerShell, runPowerShellScript } from './powershell'
 import { enumerateWindowsApps, enumerateMacApps, launchWindowsApp } from './appIndex'
 import { githubToolSchemas, githubRegistry } from './github'
@@ -334,7 +334,6 @@ function requireFirst(names: string[]): unknown {
   const failures: string[] = []
   for (const name of names) {
     try {
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
       return require(name)
     } catch (err) {
       failures.push(`${name} (${err instanceof Error ? err.message : String(err)})`)
@@ -759,7 +758,7 @@ async function launchBrowserContext(
     } catch (err) {
       // Real-browser attach failed — surface why, then fall back so the user
       // still gets a working (isolated) session rather than a hard failure.
-      // eslint-disable-next-line no-console
+       
       console.warn(
         `[connect_browser] Could not attach to your real browser (${errText(err)}). ` +
           `Falling back to an isolated automation profile.`
@@ -775,7 +774,7 @@ async function launchBrowserContext(
  * (with an actionable message) if no real browser can be attached — the caller
  * decides whether to fall back to an isolated profile.
  */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+ 
 async function connectToRealBrowser(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   pw: any,
@@ -1451,9 +1450,9 @@ async function send_whatsapp_message(args: Record<string, unknown>): Promise<Too
     }
   }
 
-  // eslint-disable-next-line no-control-regex
   const resolvedContact = typeof args.resolvedContact === 'string'
-    ? args.resolvedContact.replace(/[\x00-\x1f\x7f]/g, '').trim()
+    ? // eslint-disable-next-line no-control-regex -- strips C0/DEL control chars
+      args.resolvedContact.replace(/[\x00-\x1f\x7f]/g, '').trim()
     : ''
 
   try {

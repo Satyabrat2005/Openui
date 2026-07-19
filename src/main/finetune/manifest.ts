@@ -57,7 +57,6 @@ export function setFinetuneDirForTests(dir: string | null): void {
 export function getFinetuneDir(): string {
   if (dirOverride) return dirOverride
   // Lazy so importing this module never requires a booted Electron app.
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
   const { app } = require('electron') as typeof import('electron')
   return join(app.getPath('userData'), 'finetune')
 }

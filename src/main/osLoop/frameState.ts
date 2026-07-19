@@ -76,7 +76,6 @@ export function diffFrames(before: RawFrame, after: RawFrame): FrameDiff {
 
   const { width, height } = after
   const output = new Uint8Array(width * height * 4)
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
   const pixelmatch = require('pixelmatch') as (
     a: Uint8Array,
     b: Uint8Array,

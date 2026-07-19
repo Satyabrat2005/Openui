@@ -68,7 +68,6 @@ export function setTaskStoreDirForTests(dir: string | null): void {
 
 function getStoreDir(): string {
   if (storeDirOverride) return storeDirOverride
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
   const { app } = require('electron') as typeof import('electron')
   return app.getPath('userData')
 }

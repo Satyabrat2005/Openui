@@ -92,7 +92,6 @@ export async function indexDirectory(dirPath: string): Promise<IndexResult> {
       if (extname(filePath).toLowerCase() === '.txt') {
         text = Buffer.from(await readFile(filePath)).toString('utf-8')
       } else {
-        // eslint-disable-next-line @typescript-eslint/no-var-requires
         const pdfParse = require('pdf-parse')
         const buf = Buffer.from(await readFile(filePath))
         // eslint-disable-next-line @typescript-eslint/no-explicit-any

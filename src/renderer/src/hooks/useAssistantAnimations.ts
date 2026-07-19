@@ -132,5 +132,7 @@ export function useAssistantAnimations(
       gsap.killTweensOf(scope.querySelectorAll('.sbar'))
       ctx.revert()
     }
-  }, [scopeRef, enabled])
+    // The two refs are stable MutableRefObject identities from the caller, so
+    // listing them satisfies exhaustive-deps without re-running the timeline.
+  }, [scopeRef, enabled, captionLockedRef, recordingRef])
 }

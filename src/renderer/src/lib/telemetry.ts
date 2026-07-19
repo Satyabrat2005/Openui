@@ -25,7 +25,7 @@ function normalize(
 
 export function track(event: string, properties?: TelemetryProperties): void {
   if (import.meta.env.DEV) {
-    // eslint-disable-next-line no-console
+     
     console.debug('[telemetry]', event, properties ?? {})
   }
   // Forward to the main process. Guarded because the preload bridge is absent

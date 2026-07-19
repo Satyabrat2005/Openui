@@ -1,9 +1,12 @@
 /* Inter (UI) + JetBrains Mono (code) are not self-hosted or fetched: the CSP is
    locked to 'self' (the renderer makes no direct network requests), so these
    are system-font-stack fallbacks only, by design — not a network font. */
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+/* Tailwind was configured but never used: this renderer is styled entirely by
+   the ou-* / openui-* design system below (no utility classes appear in any
+   .tsx). The only thing `@tailwind base` contributed was Preflight, whose
+   element-level normalization IS relied on — see "PREFLIGHT PORT" below, which
+   reproduces the parts that were load-bearing. Do not re-add Tailwind without
+   deciding which of the two systems wins. */
 
 /* ─────────────────────────────────────────
    THEME TOKENS — premium layered dark (Claude × Gemini × aside.com).
@@ -97,6 +100,84 @@
   box-sizing: border-box;
   margin: 0;
   padding: 0;
+}
+
+/* ── PREFLIGHT PORT ───────────────────────────────────────
+   Tailwind's Preflight used to supply the element-level normalization below.
+   The box-model reset above already covered its margin/padding/box-sizing
+   rules, so only these were load-bearing when Tailwind was removed:
+
+   • form controls — without this, the 16 <button>s render with native OS
+     chrome (grey face, system font) instead of inheriting the app's styling;
+   • headings — 9 of them; without this they take UA font-size/weight;
+   • lists — 2 <ul>; without this the bullets come back;
+   • replaced elements — 51 <svg> plus <img>; Preflight makes these display:
+     block, and losing that reintroduces inline baseline gaps under every icon.
+
+   Borders were checked and do NOT depend on Preflight's implicit
+   `border-style: solid` (every border in this file names its style), so that
+   rule is deliberately not ported.
+──────────────────────────────────────────────────────── */
+button,
+input,
+optgroup,
+select,
+textarea {
+  font-family: inherit;
+  font-size: 100%;
+  font-weight: inherit;
+  line-height: inherit;
+  letter-spacing: inherit;
+  color: inherit;
+}
+
+button,
+[type='button'],
+[type='reset'],
+[type='submit'] {
+  -webkit-appearance: button;
+  background-color: transparent;
+  background-image: none;
+  border: none;
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+  font-size: inherit;
+  font-weight: inherit;
+}
+
+ol,
+ul,
+menu {
+  list-style: none;
+}
+
+img,
+svg,
+video,
+canvas,
+audio,
+iframe,
+embed,
+object {
+  display: block;
+  vertical-align: middle;
+}
+
+img,
+video {
+  max-width: 100%;
+  height: auto;
+}
+
+a {
+  color: inherit;
+  text-decoration: inherit;
 }
 
 html,

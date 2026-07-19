@@ -62,7 +62,6 @@ export function chunkText(text: string, source: string): ChunkMeta[] {
  * callers are expected to catch and degrade rather than crash the main process.
  */
 export async function embedText(text: string): Promise<number[]> {
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
   const mod = require('ollama')
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const client: any = mod.default ?? mod
@@ -89,7 +88,6 @@ export async function embedText(text: string): Promise<number[]> {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function loadHnsw(): any | null {
   try {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
     const mod = require('hnswlib-node')
     return mod.HierarchicalNSW ?? mod.default?.HierarchicalNSW ?? null
   } catch {

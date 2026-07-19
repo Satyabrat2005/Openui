@@ -324,7 +324,7 @@ export async function export_figma_frames(
     // Request PNG exports from the Figma Images API.
     // Node IDs contain ":" which is allowed unencoded in URL query values.
     const idsParam = nodeIds.join(',')
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     const imagesData = (await figmaFetch(
       `/v1/images/${encodeURIComponent(fileKey)}?ids=${idsParam}&format=png&scale=1`
     )) as any
@@ -434,7 +434,7 @@ export async function create_figma_comment(args: Record<string, unknown>): Promi
       body.client_meta = { node_id: nodeId }
     }
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+     
     const data = (await figmaFetch(
       `/v1/files/${encodeURIComponent(fileKey)}/comments`,
       'POST',

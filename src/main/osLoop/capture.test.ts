@@ -9,7 +9,6 @@ import { diffFrames } from './frameState'
  * buffer-view mistake in the decode step — this can.
  */
 
-// eslint-disable-next-line @typescript-eslint/no-var-requires, @typescript-eslint/no-explicit-any
 const Jimp = require('jimp') as any
 
 async function pngOf(

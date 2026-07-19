@@ -19,7 +19,7 @@ import type { RawFrame } from './frameState'
  * only for `type` actions rather than every frame.
  */
 export async function decodePngToRawFrame(pngBuffer: Buffer): Promise<RawFrame> {
-  // eslint-disable-next-line @typescript-eslint/no-var-requires, @typescript-eslint/no-explicit-any
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const Jimp = require('jimp') as any
   const image = await Jimp.read(pngBuffer)
   const { data, width, height } = image.bitmap as {
