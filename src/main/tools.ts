@@ -42,6 +42,7 @@ import { runPowerShell, runPowerShellScript } from './powershell'
 import { enumerateWindowsApps, enumerateMacApps, launchWindowsApp } from './appIndex'
 import { githubToolSchemas, githubRegistry } from './github'
 import { figmaToolSchemas, figmaRegistry } from './figma'
+import { figmaBuildToolSchemas, figmaBuildRegistry } from './figmaBuild'
 import { designToolSchemas, designRegistry } from './designFlow'
 import { spreadsheetToolSchemas, spreadsheetRegistry } from './spreadsheet'
 import { archiveToolSchemas, archiveRegistry } from './archive'
@@ -49,6 +50,10 @@ import { imageEditToolSchemas, imageEditRegistry } from './imageEdit'
 import { slackToolSchemas, slackRegistry } from './slack'
 import { notificationToolSchemas, notificationRegistry } from './notifications'
 import { printToolSchemas, printRegistry } from './print'
+import { presentationToolSchemas, presentationRegistry } from './presentation'
+import { worddocToolSchemas, worddocRegistry } from './worddoc'
+import { pdfToolSchemas, pdfRegistry } from './pdf'
+import { mailMergeToolSchemas, mailMergeRegistry } from './mailmerge'
 import { runInteractivePython, writeSandboxFile } from './sandbox'
 import {
   isGoogleCalendarConnected,
@@ -275,6 +280,28 @@ export const STATE_CHANGING_TOOLS = new Set<string>([
   'send_slack_message',
   // print_file opens a print dialog / the file's default app — one HITL up front.
   'print_file',
+  // PowerPoint writes (list_slides is read-only, omitted — same as list_sheets).
+  'create_presentation',
+  'add_slide',
+  'add_chart',
+  'add_slide_table',
+  'set_slide_notes',
+  // Word writes (list_document_structure is read-only, omitted).
+  'create_document',
+  'add_heading',
+  'add_paragraph',
+  'add_doc_table',
+  'add_image',
+  'add_page_break',
+  // PDF writes (read_pdf is read-only, omitted — same as list_sheets).
+  'create_pdf',
+  'merge_pdfs',
+  'split_pdf',
+  // Defaults to overwriting the source PDF in place, so it always confirms.
+  'watermark_pdf',
+  'export_to_pdf',
+  // Fans out into many files at once — always confirm before a batch run.
+  'mail_merge',
   // Running arbitrary Python is sensitive — always confirm (also in DESTRUCTIVE_TOOLS).
   'run_python',
 ])
@@ -4962,6 +4989,7 @@ async function run_python(args: Record<string, unknown>): Promise<ToolResult> {
 export const toolSchemas: ToolSchema[] = [
   ...githubToolSchemas,
   ...figmaToolSchemas,
+  ...figmaBuildToolSchemas,
   ...designToolSchemas,
   ...spreadsheetToolSchemas,
   ...archiveToolSchemas,
@@ -4969,6 +4997,10 @@ export const toolSchemas: ToolSchema[] = [
   ...slackToolSchemas,
   ...notificationToolSchemas,
   ...printToolSchemas,
+  ...presentationToolSchemas,
+  ...worddocToolSchemas,
+  ...pdfToolSchemas,
+  ...mailMergeToolSchemas,
   {
     name: 'run_python',
     description:
@@ -5935,13 +5967,18 @@ const registry: Record<string, Executor> = {
   run_python,
   ...githubRegistry,
   ...figmaRegistry,
+  ...figmaBuildRegistry,
   ...designRegistry,
   ...spreadsheetRegistry,
   ...archiveRegistry,
   ...imageEditRegistry,
   ...slackRegistry,
   ...notificationRegistry,
-  ...printRegistry
+  ...printRegistry,
+  ...presentationRegistry,
+  ...worddocRegistry,
+  ...pdfRegistry,
+  ...mailMergeRegistry
 }
 
 /**

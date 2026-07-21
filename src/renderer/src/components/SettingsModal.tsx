@@ -461,8 +461,9 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
             )}
           </div>
           <div style={{ fontSize: 12, color: '#8e8e93', lineHeight: 1.5, marginTop: 3, marginBottom: 8 }}>
-            Paste a personal access token to let OpenUI review your Figma designs. Create one at
-            figma.com → Settings → Security → Personal access tokens. Stored locally on this device.
+            Paste a personal access token to let OpenUI review your Figma designs, export their
+            design tokens, and build frames as code. Create one at figma.com → Settings → Security →
+            Personal access tokens. Read-only access is enough. Stored locally on this device.
           </div>
           <input
             type="password"

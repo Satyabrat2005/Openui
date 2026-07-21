@@ -92,11 +92,17 @@ export async function indexDirectory(dirPath: string): Promise<IndexResult> {
       if (extname(filePath).toLowerCase() === '.txt') {
         text = Buffer.from(await readFile(filePath)).toString('utf-8')
       } else {
-        const pdfParse = require('pdf-parse')
+        // pdf-parse v2 exports a PDFParse CLASS — v1's callable default export
+        // is gone, so the old `pdfParse(buf)` call threw "not a function" and
+        // every PDF was silently skipped by the catch below.
+        const { PDFParse } = await import('pdf-parse')
         const buf = Buffer.from(await readFile(filePath))
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const result: any = await pdfParse(buf)
-        text = result.text as string
+        const parser = new PDFParse({ data: buf })
+        try {
+          text = (await parser.getText()).text ?? ''
+        } finally {
+          await parser.destroy()
+        }
       }
       allChunks.push(...chunkText(text, filePath))
     } catch (err) {
