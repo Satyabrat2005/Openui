@@ -58,7 +58,7 @@ That's it — no `.env` file is required to start chatting. `.env.example` docum
 | **Coding** | `edit_file`, `search_code`, local `git` tools, and a per-project **semantic codebase index** (HNSW vector search over a `.gitignore`-aware, incrementally re-embedded store) via `search_codebase_semantic` |
 | **Voice** | Push-to-talk capture, Whisper transcription, ElevenLabs/OpenAI text-to-speech |
 | **Productivity** | Native spreadsheet automation (read/write/update cells/formulas via exceljs), Google Calendar invites, an interactive `run_python`, and `research_web` — citation-backed web research over the connected browser with no API key |
-| **Documents & design** | PDF parsing, Figma design review |
+| **Documents & design** | PDF parsing, plus a bidirectional Figma pipeline. **Figma → code:** design review with Claude Vision, design-system extraction (palette, type scale, spacing, radii, shadows — ranked by real usage and named from published Styles or Figma Variables, with a WCAG contrast audit), token export to CSS/SCSS/JSON/Tailwind/TS, and frame→code generation that builds from exact node geometry plus real inline SVG for icons rather than a screenshot. **Code → Figma:** describe a design and OpenUI builds it as real, editable layers — frames, auto-layout, text, shapes — through a local builder plugin, since the REST API cannot write file content |
 | **MCP** | Ships as an MCP client — bring your own Model Context Protocol servers (the included `mcp-config.json` is a fully commented-out template; zero servers are wired up out of the box) |
 
 ## Three flavors of multi-agent

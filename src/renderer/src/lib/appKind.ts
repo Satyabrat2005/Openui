@@ -72,8 +72,17 @@ const BUILTIN: Record<string, AppKind> = {
   get_pr_diff: 'github',
   post_pr_comment: 'github',
   get_figma_file: 'figma',
+  get_figma_node_details: 'figma',
+  get_figma_components: 'figma',
+  get_figma_design_system: 'figma',
+  export_figma_tokens: 'figma',
   export_figma_frames: 'figma',
+  figma_frame_to_code: 'figma',
+  list_figma_comments: 'figma',
   create_figma_comment: 'figma',
+  setup_figma_builder: 'figma',
+  build_figma_design: 'figma',
+  figma_builder_status: 'figma',
   run_workflow: 'app'
 }
 
