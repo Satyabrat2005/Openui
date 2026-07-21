@@ -33,6 +33,7 @@ import { ocrImage, ocrLines } from './ocr'
 import { runOsLoop, describe as describeVisionAction, type CapturedFrame } from './osLoop/loop'
 import { decodePngToRawFrame } from './osLoop/capture'
 import { activeWindow } from './osLoop/windowTarget'
+import { getFocusedWindowElements, formatElementsForPrompt } from './accessibility'
 import { trailingSegment } from './osLoop/windowMatch'
 import { isAppGranted, signalFor, auditAction, audit } from './osConsent'
 import type { RunLog } from './runLog'
@@ -43,6 +44,11 @@ import { githubToolSchemas, githubRegistry } from './github'
 import { figmaToolSchemas, figmaRegistry } from './figma'
 import { designToolSchemas, designRegistry } from './designFlow'
 import { spreadsheetToolSchemas, spreadsheetRegistry } from './spreadsheet'
+import { archiveToolSchemas, archiveRegistry } from './archive'
+import { imageEditToolSchemas, imageEditRegistry } from './imageEdit'
+import { slackToolSchemas, slackRegistry } from './slack'
+import { notificationToolSchemas, notificationRegistry } from './notifications'
+import { printToolSchemas, printRegistry } from './print'
 import { runInteractivePython, writeSandboxFile } from './sandbox'
 import {
   isGoogleCalendarConnected,
@@ -254,6 +260,21 @@ export const STATE_CHANGING_TOOLS = new Set<string>([
   'write_spreadsheet',
   'update_cells',
   'add_formula',
+  // Archive writes: create_zip/extract_zip mutate the filesystem (extract also
+  // materialises many files). list_zip_contents is read-only and omitted.
+  'create_zip',
+  'extract_zip',
+  // Image writes: get_image_info is read-only and omitted.
+  'resize_image',
+  'crop_image',
+  'convert_image',
+  'watermark_image',
+  // Slack: sends a message to other people — outward-facing and irreversible, so
+  // it is ALSO in DESTRUCTIVE_TOOLS (always confirms). The read tools
+  // (list_slack_channels, read_slack_channel, search_slack) observe only.
+  'send_slack_message',
+  // print_file opens a print dialog / the file's default app — one HITL up front.
+  'print_file',
   // Running arbitrary Python is sensitive — always confirm (also in DESTRUCTIVE_TOOLS).
   'run_python',
 ])
@@ -291,6 +312,10 @@ export const DESTRUCTIVE_TOOLS = new Set<string>([
   'send_email',
   'open_pull_request',
   'merge_pr',
+  // Sends a Slack message to other people — outward-facing and cannot be unsent,
+  // so it always confirms and never runs under any autonomy mode (same boundary
+  // as send_email / send_whatsapp_message).
+  'send_slack_message',
   // Executes code — must be confirmed even under autopilot.
   'run_python'
 ])
@@ -2350,9 +2375,17 @@ async function askVisionAction(opts: {
   priorActions: string[]
   /** Verifier feedback when the previous step provably had no effect. */
   feedback?: string
+  /**
+   * Accessibility grounding: a pre-formatted list of the focused window's
+   * interactive elements (role/name + exact click coordinate), from the OS
+   * accessibility API. Supplied by the native computer_use loop; the model
+   * prefers these exact coordinates over guessing from pixels. Empty/omitted on
+   * platforms or windows where the accessibility API returns nothing.
+   */
+  a11yBlock?: string
   tier: Tier
 }): Promise<VisionAction> {
-  const { capture, goal, priorActions, feedback, tier } = opts
+  const { capture, goal, priorActions, feedback, a11yBlock, tier } = opts
   const historyText = priorActions.length
     ? `Actions already taken:\n${priorActions.join('\n')}`
     : 'No actions taken yet.'
@@ -2361,22 +2394,29 @@ async function askVisionAction(opts: {
   // successful one in the screenshot it is handed.
   const feedbackText = feedback ? `\n\nIMPORTANT: ${feedback}` : ''
 
+  // The accessibility element list is its own text block, added only when the
+  // OS actually returned elements — pure-upside grounding, never a blocker.
+  const content: Array<Record<string, unknown>> = [
+    {
+      type: 'image',
+      source: { type: 'base64', media_type: 'image/png', data: capture.base64Image }
+    }
+  ]
+  if (a11yBlock && a11yBlock.trim()) {
+    content.push({ type: 'text', text: a11yBlock })
+  }
+  content.push({
+    type: 'text',
+    text: `GOAL: ${goal}\n\n${historyText}${feedbackText}\n\nReturn the next single action as one JSON object.`
+  })
+
   const reply = await callChatProxyText({
     system: buildVisionSystemPrompt(capture.width, capture.height),
     modelKey: tier === 'enterprise' ? 'enterprise-default' : 'pro-default',
     messages: [
       {
         role: 'user',
-        content: [
-          {
-            type: 'image',
-            source: { type: 'base64', media_type: 'image/png', data: capture.base64Image }
-          },
-          {
-            type: 'text',
-            text: `GOAL: ${goal}\n\n${historyText}${feedbackText}\n\nReturn the next single action as one JSON object.`
-          }
-        ]
+        content
       }
     ]
   })
@@ -2506,8 +2546,24 @@ async function computer_use(
         }
       },
 
-      ask: async (input) =>
-        askVisionAction({
+      ask: async (input) => {
+        // Accessibility grounding (item 1): read the focused window's interactive
+        // elements from the OS accessibility API and hand the model exact click
+        // coordinates alongside the screenshot. Best-effort and non-blocking —
+        // getFocusedWindowElements() returns [] on any failure, and the element
+        // bounds are converted from screen space into the screenshot's space so
+        // the model's click contract is unchanged.
+        let a11yBlock = ''
+        try {
+          const elements = await getFocusedWindowElements()
+          if (elements.length) {
+            const { w, h } = await screenDims()
+            a11yBlock = formatElementsForPrompt(elements, input.frame.width, input.frame.height, w, h)
+          }
+        } catch {
+          /* grounding is pure upside — never let it break the loop */
+        }
+        return askVisionAction({
           capture: {
             pngBuffer: input.frame.pngBuffer,
             base64Image: input.frame.base64Image,
@@ -2517,8 +2573,10 @@ async function computer_use(
           goal: input.goal,
           priorActions: input.priorActions,
           feedback: input.feedback,
+          a11yBlock,
           tier
-        }),
+        })
+      },
 
       execute: async (action) => {
         // Log BEFORE acting: an action that crashes the process must still
@@ -4906,6 +4964,11 @@ export const toolSchemas: ToolSchema[] = [
   ...figmaToolSchemas,
   ...designToolSchemas,
   ...spreadsheetToolSchemas,
+  ...archiveToolSchemas,
+  ...imageEditToolSchemas,
+  ...slackToolSchemas,
+  ...notificationToolSchemas,
+  ...printToolSchemas,
   {
     name: 'run_python',
     description:
@@ -5873,7 +5936,12 @@ const registry: Record<string, Executor> = {
   ...githubRegistry,
   ...figmaRegistry,
   ...designRegistry,
-  ...spreadsheetRegistry
+  ...spreadsheetRegistry,
+  ...archiveRegistry,
+  ...imageEditRegistry,
+  ...slackRegistry,
+  ...notificationRegistry,
+  ...printRegistry
 }
 
 /**
@@ -6142,6 +6210,38 @@ export function describeToolCall(name: string, args: Record<string, unknown>): s
       return `List sheets in ${String(args.path ?? '')}`
     case 'run_python':
       return `Run Python ${String(args.path ?? '(inline code)')}`
+    case 'create_zip':
+      return `Create zip ${String(args.output_path ?? args.output ?? '')}`
+    case 'extract_zip':
+      return `Extract ${String(args.zip_path ?? args.path ?? '')} → ${String(args.dest_dir ?? args.dest ?? '')}`
+    case 'list_zip_contents':
+      return `List contents of ${String(args.zip_path ?? args.path ?? '')}`
+    case 'get_image_info':
+      return `Read image info ${String(args.path ?? '')}`
+    case 'resize_image':
+      return `Resize image ${String(args.path ?? '')}`
+    case 'crop_image':
+      return `Crop image ${String(args.path ?? '')}`
+    case 'convert_image':
+      return `Convert image ${String(args.path ?? '')} to ${String(args.format ?? '')}`
+    case 'watermark_image':
+      return `Watermark image ${String(args.path ?? '')}`
+    case 'send_slack_message': {
+      const ch = String(args.channel ?? '')
+      const msg = String(args.text ?? '')
+      const preview = msg.length > 60 ? `${msg.slice(0, 60)}…` : msg
+      return `Send Slack message to ${ch}: "${preview}"`
+    }
+    case 'list_slack_channels':
+      return 'List Slack channels'
+    case 'read_slack_channel':
+      return `Read Slack channel ${String(args.channel ?? '')}`
+    case 'search_slack':
+      return `Search Slack for "${String(args.query ?? '')}"`
+    case 'notify_user':
+      return `Notify: "${String(args.title ?? '')}"`
+    case 'print_file':
+      return `Print ${String(args.path ?? '')}`
     default:
       return name
   }
