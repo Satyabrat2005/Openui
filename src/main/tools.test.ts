@@ -25,6 +25,7 @@ import {
   scoreContactCandidates,
   STATE_CHANGING_TOOLS,
   DESTRUCTIVE_TOOLS,
+  toolSchemas,
   TIER_TOOL_REQUIREMENTS,
   slugifyForPath,
   researchKeywords,
@@ -53,6 +54,77 @@ afterEach(async () => {
     const dir = createdTempDirs.pop()!
     await rm(dir, { recursive: true, force: true })
   }
+})
+
+// ── Tool-surface integrity ───────────────────────────────────────────────────
+// The registry is ONE flat namespace shared by every module spread into it
+// (github, figma, design, spreadsheet, presentation, worddoc …). A duplicate
+// name is silently corrupting rather than loud: executeTool resolves the schema
+// with toolSchemas.find(), which returns the FIRST match, while the registry
+// spread keeps the LAST implementation — so the two can end up mismatched.
+describe('tool surface integrity', () => {
+  it('has no duplicate tool names across every module spread into toolSchemas', () => {
+    const seen = new Map<string, number>()
+    for (const s of toolSchemas) seen.set(s.name, (seen.get(s.name) ?? 0) + 1)
+    const duplicates = [...seen.entries()].filter(([, n]) => n > 1).map(([name]) => name)
+    expect(duplicates).toEqual([])
+  })
+
+  it('registers the presentation and document tools exactly once each', () => {
+    const names = toolSchemas.map((s) => s.name)
+    for (const tool of [
+      'create_presentation',
+      'add_slide',
+      'add_chart',
+      'add_slide_table',
+      'set_slide_notes',
+      'list_slides',
+      'create_document',
+      'add_heading',
+      'add_paragraph',
+      'add_doc_table',
+      'add_image',
+      'add_page_break',
+      'list_document_structure',
+      'read_pdf',
+      'create_pdf',
+      'merge_pdfs',
+      'split_pdf',
+      'watermark_pdf',
+      'export_to_pdf',
+      'mail_merge'
+    ]) {
+      expect(names.filter((n) => n === tool), `${tool} must appear exactly once`).toHaveLength(1)
+    }
+  })
+
+  it('gates every mutating pptx/docx tool but leaves the two list tools read-only', () => {
+    for (const tool of [
+      'create_presentation',
+      'add_slide',
+      'add_chart',
+      'add_slide_table',
+      'set_slide_notes',
+      'create_document',
+      'add_heading',
+      'add_paragraph',
+      'add_doc_table',
+      'add_image',
+      'add_page_break',
+      'create_pdf',
+      'merge_pdfs',
+      'split_pdf',
+      'watermark_pdf',
+      'export_to_pdf',
+      'mail_merge'
+    ]) {
+      expect(STATE_CHANGING_TOOLS.has(tool), `${tool} must be HITL-gated`).toBe(true)
+    }
+    // Read-only, like list_sheets.
+    expect(STATE_CHANGING_TOOLS.has('list_slides')).toBe(false)
+    expect(STATE_CHANGING_TOOLS.has('list_document_structure')).toBe(false)
+    expect(STATE_CHANGING_TOOLS.has('read_pdf')).toBe(false)
+  })
 })
 
 // ── The HITL approval gate (the merge/destructive safety boundary) ────────────
