@@ -23,6 +23,8 @@ import {
   executeTool,
   parseDuckDuckGoResults,
   scoreContactCandidates,
+  validateGroupMembers,
+  MAX_GROUP_MEMBERS,
   STATE_CHANGING_TOOLS,
   DESTRUCTIVE_TOOLS,
   toolSchemas,
@@ -421,6 +423,108 @@ describe('scoreContactCandidates', () => {
     const lines = ['Ashu A', 'Ashu B', 'Ashu C', 'Ashu D', 'Ashu E', 'Ashu F', 'Ashu G']
     const r = scoreContactCandidates('ashu', lines)
     expect(r.candidates.length).toBe(5)
+  })
+})
+
+// ── create_whatsapp_group / leave_whatsapp_group — group management ───────────
+describe('create_whatsapp_group + leave_whatsapp_group', () => {
+  it('both are state-changing AND destructive (always confirm, never auto-run)', () => {
+    for (const tool of ['create_whatsapp_group', 'leave_whatsapp_group']) {
+      expect(STATE_CHANGING_TOOLS.has(tool)).toBe(true)
+      expect(DESTRUCTIVE_TOOLS.has(tool)).toBe(true)
+      // Group management runs on the local/free tier — not behind a paywall.
+      expect(TIER_TOOL_REQUIREMENTS[tool]).toBeUndefined()
+    }
+  })
+
+  it('create rejects a missing group name before any automation runs', async () => {
+    const r = await executeTool(
+      'create_whatsapp_group',
+      { members: ['Ashu'] },
+      { tier: 'free', bypassHitl: true }
+    )
+    expect(r).toMatchObject({ ok: false })
+    expect((r as { error: string }).error).toMatch(/name/i)
+  })
+
+  it('create rejects an empty member list before any automation runs', async () => {
+    const r = await executeTool(
+      'create_whatsapp_group',
+      { name: 'Trip Planning', members: [] },
+      { tier: 'free', bypassHitl: true }
+    )
+    expect(r).toMatchObject({ ok: false })
+    expect((r as { error: string }).error).toMatch(/member/i)
+  })
+
+  it('create rejects an oversized member list before any automation runs', async () => {
+    const members = Array.from({ length: MAX_GROUP_MEMBERS + 1 }, (_, i) => `Person ${i}`)
+    const r = await executeTool(
+      'create_whatsapp_group',
+      { name: 'Huge Group', members },
+      { tier: 'free', bypassHitl: true }
+    )
+    expect(r).toMatchObject({ ok: false })
+    expect((r as { error: string }).error).toMatch(/too many|max/i)
+  })
+
+  it('leave rejects a missing group name before any automation runs', async () => {
+    const r = await executeTool('leave_whatsapp_group', {}, { tier: 'free', bypassHitl: true })
+    expect(r).toMatchObject({ ok: false })
+    expect((r as { error: string }).error).toMatch(/group_name/i)
+  })
+})
+
+// ── validateGroupMembers — pure member-list validation (WhatsApp-free) ─────────
+describe('validateGroupMembers', () => {
+  it('accepts a clean list unchanged, in input order', () => {
+    const r = validateGroupMembers(['Ashu', 'Mom', 'Ravi'])
+    expect(r.error).toBeUndefined()
+    expect(r.members).toEqual(['Ashu', 'Mom', 'Ravi'])
+  })
+
+  it('rejects a non-array input', () => {
+    const r = validateGroupMembers('Ashu')
+    expect(r.members).toBeUndefined()
+    expect(r.error).toMatch(/array/i)
+  })
+
+  it('rejects a non-string member', () => {
+    const r = validateGroupMembers(['Ashu', 42])
+    expect(r.members).toBeUndefined()
+    expect(r.error).toMatch(/string/i)
+  })
+
+  it('drops blanks and de-duplicates case-insensitively', () => {
+    const r = validateGroupMembers(['Ashu', '  ', 'ashu', 'Mom'])
+    expect(r.error).toBeUndefined()
+    expect(r.members).toEqual(['Ashu', 'Mom'])
+  })
+
+  it('strips control chars so a stray newline cannot submit early', () => {
+    const r = validateGroupMembers(['Ashu\n', 'Ra\tvi'])
+    expect(r.error).toBeUndefined()
+    expect(r.members).toEqual(['Ashu', 'Ravi'])
+  })
+
+  it('rejects an all-blank list as having no members', () => {
+    const r = validateGroupMembers(['   ', '\n'])
+    expect(r.members).toBeUndefined()
+    expect(r.error).toMatch(/at least one/i)
+  })
+
+  it('rejects more members than the cap', () => {
+    const members = Array.from({ length: MAX_GROUP_MEMBERS + 1 }, (_, i) => `Person ${i}`)
+    const r = validateGroupMembers(members)
+    expect(r.members).toBeUndefined()
+    expect(r.error).toMatch(/too many/i)
+  })
+
+  it('accepts exactly the cap', () => {
+    const members = Array.from({ length: MAX_GROUP_MEMBERS }, (_, i) => `Person ${i}`)
+    const r = validateGroupMembers(members)
+    expect(r.error).toBeUndefined()
+    expect(r.members).toHaveLength(MAX_GROUP_MEMBERS)
   })
 })
 

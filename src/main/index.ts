@@ -17,6 +17,7 @@ import { connectGoogleCalendar, isGoogleCalendarConnected } from './googleCalend
 import { connectGmail, isGmailConnected } from './gmail'
 import { connectMcpServer, disconnectAll, type McpServerConfig } from './mcp-client'
 import { initDatabase, database } from './database'
+import { registerWhatsAppAutoReplyIpc } from './whatsappWatcherService'
 import { registerDeepLinkProtocol, setupDeepLinkHandlers } from './auth/deeplink'
 import { openAuthWindow, isAuthWebContents } from './auth/authWindow'
 import { logout, getCurrentUser, getUserTier, startTokenRefreshLoop, stopTokenRefreshLoop, ensureGuestSession } from './auth/sessionManager'
@@ -544,6 +545,10 @@ app.whenReady().then(async () => {
     const { key, value } = (payload ?? {}) as { key?: unknown; value?: unknown }
     if (typeof key === 'string') database.settings.setSetting(key, value)
   })
+
+  // WhatsApp allowlisted auto-reply: get/set config, kill switch, status, and
+  // the background watcher that resumes only if the user left it enabled.
+  registerWhatsAppAutoReplyIpc(() => win)
 
   // ── Google Calendar (dedicated OAuth, see googleCalendar.ts) ───────────────
   ipcMain.handle('openui:google-calendar-status', () => ({ connected: isGoogleCalendarConnected() }))

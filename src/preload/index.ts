@@ -7,6 +7,19 @@ type TaskSource = 'todo' | 'github'
 type InterviewState = 'idle' | 'asking' | 'listening' | 'evaluating' | 'complete'
 type IpcListener = Parameters<typeof ipcRenderer.on>[1]
 
+/** One allowlisted contact/group the user opted in to auto-DRAFT replies for. */
+type WhatsAppAllowlistEntry = { name: string; instruction?: string }
+/** The WhatsApp auto-reply config (mirrors main's AutoReplyConfig). */
+type WhatsAppAutoReplyConfig = {
+  enabled: boolean
+  pollIntervalMs: number
+  allowlist: WhatsAppAllowlistEntry[]
+  perContactHourlyCap: number
+  globalHourlyCap: number
+}
+/** A suggested reply the watcher composed for the user to review + send. */
+type WhatsAppDraftReply = { contact: string; incomingPreview: string; draftText: string; at: string }
+
 type RecorderAction =
   | { type: 'mousemove'; x: number; y: number; window: string; timestamp: number }
   | { type: 'mouseclick'; x: number; y: number; button: 'left' | 'right'; window: string; timestamp: number }
@@ -489,6 +502,41 @@ const api = {
   getSetting: (key: string): Promise<unknown> => ipcRenderer.invoke('openui:get-setting', key),
   setSetting: (key: string, value: unknown): Promise<void> =>
     ipcRenderer.invoke('openui:set-setting', { key, value }),
+
+  // ── WhatsApp allowlisted auto-reply (compose-and-click; never autonomous) ────
+  // The watcher polls WhatsApp for messages from allowlisted contacts and
+  // COMPOSES a suggested reply; the user reviews and clicks to send. get/set
+  // read+persist the config (set reconciles the background watcher); kill is the
+  // one-call hard stop; the two on* channels drive the live indicator + the
+  // draft-review UI.
+  getWhatsAppAutoReply: (): Promise<WhatsAppAutoReplyConfig> =>
+    ipcRenderer.invoke('openui:whatsapp-autoreply:get'),
+  setWhatsAppAutoReply: (config: WhatsAppAutoReplyConfig): Promise<WhatsAppAutoReplyConfig> =>
+    ipcRenderer.invoke('openui:whatsapp-autoreply:set', config),
+  killWhatsAppAutoReply: (): Promise<WhatsAppAutoReplyConfig> =>
+    ipcRenderer.invoke('openui:whatsapp-autoreply:kill'),
+  whatsAppAutoReplyStatus: (): Promise<{ active: boolean }> =>
+    ipcRenderer.invoke('openui:whatsapp-autoreply:status'),
+  // Send a reviewed draft — the click in the draft card is the approval.
+  sendWhatsAppAutoReplyDraft: (
+    contact: string,
+    message: string
+  ): Promise<{ ok: boolean; output?: string; error?: string }> =>
+    ipcRenderer.invoke('openui:whatsapp-autoreply:send', { contact, message }),
+  onWhatsAppAutoReplyDraft: (cb: (draft: WhatsAppDraftReply) => void): (() => void) => {
+    const fn = wrap<WhatsAppDraftReply>(cb)
+    ipcRenderer.on('openui:whatsapp:draft', fn)
+    return (): void => {
+      ipcRenderer.removeListener('openui:whatsapp:draft', fn)
+    }
+  },
+  onWhatsAppAutoReplyActive: (cb: (active: boolean) => void): (() => void) => {
+    const fn = wrap<boolean>(cb)
+    ipcRenderer.on('openui:whatsapp:active', fn)
+    return (): void => {
+      ipcRenderer.removeListener('openui:whatsapp:active', fn)
+    }
+  },
 
   // ── Google Calendar (dedicated OAuth connect + status) ──────────────────────
   googleCalendarStatus: (): Promise<{ connected: boolean }> =>

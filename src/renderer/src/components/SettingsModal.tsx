@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import type { AutonomyLevel, ConsentStatus } from '../env'
+import type { AutonomyLevel, ConsentStatus, WhatsAppAutoReplyConfig } from '../env'
 import type { UpdateStatus } from '../hooks/useUpdater'
 
 const AUTONOMY_OPTIONS: { value: AutonomyLevel; label: string; hint: string }[] = [
@@ -69,6 +69,13 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
   const [gmailConnected, setGmailConnected] = useState(false)
   const [gmailConnecting, setGmailConnecting] = useState(false)
   const [gmailMessage, setGmailMessage] = useState('')
+  // WhatsApp allowlisted auto-reply. The whole config lives in one object; the
+  // watcher only ever COMPOSES a suggested reply for these contacts — sending
+  // stays a human click. Default-off; empty allowlist means nothing runs.
+  const [waConfig, setWaConfig] = useState<WhatsAppAutoReplyConfig | null>(null)
+  const [waSaved, setWaSaved] = useState(false)
+  const [waNewName, setWaNewName] = useState('')
+  const [waNewInstruction, setWaNewInstruction] = useState('')
 
   useEffect(() => {
     let cancelled = false
@@ -113,6 +120,13 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
       .getSetting('slack_token')
       .then((value) => {
         if (!cancelled && typeof value === 'string') setSlackToken(value)
+      })
+      .catch(() => {})
+
+    window.openui
+      .getWhatsAppAutoReply()
+      .then((cfg) => {
+        if (!cancelled) setWaConfig(cfg)
       })
       .catch(() => {})
 
@@ -210,6 +224,48 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
         window.setTimeout(() => setSlackSaved(false), 1500)
       })
       .catch(() => {})
+  }
+
+  // Persist a whole WhatsApp auto-reply config change (the main process
+  // normalises + clamps it and reconciles the watcher, then returns what it
+  // actually stored, which we adopt so the UI reflects the clamped truth).
+  const persistWaConfig = (next: WhatsAppAutoReplyConfig): void => {
+    setWaConfig(next) // optimistic
+    void window.openui
+      .setWhatsAppAutoReply(next)
+      .then((saved) => {
+        setWaConfig(saved)
+        setWaSaved(true)
+        window.setTimeout(() => setWaSaved(false), 1500)
+      })
+      .catch(() => {})
+  }
+
+  const toggleWaEnabled = (): void => {
+    if (!waConfig) return
+    persistWaConfig({ ...waConfig, enabled: !waConfig.enabled })
+  }
+
+  const addWaContact = (): void => {
+    if (!waConfig) return
+    const name = waNewName.trim()
+    if (!name) return
+    const instruction = waNewInstruction.trim()
+    // Skip a case-insensitive duplicate; main de-dupes too, but this keeps the UI honest.
+    if (waConfig.allowlist.some((e) => e.name.toLowerCase() === name.toLowerCase())) {
+      setWaNewName('')
+      setWaNewInstruction('')
+      return
+    }
+    const entry = instruction ? { name, instruction } : { name }
+    persistWaConfig({ ...waConfig, allowlist: [...waConfig.allowlist, entry] })
+    setWaNewName('')
+    setWaNewInstruction('')
+  }
+
+  const removeWaContact = (name: string): void => {
+    if (!waConfig) return
+    persistWaConfig({ ...waConfig, allowlist: waConfig.allowlist.filter((e) => e.name !== name) })
   }
 
   const saveAnthropicKey = (): void => {
@@ -488,6 +544,150 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
             }}
           />
         </div>
+
+        {/* WhatsApp allowlisted auto-reply. Compose-and-click by design: the
+            watcher only drafts suggestions for these contacts; sending is always
+            a human click. Default-off; empty allowlist = nothing runs. */}
+        {waConfig && (
+          <div style={{ borderTop: '1px solid rgba(0,0,0,0.06)', paddingTop: 14, marginTop: 14 }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <div style={{ fontSize: 13.5, fontWeight: 600, color: '#1c1c1e' }}>WhatsApp auto-reply</div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                {waSaved && <span style={{ fontSize: 11, color: '#34c759', fontWeight: 500 }}>Saved</span>}
+                <span
+                  style={{
+                    fontSize: 11,
+                    fontWeight: 600,
+                    color: waConfig.enabled ? '#34c759' : '#8e8e93',
+                    background: waConfig.enabled ? 'rgba(52,199,89,0.12)' : 'rgba(142,142,147,0.12)',
+                    borderRadius: 999,
+                    padding: '2px 8px'
+                  }}
+                >
+                  {waConfig.enabled ? 'ON' : 'OFF'}
+                </span>
+              </div>
+            </div>
+            <div style={{ fontSize: 12, color: '#8e8e93', lineHeight: 1.5, marginTop: 3, marginBottom: 10 }}>
+              When on, OpenUI watches for new WhatsApp messages from the contacts you list below and{' '}
+              <strong style={{ color: '#1c1c1e' }}>drafts a suggested reply</strong> for each. It never sends on its
+              own — you review every draft and click to send. Nothing runs for anyone not on this list.
+            </div>
+
+            <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', marginBottom: 12 }}>
+              <input type="checkbox" checked={waConfig.enabled} onChange={toggleWaEnabled} />
+              <span style={{ fontSize: 12.5, color: '#1c1c1e' }}>
+                Enable the background watcher {waConfig.allowlist.length === 0 && '(add a contact below first)'}
+              </span>
+            </label>
+
+            {/* Current allowlist */}
+            {waConfig.allowlist.length > 0 && (
+              <div style={{ marginBottom: 10 }}>
+                {waConfig.allowlist.map((entry) => (
+                  <div
+                    key={entry.name}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'flex-start',
+                      justifyContent: 'space-between',
+                      gap: 8,
+                      border: '1px solid rgba(0,0,0,0.08)',
+                      borderRadius: 8,
+                      padding: '7px 10px',
+                      marginBottom: 6
+                    }}
+                  >
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ fontSize: 12.5, fontWeight: 600, color: '#1c1c1e' }}>{entry.name}</div>
+                      {entry.instruction && (
+                        <div style={{ fontSize: 11.5, color: '#8e8e93', lineHeight: 1.4, marginTop: 2 }}>
+                          {entry.instruction}
+                        </div>
+                      )}
+                    </div>
+                    <button
+                      onClick={() => removeWaContact(entry.name)}
+                      aria-label={`Remove ${entry.name} from the auto-reply allowlist`}
+                      style={{
+                        border: 'none',
+                        background: 'transparent',
+                        color: '#ff3b30',
+                        fontSize: 12,
+                        fontWeight: 600,
+                        cursor: 'pointer',
+                        flexShrink: 0
+                      }}
+                    >
+                      Remove
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Add a contact */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              <input
+                type="text"
+                value={waNewName}
+                onChange={(e) => setWaNewName(e.target.value)}
+                placeholder="Contact or group name (exactly as in WhatsApp)"
+                aria-label="Contact or group name to allow auto-reply drafts for"
+                spellCheck={false}
+                style={{
+                  width: '100%',
+                  boxSizing: 'border-box',
+                  border: '1px solid rgba(0,0,0,0.12)',
+                  borderRadius: 8,
+                  padding: '8px 10px',
+                  fontSize: 12.5,
+                  fontFamily: 'inherit',
+                  color: '#1c1c1e',
+                  background: '#fff',
+                  outline: 'none'
+                }}
+              />
+              <input
+                type="text"
+                value={waNewInstruction}
+                onChange={(e) => setWaNewInstruction(e.target.value)}
+                placeholder="Optional instruction, e.g. “reply as if I'm busy, keep it short”"
+                aria-label="Optional per-contact reply instruction"
+                spellCheck={false}
+                style={{
+                  width: '100%',
+                  boxSizing: 'border-box',
+                  border: '1px solid rgba(0,0,0,0.12)',
+                  borderRadius: 8,
+                  padding: '8px 10px',
+                  fontSize: 12.5,
+                  fontFamily: 'inherit',
+                  color: '#1c1c1e',
+                  background: '#fff',
+                  outline: 'none'
+                }}
+              />
+              <button
+                onClick={addWaContact}
+                disabled={!waNewName.trim()}
+                style={{
+                  alignSelf: 'flex-start',
+                  border: '1px solid rgba(0,0,0,0.12)',
+                  borderRadius: 8,
+                  padding: '7px 14px',
+                  fontSize: 12.5,
+                  fontWeight: 600,
+                  color: waNewName.trim() ? '#1c1c1e' : '#c7c7cc',
+                  background: '#fff',
+                  cursor: waNewName.trim() ? 'pointer' : 'default'
+                }}
+              >
+                Add to allowlist
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* Cloud AI: bring-your-own-key frontier model (opt-in). Hidden for the
             Ollama-only launch; see CLOUD_TIER_ENABLED above. */}
