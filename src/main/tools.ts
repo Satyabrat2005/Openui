@@ -45,6 +45,8 @@ import { figmaToolSchemas, figmaRegistry } from './figma'
 import { figmaBuildToolSchemas, figmaBuildRegistry } from './figmaBuild'
 import { designToolSchemas, designRegistry } from './designFlow'
 import { spreadsheetToolSchemas, spreadsheetRegistry } from './spreadsheet'
+import { driveToolSchemas, driveRegistry } from './googleDrive'
+import { mediaEditToolSchemas, mediaEditRegistry } from './mediaEdit'
 import { archiveToolSchemas, archiveRegistry } from './archive'
 import { imageEditToolSchemas, imageEditRegistry } from './imageEdit'
 import { slackToolSchemas, slackRegistry } from './slack'
@@ -270,6 +272,19 @@ export const STATE_CHANGING_TOOLS = new Set<string>([
   'write_spreadsheet',
   'update_cells',
   'add_formula',
+  // Google Drive: upload/download/share change state (list_drive_files is
+  // read-only, omitted). share_drive_file is ALSO in DESTRUCTIVE_TOOLS below —
+  // it grants another person standing access to a file and emails them, the same
+  // outward-facing category as send_email.
+  'upload_to_drive',
+  'download_from_drive',
+  'share_drive_file',
+  // Media (ffmpeg) writes (get_media_info is read-only, omitted). Each writes a
+  // new output file, so one HITL approval per call.
+  'trim_video',
+  'convert_media',
+  'extract_audio',
+  'merge_media',
   // Archive writes: create_zip/extract_zip mutate the filesystem (extract also
   // materialises many files). list_zip_contents is read-only and omitted.
   'create_zip',
@@ -349,6 +364,10 @@ export const DESTRUCTIVE_TOOLS = new Set<string>([
   'send_email',
   'open_pull_request',
   'merge_pr',
+  // Shares a Drive file with another person by email — grants standing access and
+  // sends them a notification, outward-facing and not silently undoable, so it
+  // ALWAYS confirms and never runs under any autonomy mode (like send_email).
+  'share_drive_file',
   // Sends a Slack message to other people — outward-facing and cannot be unsent,
   // so it always confirms and never runs under any autonomy mode (same boundary
   // as send_email / send_whatsapp_message).
@@ -5380,6 +5399,8 @@ export const toolSchemas: ToolSchema[] = [
   ...figmaBuildToolSchemas,
   ...designToolSchemas,
   ...spreadsheetToolSchemas,
+  ...driveToolSchemas,
+  ...mediaEditToolSchemas,
   ...archiveToolSchemas,
   ...imageEditToolSchemas,
   ...slackToolSchemas,
@@ -6405,6 +6426,8 @@ const registry: Record<string, Executor> = {
   ...figmaBuildRegistry,
   ...designRegistry,
   ...spreadsheetRegistry,
+  ...driveRegistry,
+  ...mediaEditRegistry,
   ...archiveRegistry,
   ...imageEditRegistry,
   ...slackRegistry,
@@ -6688,6 +6711,24 @@ export function describeToolCall(name: string, args: Record<string, unknown>): s
       return `Add formula ${String(args.cell ?? '')} in ${String(args.path ?? '')}`
     case 'list_sheets':
       return `List sheets in ${String(args.path ?? '')}`
+    case 'upload_to_drive':
+      return `Upload ${String(args.local_path ?? args.path ?? '')} to Google Drive`
+    case 'download_from_drive':
+      return `Download Drive file ${String(args.file_id ?? '')} → ${String(args.dest_path ?? args.path ?? '')}`
+    case 'list_drive_files':
+      return args.query ? `List Drive files matching "${String(args.query)}"` : 'List Google Drive files'
+    case 'share_drive_file':
+      return `Share Drive file ${String(args.file_id ?? '')} with ${String(args.email ?? '')} (${String(args.role ?? 'reader')})`
+    case 'trim_video':
+      return `Trim ${String(args.path ?? '')} [${String(args.start ?? '')}–${String(args.end ?? '')}] → ${String(args.output_path ?? '')}`
+    case 'convert_media':
+      return `Convert ${String(args.path ?? '')} → ${String(args.format ?? '')} at ${String(args.output_path ?? '')}`
+    case 'extract_audio':
+      return `Extract audio from ${String(args.video_path ?? args.path ?? '')} → ${String(args.output_path ?? '')}`
+    case 'merge_media':
+      return `Merge ${Array.isArray(args.paths) ? args.paths.length : 0} clips → ${String(args.output_path ?? '')}`
+    case 'get_media_info':
+      return `Get media info for ${String(args.path ?? '')}`
     case 'run_python':
       return `Run Python ${String(args.path ?? '(inline code)')}`
     case 'create_zip':
