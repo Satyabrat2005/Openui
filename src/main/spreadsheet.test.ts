@@ -2,6 +2,7 @@ import { describe, it, expect, afterAll } from 'vitest'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+import ExcelJS from 'exceljs'
 import { spreadsheetRegistry, spreadsheetToolSchemas } from './spreadsheet'
 
 // resolveSafePath confines mutating writes to the home tree and rejects
@@ -70,6 +71,87 @@ describe('spreadsheet tools', () => {
     expect(badRange.ok).toBe(false)
     const badCell = await spreadsheetRegistry.add_formula({ path: xlsx, cell: 'ZZ', formula: 'A1' })
     expect(badCell.ok).toBe(false)
+  })
+
+  it('applies cell styling, merges and column widths, and they survive a re-read', async () => {
+    const p = join(dir, 'styled.xlsx')
+    const w = await spreadsheetRegistry.write_spreadsheet({
+      path: p,
+      data: [
+        [{ value: 'Q4 Report', style: { bold: true, fill: 'DDEBF7', align: 'center', size: 14 } }],
+        [
+          { value: 'Item', style: { bold: true, border: 'thin' } },
+          { value: 'Cost', style: { bold: true, border: 'thin' } }
+        ],
+        ['Widgets', { value: 1234.5, style: { numFmt: '$#,##0.00' } }]
+      ],
+      merge: ['A1:B1'],
+      column_widths: { A: 22, B: 14 }
+    })
+    expect(w.ok).toBe(true)
+    expect(w.output).toContain('1 merged range')
+
+    // Re-open with exceljs directly and assert the real formatting landed.
+    const wb = new ExcelJS.Workbook()
+    await wb.xlsx.readFile(p)
+    const ws = wb.worksheets[0]
+    expect(ws.getCell('A1').font?.bold).toBe(true)
+    expect(ws.getCell('A1').font?.size).toBe(14)
+    expect(ws.getCell('A1').alignment?.horizontal).toBe('center')
+    expect((ws.getCell('A1').fill as ExcelJS.FillPattern)?.fgColor?.argb).toBe('FFDDEBF7')
+    expect(ws.getCell('A2').border?.top?.style).toBe('thin')
+    expect(ws.getCell('B3').numFmt).toBe('$#,##0.00')
+    expect(ws.getColumn(1).width).toBe(22)
+    // A1:B1 is merged, so B1 reports A1 as its master cell.
+    expect(ws.getCell('B1').isMerged).toBe(true)
+  })
+
+  it('update_cells can style an existing cell without losing its value', async () => {
+    const u = await spreadsheetRegistry.update_cells({
+      path: xlsx,
+      updates: { A1: { value: 'Person', style: { bold: true, fill: 'FFFF00' } } }
+    })
+    expect(u.ok).toBe(true)
+    expect(u.output).toContain('1 styled')
+
+    const wb = new ExcelJS.Workbook()
+    await wb.xlsx.readFile(xlsx)
+    const cell = wb.worksheets[0].getCell('A1')
+    expect(cell.value).toBe('Person')
+    expect(cell.font?.bold).toBe(true)
+  })
+
+  it('rejects a malformed merge range and an out-of-range column width', async () => {
+    const badMerge = await spreadsheetRegistry.write_spreadsheet({
+      path: join(dir, 'bad.xlsx'),
+      data: [['x']],
+      merge: ['A1-B1']
+    })
+    expect(badMerge.ok).toBe(false)
+    expect(badMerge.error).toContain('merge range')
+
+    const badWidth = await spreadsheetRegistry.write_spreadsheet({
+      path: join(dir, 'bad.xlsx'),
+      data: [['x']],
+      column_widths: { A: 9999 }
+    })
+    expect(badWidth.ok).toBe(false)
+    expect(badWidth.error).toContain('out of range')
+  })
+
+  it('warns that .csv cannot hold styling', async () => {
+    const p = join(dir, 'styled.csv')
+    const w = await spreadsheetRegistry.write_spreadsheet({
+      path: p,
+      data: [[{ value: 'Bold', style: { bold: true } }]]
+    })
+    expect(w.ok).toBe(true)
+    expect(w.output).toContain('.csv stores values only')
+  })
+
+  it('declares "data" as an array so validateArgs accepts the documented shape', () => {
+    const data = spreadsheetToolSchemas.find((s) => s.name === 'write_spreadsheet')?.parameters.properties.data
+    expect(data?.type).toBe('array')
   })
 
   it('exposes exactly the five spreadsheet schemas', () => {

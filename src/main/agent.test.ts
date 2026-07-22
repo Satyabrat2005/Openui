@@ -150,7 +150,15 @@ vi.mock('./trainingStore', () => ({
   exportDatasetToFile: vi.fn(async () => '')
 }))
 
-import { handleChat, clearHistory, registerAgentIPC, isOllamaRunnerCrash } from './agent'
+import {
+  handleChat,
+  clearHistory,
+  registerAgentIPC,
+  isOllamaRunnerCrash,
+  DESIGNER_SYSTEM_PROMPT,
+  DESIGNER_TOOL_NAMES
+} from './agent'
+import { figmaBuildToolSchemas } from './figmaBuild'
 import { trackEvent } from './telemetry/posthog'
 import { Events } from './telemetry/events'
 import { callMcpTool } from './mcp-client'
@@ -840,5 +848,41 @@ describe('handleChat — GPU runner crash recovery', () => {
     expect(h.ollamaChat).toHaveBeenCalledTimes(1) // no CPU retry
     expect(sent('openui:chat:error')).toBe(true)
     expect(String(lastArg('openui:chat:error'))).toMatch(/OLLAMA_FLASH_ATTENTION=0|qwen3:4b/)
+  })
+})
+
+describe('designer system prompt', () => {
+  // The designer prompt is what actually decides whether the Figma build tools
+  // get used. It previously stated outright that nothing could author a Figma
+  // file — true before the builder plugin existed, and afterwards a line that
+  // silently talked the model out of a whole feature. These guard that drift.
+
+  it('allow-lists every Figma build tool for designer mode', () => {
+    // DESIGNER_TOOL_NAMES is the filter the prompt renders through — a tool
+    // missing here is registered but invisible to the mode built to use it.
+    // (Asserting on the rendered list itself would only test this file's
+    // toolSchemas mock.)
+    for (const schema of figmaBuildToolSchemas) {
+      expect(
+        DESIGNER_TOOL_NAMES,
+        `${schema.name} is registered but not offered in designer mode`
+      ).toContain(schema.name)
+    }
+  })
+
+  it('does not claim that nothing can create Figma layers', () => {
+    expect(DESIGNER_SYSTEM_PROMPT).not.toMatch(/there is no tool that does/i)
+    expect(DESIGNER_SYSTEM_PROMPT).not.toMatch(/cannot create[^.]*frames[^.]*\band there is no\b/i)
+  })
+
+  it('still states the real limit — existing layers cannot be edited', () => {
+    // The boundary is genuine and load-bearing: the builder ADDS layers via a
+    // plugin, it does not mutate what is already there.
+    expect(DESIGNER_SYSTEM_PROMPT).toMatch(/READ-ONLY for file content/i)
+    expect(DESIGNER_SYSTEM_PROMPT).toMatch(/never claim to have edited a Figma file/i)
+  })
+
+  it('tells the model what to do when the builder plugin is not running', () => {
+    expect(DESIGNER_SYSTEM_PROMPT).toContain('setup_figma_builder')
   })
 })
