@@ -1,8 +1,10 @@
 # ── Dependencies ──────────────────────────────────────────────
 node_modules
 
-# ── Runtime-downloaded OCR models (tesseract.js fetches these) ─
+# ── Bundled OCR language packs (fetched by scripts/fetch-traineddata.cjs) ─
+# Large binaries — never committed. Run `npm run fetch:ocr-langs` to populate.
 *.traineddata
+/tessdata/
 
 # ── Build / packaging output ──────────────────────────────────
 out
