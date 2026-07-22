@@ -408,6 +408,9 @@ export interface OpenUIApi {
   // Gmail (shares the Calendar OAuth client, own refresh token).
   gmailStatus: () => Promise<{ connected: boolean }>
   connectGmail: () => Promise<{ ok: boolean; output?: string; error?: string }>
+  // Google Drive (shares the Calendar OAuth client, own refresh token).
+  googleDriveStatus: () => Promise<{ connected: boolean }>
+  connectGoogleDrive: () => Promise<{ ok: boolean; output?: string; error?: string }>
   pickAttachment: () => Promise<{ path: string; name: string } | null>
   // Team / Shared Workflows.
   listWorkflows: () => Promise<Workflow[]>

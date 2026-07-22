@@ -500,6 +500,12 @@ const api = {
   gmailStatus: (): Promise<{ connected: boolean }> => ipcRenderer.invoke('openui:gmail-status'),
   connectGmail: (): Promise<{ ok: boolean; output?: string; error?: string }> =>
     ipcRenderer.invoke('openui:connect-gmail'),
+
+  // ── Google Drive (shares the Calendar OAuth client, own refresh token) ──────
+  googleDriveStatus: (): Promise<{ connected: boolean }> =>
+    ipcRenderer.invoke('openui:google-drive-status'),
+  connectGoogleDrive: (): Promise<{ ok: boolean; output?: string; error?: string }> =>
+    ipcRenderer.invoke('openui:connect-google-drive'),
   pickAttachment: (): Promise<{ path: string; name: string } | null> =>
     ipcRenderer.invoke('openui:pick-attachment'),
 
