@@ -15,8 +15,9 @@
         "lint": "eslint .",
         "test": "vitest run",
         "test:watch": "vitest",
-        "build:mac": "electron-vite build && electron-builder --mac --publish never",
-        "build:win": "electron-vite build && electron-builder --win --publish never"
+        "fetch:ocr-langs": "node scripts/fetch-traineddata.cjs",
+        "build:mac": "node scripts/fetch-traineddata.cjs && electron-vite build && electron-builder --mac --publish never",
+        "build:win": "node scripts/fetch-traineddata.cjs && electron-vite build && electron-builder --win --publish never"
     },
     "build": {
         "appId": "com.openui.app",
@@ -52,8 +53,8 @@
                 "to": "resources"
             },
             {
-                "from": "eng.traineddata",
-                "to": "eng.traineddata"
+                "from": "tessdata",
+                "to": "tessdata"
             }
         ],
         "npmRebuild": true,

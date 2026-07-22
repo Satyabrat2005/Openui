@@ -8,6 +8,21 @@ const AUTONOMY_OPTIONS: { value: AutonomyLevel; label: string; hint: string }[] 
   { value: 'full-auto', label: 'Full auto', hint: 'Run everything without asking. Highest risk.' }
 ]
 
+// Languages the local (free-tier) screen OCR can read. "auto" detects from the
+// OS locale. Keep the codes/labels in sync with OCR_LANGUAGES in src/main/ocr.ts
+// and the download list in scripts/fetch-traineddata.cjs.
+const OCR_LANGUAGE_OPTIONS: { value: string; label: string }[] = [
+  { value: 'auto', label: 'Auto (detect from system)' },
+  { value: 'eng', label: 'English' },
+  { value: 'spa', label: 'Spanish' },
+  { value: 'fra', label: 'French' },
+  { value: 'deu', label: 'German' },
+  { value: 'por', label: 'Portuguese' },
+  { value: 'hin', label: 'Hindi' },
+  { value: 'jpn', label: 'Japanese' },
+  { value: 'chi_sim', label: 'Chinese (Simplified)' }
+]
+
 // Launch switch for the bring-your-own-key Cloud AI section. OFF for the
 // Ollama-only launch — the shipped app shows no API-key field and no cloud
 // toggle, so it presents as fully local. Mirrors isCloudTierEnabled() /
@@ -41,6 +56,10 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
   // (persisted to the local settings store, read by the main-process Figma tool).
   const [figmaToken, setFigmaToken] = useState('')
   const [figmaSaved, setFigmaSaved] = useState(false)
+  // Local screen-OCR language (free tier). "auto" ⇒ detect from the OS locale;
+  // read by configuredOcrLang() in the main process (tools.ts).
+  const [ocrLanguage, setOcrLanguage] = useState('auto')
+  const [ocrLangSaved, setOcrLangSaved] = useState(false)
   // GitHub personal access token — read by the main-process GitHub tools when
   // the GITHUB_TOKEN env var is absent (the normal case for end users).
   const [githubToken, setGithubToken] = useState('')
@@ -118,6 +137,13 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
       .getSetting('github_token')
       .then((value) => {
         if (!cancelled && typeof value === 'string') setGithubToken(value)
+      })
+      .catch(() => {})
+
+    window.openui
+      .getSetting('ocr_language')
+      .then((value) => {
+        if (!cancelled && typeof value === 'string' && value.trim()) setOcrLanguage(value)
       })
       .catch(() => {})
 
@@ -205,6 +231,19 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
     void window.openui.setSetting('ai_improvement_enabled', next).catch(() => {
       setAiImprovement(!next)
     })
+  }
+
+  // Persist the screen-OCR language, with a brief "Saved" confirmation.
+  const chooseOcrLanguage = (value: string): void => {
+    const prev = ocrLanguage
+    setOcrLanguage(value) // optimistic; reverted on failure
+    void window.openui
+      .setSetting('ocr_language', value)
+      .then(() => {
+        setOcrLangSaved(true)
+        window.setTimeout(() => setOcrLangSaved(false), 1500)
+      })
+      .catch(() => setOcrLanguage(prev))
   }
 
   // Persist the Figma token (trimmed) on blur, with a brief "Saved" confirmation.
@@ -574,6 +613,49 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
               outline: 'none'
             }}
           />
+        </div>
+
+        {/* Screen OCR language (free-tier local OCR) */}
+        <div
+          style={{
+            borderTop: '1px solid rgba(0,0,0,0.06)',
+            paddingTop: 14,
+            marginTop: 14
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <div style={{ fontSize: 13.5, fontWeight: 600, color: '#1c1c1e' }}>Screen OCR language</div>
+            {ocrLangSaved && (
+              <span style={{ fontSize: 11, color: '#34c759', fontWeight: 500 }}>Saved</span>
+            )}
+          </div>
+          <div style={{ fontSize: 12, color: '#8e8e93', lineHeight: 1.5, marginTop: 3, marginBottom: 8 }}>
+            Language used to read your screen with local OCR (free tier). Pick the language your
+            apps are in so non-English text is read correctly; “Auto” follows your system language.
+          </div>
+          <select
+            value={ocrLanguage}
+            onChange={(e) => chooseOcrLanguage(e.target.value)}
+            aria-label="Screen OCR language"
+            style={{
+              width: '100%',
+              boxSizing: 'border-box',
+              border: '1px solid rgba(0,0,0,0.12)',
+              borderRadius: 8,
+              padding: '8px 10px',
+              fontSize: 12.5,
+              fontFamily: 'inherit',
+              color: '#1c1c1e',
+              background: '#fff',
+              outline: 'none'
+            }}
+          >
+            {OCR_LANGUAGE_OPTIONS.map((o) => (
+              <option key={o.value} value={o.value}>
+                {o.label}
+              </option>
+            ))}
+          </select>
         </div>
 
         {/* WhatsApp allowlisted auto-reply. Compose-and-click by design: the

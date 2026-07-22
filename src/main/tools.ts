@@ -29,7 +29,8 @@ import { homedir } from 'node:os'
 import { SENSITIVE_PATH_RE, resolveSafePath } from './fs/pathSafety'
 import { app, desktopCapturer, clipboard, shell, BrowserWindow } from 'electron'
 import { checkAccessibility, checkScreenRecording, type PermissionTarget } from './permissions'
-import { ocrImage, ocrLines } from './ocr'
+import { ocrImage, ocrLines, isSupportedOcrLang, localeToOcrLang } from './ocr'
+import { database } from './database'
 import { runOsLoop, describe as describeVisionAction, type CapturedFrame } from './osLoop/loop'
 import { decodePngToRawFrame } from './osLoop/capture'
 import { activeWindow } from './osLoop/windowTarget'
@@ -1346,7 +1347,7 @@ async function openWhatsAppChatViaKeyboard(contact: string, nut: any): Promise<v
  */
 async function ocrWhatsAppCandidates(): Promise<string[]> {
   const { pngBuffer } = await captureScreenPng()
-  const text = await ocrImage(pngBuffer)
+  const text = await ocrImage(pngBuffer, configuredOcrLang())
 
   const seen = new Set<string>()
   const candidates: string[] = []
@@ -2688,6 +2689,32 @@ async function captureScreenPng(): Promise<ScreenCapture> {
   return { pngBuffer, base64Image: pngBuffer.toString('base64'), width, height }
 }
 
+/**
+ * Resolve the OCR language for local (free-tier) screen reading. Precedence:
+ *   1. An explicit, supported `ocr_language` setting (Settings → Screen OCR).
+ *   2. "auto"/unset/unknown → detect from the OS locale (falls back to English).
+ * The result is passed to ocrImage/ocrLines so a non-English UI is read with the
+ * right language pack — or fails with a clear "pack not installed" error rather
+ * than silently returning garbage English OCR.
+ */
+function configuredOcrLang(): string {
+  try {
+    const stored = database.settings.getSetting('ocr_language')
+    if (typeof stored === 'string') {
+      const code = stored.trim()
+      if (code && code !== 'auto' && isSupportedOcrLang(code)) return code
+    }
+  } catch {
+    // DB not ready — fall through to OS-locale auto-detection.
+  }
+  try {
+    const locale = typeof app.getLocale === 'function' ? app.getLocale() : ''
+    return localeToOcrLang(locale)
+  } catch {
+    return 'eng'
+  }
+}
+
 async function read_screen(
   _args: Record<string, unknown>,
   context?: ExecutorContext
@@ -2762,9 +2789,11 @@ async function read_screen(
   }
 
   // Free tier: local OCR via tesseract.js, pinned to the bundled traineddata by
-  // ocrImage() so this path stays offline and makes no third-party request.
+  // ocrImage() so this path stays offline and makes no third-party request. The
+  // language follows the user's Screen-OCR setting (auto-detected from the OS
+  // locale by default) so non-English UIs are read correctly.
   try {
-    const text = await ocrImage(pngBuffer)
+    const text = await ocrImage(pngBuffer, configuredOcrLang())
     trackEvent(Events.SCREEN_CAPTURED, { tier: 'free', method: 'local_ocr' })
     // Proactively tell the UI this read used local OCR, not Claude Vision —
     // so the user understands the coarser result is a free-tier limit, not a
@@ -2964,6 +2993,10 @@ async function computer_use(
   // reviewer can correlate actions without the log storing screen contents.
   let lastCapPng: Buffer | undefined
 
+  // Resolved once per run: the loop's frame-diff OCR uses the same user-selected
+  // (or OS-locale-detected) language as read_screen, so non-English UIs verify.
+  const ocrLang = configuredOcrLang()
+
   const result = await runOsLoop(
     {
       capture: async (): Promise<CapturedFrame> => {
@@ -3030,7 +3063,7 @@ async function computer_use(
         })
       },
 
-      ocr: ocrLines,
+      ocr: (buf: Buffer) => ocrLines(buf, ocrLang),
 
       sleep,
 

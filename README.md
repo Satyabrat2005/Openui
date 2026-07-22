@@ -104,13 +104,16 @@ With all three set, tiers and daily cloud-message limits look like this:
 ## Building from source
 
 ```bash
-npm run typecheck   # tsc --noEmit
-npm run test         # vitest run
-npm run build:mac    # electron-vite build && electron-builder --mac
-npm run build:win    # electron-vite build && electron-builder --win
+npm run typecheck      # tsc --noEmit
+npm run test           # vitest run
+npm run fetch:ocr-langs # download bundled OCR language packs → ./tessdata
+npm run build:mac      # electron-vite build && electron-builder --mac
+npm run build:win      # electron-vite build && electron-builder --win
 ```
 
 Every PR runs typecheck/test/build in CI (`.github/workflows/pr-check.yml`); tagged releases build signed macOS + Windows installers (`.github/workflows/release.yml`). Local semantic-search/RAG indexing (`hnswlib-node`) ships **macOS-only** — it's stripped from Windows builds due to native ABI constraints.
+
+**Screen OCR languages.** Free-tier screen reading uses local Tesseract OCR. The trained-data packs (English, Spanish, French, German, Portuguese, Hindi, Japanese, Chinese — ~16 MB total) are gitignored binaries fetched by `npm run fetch:ocr-langs` into `./tessdata`; `build:mac`/`build:win` run this automatically before packaging. Pick a language (or **Auto**, which follows the OS locale) under **Settings → Screen OCR language**; a non-English UI whose pack isn't installed fails with a clear message instead of returning garbage English OCR.
 
 ## Further reading
 
