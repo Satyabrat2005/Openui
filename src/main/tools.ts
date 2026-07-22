@@ -33,6 +33,7 @@ import { ocrImage, ocrLines } from './ocr'
 import { runOsLoop, describe as describeVisionAction, type CapturedFrame } from './osLoop/loop'
 import { decodePngToRawFrame } from './osLoop/capture'
 import { activeWindow } from './osLoop/windowTarget'
+import { getFocusedWindowElements, formatElementsForPrompt } from './accessibility'
 import { trailingSegment } from './osLoop/windowMatch'
 import { isAppGranted, signalFor, auditAction, audit } from './osConsent'
 import type { RunLog } from './runLog'
@@ -41,10 +42,20 @@ import { runPowerShell, runPowerShellScript } from './powershell'
 import { enumerateWindowsApps, enumerateMacApps, launchWindowsApp } from './appIndex'
 import { githubToolSchemas, githubRegistry } from './github'
 import { figmaToolSchemas, figmaRegistry } from './figma'
+import { figmaBuildToolSchemas, figmaBuildRegistry } from './figmaBuild'
 import { designToolSchemas, designRegistry } from './designFlow'
 import { spreadsheetToolSchemas, spreadsheetRegistry } from './spreadsheet'
 import { driveToolSchemas, driveRegistry } from './googleDrive'
 import { mediaEditToolSchemas, mediaEditRegistry } from './mediaEdit'
+import { archiveToolSchemas, archiveRegistry } from './archive'
+import { imageEditToolSchemas, imageEditRegistry } from './imageEdit'
+import { slackToolSchemas, slackRegistry } from './slack'
+import { notificationToolSchemas, notificationRegistry } from './notifications'
+import { printToolSchemas, printRegistry } from './print'
+import { presentationToolSchemas, presentationRegistry } from './presentation'
+import { worddocToolSchemas, worddocRegistry } from './worddoc'
+import { pdfToolSchemas, pdfRegistry } from './pdf'
+import { mailMergeToolSchemas, mailMergeRegistry } from './mailmerge'
 import { runInteractivePython, writeSandboxFile } from './sandbox'
 import {
   isGoogleCalendarConnected,
@@ -183,6 +194,11 @@ export const STATE_CHANGING_TOOLS = new Set<string>([
   // Sends a message to another person — outward-facing and irreversible, so it
   // is ALSO in DESTRUCTIVE_TOOLS below (always confirms, never runs on autopilot).
   'send_whatsapp_message',
+  // Group management: creating a group adds real people to a shared chat, and
+  // leaving one is visible to everyone in it — both are socially-consequential
+  // and are ALSO in DESTRUCTIVE_TOOLS (always confirm, never auto-run).
+  'create_whatsapp_group',
+  'leave_whatsapp_group',
   'move_mouse',
   // Synthesised mouse/keyboard actions — same input-synthesis boundary as
   // left_click/type_text, so each takes one HITL approval per call.
@@ -269,6 +285,43 @@ export const STATE_CHANGING_TOOLS = new Set<string>([
   'convert_media',
   'extract_audio',
   'merge_media',
+  // Archive writes: create_zip/extract_zip mutate the filesystem (extract also
+  // materialises many files). list_zip_contents is read-only and omitted.
+  'create_zip',
+  'extract_zip',
+  // Image writes: get_image_info is read-only and omitted.
+  'resize_image',
+  'crop_image',
+  'convert_image',
+  'watermark_image',
+  // Slack: sends a message to other people — outward-facing and irreversible, so
+  // it is ALSO in DESTRUCTIVE_TOOLS (always confirms). The read tools
+  // (list_slack_channels, read_slack_channel, search_slack) observe only.
+  'send_slack_message',
+  // print_file opens a print dialog / the file's default app — one HITL up front.
+  'print_file',
+  // PowerPoint writes (list_slides is read-only, omitted — same as list_sheets).
+  'create_presentation',
+  'add_slide',
+  'add_chart',
+  'add_slide_table',
+  'set_slide_notes',
+  // Word writes (list_document_structure is read-only, omitted).
+  'create_document',
+  'add_heading',
+  'add_paragraph',
+  'add_doc_table',
+  'add_image',
+  'add_page_break',
+  // PDF writes (read_pdf is read-only, omitted — same as list_sheets).
+  'create_pdf',
+  'merge_pdfs',
+  'split_pdf',
+  // Defaults to overwriting the source PDF in place, so it always confirms.
+  'watermark_pdf',
+  'export_to_pdf',
+  // Fans out into many files at once — always confirm before a batch run.
+  'mail_merge',
   // Running arbitrary Python is sensitive — always confirm (also in DESTRUCTIVE_TOOLS).
   'run_python',
 ])
@@ -301,6 +354,11 @@ export const DESTRUCTIVE_TOOLS = new Set<string>([
   // Sends a WhatsApp message to another person — outward-facing and cannot be
   // unsent, so it always confirms and never runs under any autonomy mode.
   'send_whatsapp_message',
+  // Creating a group (adds real people to a new shared chat) and leaving one
+  // (visible to everyone in it) are outward-facing and cannot be silently
+  // undone — always confirm, never run under any autonomy mode.
+  'create_whatsapp_group',
+  'leave_whatsapp_group',
   // Sends an email to another person — outward-facing and cannot be unsent,
   // so it always confirms and never runs under any autonomy mode.
   'send_email',
@@ -310,6 +368,10 @@ export const DESTRUCTIVE_TOOLS = new Set<string>([
   // sends them a notification, outward-facing and not silently undoable, so it
   // ALWAYS confirms and never runs under any autonomy mode (like send_email).
   'share_drive_file',
+  // Sends a Slack message to other people — outward-facing and cannot be unsent,
+  // so it always confirms and never runs under any autonomy mode (same boundary
+  // as send_email / send_whatsapp_message).
+  'send_slack_message',
   // Executes code — must be confirmed even under autopilot.
   'run_python'
 ])
@@ -1180,6 +1242,7 @@ function whatsappTimings(): {
   searchMs: number
   filterMs: number
   selectMs: number
+  menuMs: number
 } {
   return {
     launchMs: Number(process.env.OPENUI_WA_LAUNCH_MS ?? 3000),
@@ -1188,7 +1251,11 @@ function whatsappTimings(): {
     // Pause around the Down/Enter that actually opens the chat. This is the
     // difference between selecting a rendered result vs. pressing keys into an
     // empty/loading list (which silently opens nothing).
-    selectMs: Number(process.env.OPENUI_WA_SELECT_MS ?? 700)
+    selectMs: Number(process.env.OPENUI_WA_SELECT_MS ?? 700),
+    // Pause for the multi-step New Group / group-info panels to render between
+    // navigation keystrokes. These transitions animate, so they need more slack
+    // than a single search filter — tune up on a slower machine.
+    menuMs: Number(process.env.OPENUI_WA_MENU_MS ?? 1200)
   }
 }
 
@@ -1531,6 +1598,379 @@ async function send_whatsapp_message(args: Record<string, unknown>): Promise<Too
     const stderr = (err as { stderr?: string }).stderr?.trim()
     const detail = stderr || (err instanceof Error ? err.message : String(err))
     return { ok: false, error: `send_whatsapp_message failed for "${contact}": ${detail}` }
+  }
+}
+
+/**
+ * Upper bound on members resolvable in a single create_whatsapp_group call.
+ * WhatsApp's own group cap is far higher, but every extra member is another
+ * slow, error-prone OCR resolution — and, more importantly, one-click assembly
+ * of a very large group is exactly the bulk-action shape we do NOT want to make
+ * frictionless (see the WhatsApp automation safety note). A user who genuinely
+ * wants a big group can split it across intentional, individually-approved
+ * calls; the cap keeps any single approval reviewable.
+ */
+export const MAX_GROUP_MEMBERS = 20
+
+export interface GroupMemberValidation {
+  /** Cleaned, de-duplicated member names, in input order. Set on success. */
+  members?: string[]
+  /** Human-readable reason the input was rejected. Set on failure. */
+  error?: string
+}
+
+/**
+ * Pure validation for create_whatsapp_group's member list — unit-testable
+ * without touching WhatsApp. Strips control chars from each name (a stray
+ * newline would submit a search early, same guard send_whatsapp_message uses),
+ * drops blanks, de-dupes case-insensitively, and enforces the length + count
+ * caps. Returns {error} on any problem so the executor bails before automating.
+ */
+export function validateGroupMembers(raw: unknown): GroupMemberValidation {
+  if (!Array.isArray(raw)) {
+    return { error: 'members must be an array of contact names.' }
+  }
+  const seen = new Set<string>()
+  const members: string[] = []
+  for (const item of raw) {
+    if (typeof item !== 'string') {
+      return { error: 'each member must be a contact-name string.' }
+    }
+    // eslint-disable-next-line no-control-regex -- strips C0/DEL control chars
+    const name = item.replace(/[\x00-\x1f\x7f]/g, '').trim()
+    if (!name) continue
+    if (name.length > 128) {
+      return { error: `member name "${name.slice(0, 32)}…" is too long (max 128 characters).` }
+    }
+    const key = name.toLowerCase()
+    if (seen.has(key)) continue
+    seen.add(key)
+    members.push(name)
+  }
+  if (members.length === 0) {
+    return { error: 'at least one member name is required to create a group.' }
+  }
+  if (members.length > MAX_GROUP_MEMBERS) {
+    return {
+      error: `too many members (${members.length}); max ${MAX_GROUP_MEMBERS} per group creation — split a larger group across separate calls.`
+    }
+  }
+  return { members }
+}
+
+/**
+ * Drive WhatsApp Desktop's "New Group" flow by keyboard only, mirroring the
+ * existing search-and-select building blocks (Ctrl+N → New group → add each
+ * member → name → create). `members` are ALREADY-RESOLVED exact chat names
+ * (the caller does the OCR + score pass first), so each per-member search is a
+ * deterministic literal match, like send_whatsapp_message's confirmed phase.
+ *
+ * This is best-effort UI automation: WhatsApp exposes no stable keyboard
+ * shortcut for every step of the New Group wizard, so the exact Down/Enter/Tab
+ * choreography and its delays are tuned by the OPENUI_WA_* env vars. The steps
+ * are ordered and commented so a mistimed transition fails visibly (nothing
+ * selected → nothing created) rather than silently doing the wrong thing.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function createWhatsAppGroupViaKeyboard(name: string, members: string[], nut: any): Promise<void> {
+  const { searchMs, filterMs, selectMs, menuMs } = whatsappTimings()
+  await launchAndFocusWhatsApp()
+
+  // Open the "New chat" panel and pick "New group" (the first actionable item in
+  // that panel), then wait for the member-selection screen to render.
+  await tapKeys(nut, nut.Key.Escape)
+  await delay(200)
+  await tapKeys(nut, nut.Key.LeftControl, nut.Key.N)
+  await delay(menuMs)
+  await tapKeys(nut, nut.Key.Down)
+  await delay(selectMs)
+  await tapKeys(nut, nut.Key.Enter)
+  await delay(menuMs)
+
+  // Add each member: type the exact resolved name into the member search, let
+  // the list filter, then Down+Enter to toggle the top match on. WhatsApp clears
+  // the field after each pick, but we clear it defensively so a residual query
+  // can never merge two names into one wrong match.
+  for (const member of members) {
+    await tapKeys(nut, nut.Key.LeftControl, nut.Key.A)
+    await tapKeys(nut, nut.Key.Delete)
+    await nut.keyboard.type(member)
+    await delay(filterMs)
+    await tapKeys(nut, nut.Key.Down)
+    await delay(selectMs)
+    await tapKeys(nut, nut.Key.Enter)
+    await delay(selectMs)
+  }
+
+  // Advance from member selection to the "New group" subject screen, type the
+  // group name, and create it with a final Enter.
+  await tapKeys(nut, nut.Key.Enter)
+  await delay(menuMs)
+  await tapKeys(nut, nut.Key.LeftControl, nut.Key.A)
+  await tapKeys(nut, nut.Key.Delete)
+  await nut.keyboard.type(name)
+  await delay(searchMs)
+  await tapKeys(nut, nut.Key.Enter)
+  await delay(menuMs)
+}
+
+/**
+ * Create a WhatsApp group with a name and an explicit member list.
+ *
+ * Creating a group puts real people into a new shared conversation — a
+ * socially-consequential, outward-facing action — so this tool lives in BOTH
+ * STATE_CHANGING_TOOLS and DESTRUCTIVE_TOOLS, exactly like send_whatsapp_message:
+ * it ALWAYS pauses for the user's approval (in every autonomy mode), and the
+ * HITL prompt shows the group name and every member so the human approves the
+ * actual roster, not just the intent.
+ *
+ * Member resolution mirrors send_whatsapp_message's fail-closed, verify-before-
+ * acting flow, applied once per member: each name is OCR-resolved and scored,
+ * and NO group is created if any member cannot be confidently identified. A
+ * single ambiguous member surfaces the same needsConfirmation:{kind:'choice'}
+ * picker send_whatsapp_message uses (the pick returns as `resolvedContact`);
+ * two or more ambiguous members fail closed with a list of exactly which names
+ * to re-specify, because the HITL loop resolves only one pick per re-run.
+ */
+async function create_whatsapp_group(args: Record<string, unknown>): Promise<ToolResult> {
+  const rawName =
+    typeof args.name === 'string'
+      ? args.name
+      : typeof args.group_name === 'string'
+        ? args.group_name
+        : ''
+  // eslint-disable-next-line no-control-regex -- strips C0/DEL control chars
+  const name = rawName.replace(/[\x00-\x1f\x7f]/g, '').trim()
+  if (!name) {
+    return { ok: false, error: 'create_whatsapp_group requires a "name" for the group.' }
+  }
+  if (name.length > 100) {
+    return { ok: false, error: 'create_whatsapp_group "name" is too long (max 100 characters).' }
+  }
+
+  const validation = validateGroupMembers(args.members)
+  if (validation.error) {
+    return { ok: false, error: `create_whatsapp_group: ${validation.error}` }
+  }
+  const members = validation.members as string[]
+
+  if (!checkAccessibility()) {
+    return {
+      ok: false,
+      error:
+        'Tool execution failed: Missing OS permissions — Accessibility access is required for keyboard control. ' +
+        'Please grant access in System Settings → Privacy & Security → Accessibility.',
+      permissionDenied: 'accessibility'
+    }
+  }
+
+  const resolvedContact =
+    typeof args.resolvedContact === 'string'
+      ? // eslint-disable-next-line no-control-regex -- strips C0/DEL control chars
+        args.resolvedContact.replace(/[\x00-\x1f\x7f]/g, '').trim()
+      : ''
+
+  try {
+    const nut = loadNut()
+
+    // Phase 1 — resolve every member the same fail-closed way send_whatsapp_message
+    // resolves its single contact. We never auto-guess who goes into a group.
+    const picks: (string | null)[] = []
+    const ambiguous: { name: string; candidates: string[] }[] = []
+    for (const member of members) {
+      const res = await resolveWhatsAppContact(member, nut)
+      if (res.resolved) {
+        picks.push(res.resolved)
+      } else {
+        picks.push(null)
+        ambiguous.push({
+          name: member,
+          candidates: res.candidates.length > 0 ? res.candidates : [member]
+        })
+      }
+    }
+
+    if (ambiguous.length === 1 && resolvedContact) {
+      // The user picked a chat for the single ambiguous member; slot it in.
+      // Resolution is deterministic against the same screen, so the same one
+      // member is unresolved on this re-run — fill its slot with the pick.
+      picks[picks.indexOf(null)] = resolvedContact
+    } else if (ambiguous.length === 1) {
+      await tapKeys(nut, nut.Key.Escape)
+      return {
+        ok: false,
+        error: `Could not confidently find a WhatsApp chat for group member "${ambiguous[0].name}".`,
+        needsConfirmation: {
+          kind: 'choice',
+          label: `Which WhatsApp contact did you mean by "${ambiguous[0].name}" (member of new group "${name}")?`,
+          choices: ambiguous[0].candidates
+        }
+      }
+    } else if (ambiguous.length > 1) {
+      await tapKeys(nut, nut.Key.Escape)
+      const list = ambiguous
+        .map((a) => `• "${a.name}" — did you mean: ${a.candidates.join(', ')}`)
+        .join('\n')
+      return {
+        ok: false,
+        error:
+          `Could not confidently resolve ${ambiguous.length} of the group members. Re-run ` +
+          `create_whatsapp_group with each of these named exactly as it appears in WhatsApp:\n${list}`
+      }
+    }
+
+    const finalMembers = picks as string[]
+
+    // Phase 2 — drive the New Group wizard with the confirmed member names.
+    await createWhatsAppGroupViaKeyboard(name, finalMembers, nut)
+
+    return {
+      ok: true,
+      output:
+        `Created WhatsApp group "${name}" with ${finalMembers.length} member(s): ${finalMembers.join(', ')}. ` +
+        `Please check WhatsApp to confirm the group was created and everyone was added correctly.`
+    }
+  } catch (err) {
+    const stderr = (err as { stderr?: string }).stderr?.trim()
+    const detail = stderr || (err instanceof Error ? err.message : String(err))
+    return { ok: false, error: `create_whatsapp_group failed for "${name}": ${detail}` }
+  }
+}
+
+/**
+ * Open a group's info panel and drive its "Exit group" control by keyboard.
+ * Assumes the target group chat is already open (the caller opens it first via
+ * openWhatsAppChatViaKeyboard). Best-effort UI automation, same caveat as the
+ * New Group flow: the panel-open shortcut (Ctrl+I opens chat/contact info in
+ * WhatsApp Desktop) and the Exit-group navigation are env-tunable, and if WhatsApp
+ * shows its own "Exit group?" confirmation dialog this presses Enter to accept it.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function exitWhatsAppGroupViaKeyboard(nut: any): Promise<void> {
+  const { selectMs, menuMs } = whatsappTimings()
+
+  // Open the chat/group info panel (Ctrl+I) and let it render.
+  await tapKeys(nut, nut.Key.LeftControl, nut.Key.I)
+  await delay(menuMs)
+
+  // "Exit group" is the last action at the bottom of the info panel. Page down
+  // to bring it into view, then confirm WhatsApp's own "Exit group?" dialog.
+  // We do NOT click by coordinate; this relies on WhatsApp bringing the exit
+  // action into focus reach and its confirmation dialog defaulting to accept.
+  await tapKeys(nut, nut.Key.End)
+  await delay(selectMs)
+  await tapKeys(nut, nut.Key.Enter)
+  await delay(menuMs)
+  // WhatsApp confirms group exit with a modal — accept it.
+  await tapKeys(nut, nut.Key.Enter)
+  await delay(menuMs)
+}
+
+/**
+ * Leave (exit) a WhatsApp group by name. Leaving a group is visible to everyone
+ * in it and cannot be silently undone (rejoining needs an invite), so — like
+ * create_whatsapp_group and send_whatsapp_message — this is in BOTH
+ * STATE_CHANGING_TOOLS and DESTRUCTIVE_TOOLS and ALWAYS asks for approval first,
+ * showing the group name so the user approves the specific group being left.
+ *
+ * Resolution reuses openWhatsAppChatViaKeyboard (the same top-hit open flow
+ * open_whatsapp_chat uses): opening the wrong chat here is low-stakes because
+ * the destructive Exit-group keystrokes only run against whatever group is open,
+ * and the up-front HITL approval already named the intended group. If the wrong
+ * chat opens the exit simply targets nothing group-shaped and no harm is done.
+ */
+async function leave_whatsapp_group(args: Record<string, unknown>): Promise<ToolResult> {
+  const rawName =
+    typeof args.group_name === 'string'
+      ? args.group_name
+      : typeof args.name === 'string'
+        ? args.name
+        : typeof args.contact === 'string'
+          ? args.contact
+          : ''
+  // eslint-disable-next-line no-control-regex -- strips C0/DEL control chars
+  const groupName = rawName.replace(/[\x00-\x1f\x7f]/g, '').trim()
+  if (!groupName) {
+    return { ok: false, error: 'leave_whatsapp_group requires a "group_name" (the group to exit).' }
+  }
+  if (groupName.length > 128) {
+    return { ok: false, error: 'leave_whatsapp_group "group_name" is too long (max 128 characters).' }
+  }
+  if (!checkAccessibility()) {
+    return {
+      ok: false,
+      error:
+        'Tool execution failed: Missing OS permissions — Accessibility access is required for keyboard control. ' +
+        'Please grant access in System Settings → Privacy & Security → Accessibility.',
+      permissionDenied: 'accessibility'
+    }
+  }
+
+  try {
+    const nut = loadNut()
+    await openWhatsAppChatViaKeyboard(groupName, nut)
+    await exitWhatsAppGroupViaKeyboard(nut)
+    return {
+      ok: true,
+      output:
+        `Attempted to exit the WhatsApp group "${groupName}". ` +
+        `Please check WhatsApp to confirm you have left the group.`
+    }
+  } catch (err) {
+    const stderr = (err as { stderr?: string }).stderr?.trim()
+    const detail = stderr || (err instanceof Error ? err.message : String(err))
+    return { ok: false, error: `leave_whatsapp_group failed for "${groupName}": ${detail}` }
+  }
+}
+
+/**
+ * Best-effort read of WhatsApp's chat list for the background auto-reply watcher
+ * (whatsappWatcher.ts). Focuses WhatsApp and OCRs the visible chat names.
+ *
+ * It does NOT precisely read the unread badge — OCR cannot see boldness — so it
+ * returns the visible chat/sender names and leans on the watcher's set-diff (a
+ * chat surfacing into view is the "new activity" signal), the allowlist, the
+ * rate limits, and the human-click-to-send to make any false positive harmless:
+ * at worst it composes a suggestion the user ignores, and it never sends. Never
+ * throws — returns [] if WhatsApp isn't focusable, accessibility is missing, or
+ * OCR fails — so a background poll can never crash on a bad frame.
+ */
+export async function readWhatsAppUnreadSenders(): Promise<string[]> {
+  if (!checkAccessibility()) return []
+  try {
+    await launchAndFocusWhatsApp()
+    return await ocrWhatsAppCandidates()
+  } catch {
+    return []
+  }
+}
+
+/**
+ * Best-effort read of one WhatsApp conversation's latest text, for the auto-reply
+ * composer. Opens the chat by name and OCRs the message pane, returning the last
+ * OCR'd line as the "latest message" plus a few prior lines as context. Imprecise
+ * by nature (OCR of a chat pane, no per-message structure); the composed reply is
+ * only ever a SUGGESTION the user reviews before sending. Never throws — returns
+ * empty text on any failure.
+ */
+export async function readWhatsAppChatText(
+  name: string
+): Promise<{ fullText: string; recentContext: string[] }> {
+  if (!checkAccessibility()) return { fullText: '', recentContext: [] }
+  try {
+    const nut = loadNut()
+    await openWhatsAppChatViaKeyboard(name, nut)
+    await delay(600)
+    const { pngBuffer } = await captureScreenPng()
+    const text = await ocrImage(pngBuffer)
+    const lines = text
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+      .filter((l) => l.length > 0)
+    const recent = lines.slice(-6)
+    return { fullText: recent.length > 0 ? recent[recent.length - 1] : '', recentContext: recent }
+  } catch {
+    return { fullText: '', recentContext: [] }
   }
 }
 
@@ -2369,9 +2809,17 @@ async function askVisionAction(opts: {
   priorActions: string[]
   /** Verifier feedback when the previous step provably had no effect. */
   feedback?: string
+  /**
+   * Accessibility grounding: a pre-formatted list of the focused window's
+   * interactive elements (role/name + exact click coordinate), from the OS
+   * accessibility API. Supplied by the native computer_use loop; the model
+   * prefers these exact coordinates over guessing from pixels. Empty/omitted on
+   * platforms or windows where the accessibility API returns nothing.
+   */
+  a11yBlock?: string
   tier: Tier
 }): Promise<VisionAction> {
-  const { capture, goal, priorActions, feedback, tier } = opts
+  const { capture, goal, priorActions, feedback, a11yBlock, tier } = opts
   const historyText = priorActions.length
     ? `Actions already taken:\n${priorActions.join('\n')}`
     : 'No actions taken yet.'
@@ -2380,22 +2828,29 @@ async function askVisionAction(opts: {
   // successful one in the screenshot it is handed.
   const feedbackText = feedback ? `\n\nIMPORTANT: ${feedback}` : ''
 
+  // The accessibility element list is its own text block, added only when the
+  // OS actually returned elements — pure-upside grounding, never a blocker.
+  const content: Array<Record<string, unknown>> = [
+    {
+      type: 'image',
+      source: { type: 'base64', media_type: 'image/png', data: capture.base64Image }
+    }
+  ]
+  if (a11yBlock && a11yBlock.trim()) {
+    content.push({ type: 'text', text: a11yBlock })
+  }
+  content.push({
+    type: 'text',
+    text: `GOAL: ${goal}\n\n${historyText}${feedbackText}\n\nReturn the next single action as one JSON object.`
+  })
+
   const reply = await callChatProxyText({
     system: buildVisionSystemPrompt(capture.width, capture.height),
     modelKey: tier === 'enterprise' ? 'enterprise-default' : 'pro-default',
     messages: [
       {
         role: 'user',
-        content: [
-          {
-            type: 'image',
-            source: { type: 'base64', media_type: 'image/png', data: capture.base64Image }
-          },
-          {
-            type: 'text',
-            text: `GOAL: ${goal}\n\n${historyText}${feedbackText}\n\nReturn the next single action as one JSON object.`
-          }
-        ]
+        content
       }
     ]
   })
@@ -2525,8 +2980,24 @@ async function computer_use(
         }
       },
 
-      ask: async (input) =>
-        askVisionAction({
+      ask: async (input) => {
+        // Accessibility grounding (item 1): read the focused window's interactive
+        // elements from the OS accessibility API and hand the model exact click
+        // coordinates alongside the screenshot. Best-effort and non-blocking —
+        // getFocusedWindowElements() returns [] on any failure, and the element
+        // bounds are converted from screen space into the screenshot's space so
+        // the model's click contract is unchanged.
+        let a11yBlock = ''
+        try {
+          const elements = await getFocusedWindowElements()
+          if (elements.length) {
+            const { w, h } = await screenDims()
+            a11yBlock = formatElementsForPrompt(elements, input.frame.width, input.frame.height, w, h)
+          }
+        } catch {
+          /* grounding is pure upside — never let it break the loop */
+        }
+        return askVisionAction({
           capture: {
             pngBuffer: input.frame.pngBuffer,
             base64Image: input.frame.base64Image,
@@ -2536,8 +3007,10 @@ async function computer_use(
           goal: input.goal,
           priorActions: input.priorActions,
           feedback: input.feedback,
+          a11yBlock,
           tier
-        }),
+        })
+      },
 
       execute: async (action) => {
         // Log BEFORE acting: an action that crashes the process must still
@@ -4923,10 +5396,20 @@ async function run_python(args: Record<string, unknown>): Promise<ToolResult> {
 export const toolSchemas: ToolSchema[] = [
   ...githubToolSchemas,
   ...figmaToolSchemas,
+  ...figmaBuildToolSchemas,
   ...designToolSchemas,
   ...spreadsheetToolSchemas,
   ...driveToolSchemas,
   ...mediaEditToolSchemas,
+  ...archiveToolSchemas,
+  ...imageEditToolSchemas,
+  ...slackToolSchemas,
+  ...notificationToolSchemas,
+  ...printToolSchemas,
+  ...presentationToolSchemas,
+  ...worddocToolSchemas,
+  ...pdfToolSchemas,
+  ...mailMergeToolSchemas,
   {
     name: 'run_python',
     description:
@@ -5026,6 +5509,51 @@ export const toolSchemas: ToolSchema[] = [
         }
       },
       required: ['contact', 'message']
+    }
+  },
+  {
+    name: 'create_whatsapp_group',
+    description:
+      'Create a new WhatsApp group with a name and a list of members. Use this when the user wants to ' +
+      'start, make, or set up a WhatsApp group (e.g. "create a group called Trip Planning with Ashu, Mom ' +
+      'and Ravi"). Each member is looked up by name the same way send_whatsapp_message resolves a single ' +
+      'contact; if a member name is ambiguous you will be asked to pick the right chat before anything is ' +
+      'created. This ALWAYS asks the user to confirm the group name and full member list before creating it, ' +
+      'since it adds real people to a new shared chat. To message an existing group, use send_whatsapp_message.',
+    parameters: {
+      type: 'object',
+      properties: {
+        name: {
+          type: 'string',
+          description: 'The name (subject) for the new group, e.g. "Trip Planning".'
+        },
+        members: {
+          type: 'array',
+          description:
+            'The contact names to add, as they appear in WhatsApp, e.g. ["Ashu", "Mom", "Ravi"]. At least one; ' +
+            `at most ${MAX_GROUP_MEMBERS}.`,
+          items: { type: 'string' }
+        }
+      },
+      required: ['name', 'members']
+    }
+  },
+  {
+    name: 'leave_whatsapp_group',
+    description:
+      'Leave (exit) an existing WhatsApp group by name. Use this when the user wants to leave, exit, or get ' +
+      'out of a WhatsApp group (e.g. "leave the College Friends group"). It opens the group, opens its info ' +
+      'panel, and exits the group. This ALWAYS asks the user to confirm before leaving, since exiting a group ' +
+      'is visible to everyone in it and rejoining requires an invite.',
+    parameters: {
+      type: 'object',
+      properties: {
+        group_name: {
+          type: 'string',
+          description: 'The name of the group to leave, as it appears in WhatsApp.'
+        }
+      },
+      required: ['group_name']
     }
   },
   {
@@ -5843,6 +6371,8 @@ const registry: Record<string, Executor> = {
   open_folder_in_editor,
   open_whatsapp_chat,
   send_whatsapp_message,
+  create_whatsapp_group,
+  leave_whatsapp_group,
   send_email,
   find_email_thread,
   list_apps,
@@ -5893,10 +6423,20 @@ const registry: Record<string, Executor> = {
   run_python,
   ...githubRegistry,
   ...figmaRegistry,
+  ...figmaBuildRegistry,
   ...designRegistry,
   ...spreadsheetRegistry,
   ...driveRegistry,
-  ...mediaEditRegistry
+  ...mediaEditRegistry,
+  ...archiveRegistry,
+  ...imageEditRegistry,
+  ...slackRegistry,
+  ...notificationRegistry,
+  ...printRegistry,
+  ...presentationRegistry,
+  ...worddocRegistry,
+  ...pdfRegistry,
+  ...mailMergeRegistry
 }
 
 /**
@@ -6020,6 +6560,14 @@ export function describeToolCall(name: string, args: Record<string, unknown>): s
       const preview = msg.length > 60 ? `${msg.slice(0, 60)}…` : msg
       return `Send WhatsApp message to ${to}: "${preview}"`
     }
+    case 'create_whatsapp_group': {
+      const gname = String(args.name ?? args.group_name ?? '')
+      const members = Array.isArray(args.members) ? args.members.map((m) => String(m)) : []
+      const roster = members.length > 0 ? ` with ${members.join(', ')}` : ''
+      return `Create WhatsApp group "${gname}"${roster}`
+    }
+    case 'leave_whatsapp_group':
+      return `Leave WhatsApp group "${String(args.group_name ?? args.name ?? args.contact ?? '')}"`
     case 'send_email': {
       const to = Array.isArray(args.to) ? args.to.map((v) => String(v)).join(', ') : String(args.to ?? '')
       const subject = String(args.subject ?? '')
@@ -6183,6 +6731,38 @@ export function describeToolCall(name: string, args: Record<string, unknown>): s
       return `Get media info for ${String(args.path ?? '')}`
     case 'run_python':
       return `Run Python ${String(args.path ?? '(inline code)')}`
+    case 'create_zip':
+      return `Create zip ${String(args.output_path ?? args.output ?? '')}`
+    case 'extract_zip':
+      return `Extract ${String(args.zip_path ?? args.path ?? '')} → ${String(args.dest_dir ?? args.dest ?? '')}`
+    case 'list_zip_contents':
+      return `List contents of ${String(args.zip_path ?? args.path ?? '')}`
+    case 'get_image_info':
+      return `Read image info ${String(args.path ?? '')}`
+    case 'resize_image':
+      return `Resize image ${String(args.path ?? '')}`
+    case 'crop_image':
+      return `Crop image ${String(args.path ?? '')}`
+    case 'convert_image':
+      return `Convert image ${String(args.path ?? '')} to ${String(args.format ?? '')}`
+    case 'watermark_image':
+      return `Watermark image ${String(args.path ?? '')}`
+    case 'send_slack_message': {
+      const ch = String(args.channel ?? '')
+      const msg = String(args.text ?? '')
+      const preview = msg.length > 60 ? `${msg.slice(0, 60)}…` : msg
+      return `Send Slack message to ${ch}: "${preview}"`
+    }
+    case 'list_slack_channels':
+      return 'List Slack channels'
+    case 'read_slack_channel':
+      return `Read Slack channel ${String(args.channel ?? '')}`
+    case 'search_slack':
+      return `Search Slack for "${String(args.query ?? '')}"`
+    case 'notify_user':
+      return `Notify: "${String(args.title ?? '')}"`
+    case 'print_file':
+      return `Print ${String(args.path ?? '')}`
     default:
       return name
   }
