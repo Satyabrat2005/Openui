@@ -22,6 +22,32 @@ export { RAG_UNAVAILABLE_MSG }
 
 const MAX_INDEX_ELEMENTS = 10_000
 
+interface PdfParser {
+  getText(): Promise<{ text?: string }>
+  destroy?(): Promise<void> | void
+}
+
+/**
+ * Extract text from a PDF buffer with pdf-parse. NB pdf-parse v2 is a CLASS API
+ * (`new PDFParse({data}).getText()`), NOT the v1 callable — passing a Buffer to
+ * the module export throws, which previously made every .pdf silently skipped.
+ * Required lazily so importing rag.ts doesn't pull in pdfjs until it's needed.
+ */
+async function extractPdfText(buf: Buffer): Promise<string> {
+  const { PDFParse } = require('pdf-parse') as { PDFParse: new (o: unknown) => PdfParser }
+  const parser = new PDFParse({ data: new Uint8Array(buf) })
+  try {
+    const result = await parser.getText()
+    return typeof result?.text === 'string' ? result.text : ''
+  } finally {
+    try {
+      await parser.destroy?.()
+    } catch {
+      /* best-effort cleanup */
+    }
+  }
+}
+
 // ── paths ─────────────────────────────────────────────────────────────────────
 
 function indexPath(): string {
@@ -92,17 +118,7 @@ export async function indexDirectory(dirPath: string): Promise<IndexResult> {
       if (extname(filePath).toLowerCase() === '.txt') {
         text = Buffer.from(await readFile(filePath)).toString('utf-8')
       } else {
-        // pdf-parse v2 exports a PDFParse CLASS — v1's callable default export
-        // is gone, so the old `pdfParse(buf)` call threw "not a function" and
-        // every PDF was silently skipped by the catch below.
-        const { PDFParse } = await import('pdf-parse')
-        const buf = Buffer.from(await readFile(filePath))
-        const parser = new PDFParse({ data: buf })
-        try {
-          text = (await parser.getText()).text ?? ''
-        } finally {
-          await parser.destroy()
-        }
+        text = await extractPdfText(Buffer.from(await readFile(filePath)))
       }
       allChunks.push(...chunkText(text, filePath))
     } catch (err) {

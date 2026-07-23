@@ -58,6 +58,7 @@ import { worddocToolSchemas, worddocRegistry } from './worddoc'
 import { pdfToolSchemas, pdfRegistry } from './pdf'
 import { mailMergeToolSchemas, mailMergeRegistry } from './mailmerge'
 import { telegramToolSchemas, telegramRegistry } from './telegram'
+import { paperResearchToolSchemas, paperResearchRegistry } from './paperResearch'
 import { runInteractivePython, writeSandboxFile } from './sandbox'
 import {
   isGoogleCalendarConnected,
@@ -338,6 +339,16 @@ export const STATE_CHANGING_TOOLS = new Set<string>([
   'send_telegram_message',
   // Running arbitrary Python is sensitive — always confirm (also in DESTRUCTIVE_TOOLS).
   'run_python',
+  // Academic-research pipeline. search_papers is read-only (network reads only,
+  // no disk write) and intentionally absent. The three writers each take one
+  // approval when called standalone; research_papers batches a whole find-and-
+  // summarise run behind a SINGLE approval (its internal download/summarise calls
+  // run in-process and never re-trigger HITL), so a 10-paper request is one click.
+  // Like research_audit / write_latex they write into a fresh research folder and
+  // never overwrite, so they are NOT in DESTRUCTIVE_TOOLS.
+  'download_paper',
+  'summarize_paper',
+  'research_papers',
 ])
 
 /**
@@ -5571,6 +5582,7 @@ export const toolSchemas: ToolSchema[] = [
   ...pdfToolSchemas,
   ...mailMergeToolSchemas,
   ...telegramToolSchemas,
+  ...paperResearchToolSchemas,
   {
     name: 'run_python',
     description:
@@ -6643,7 +6655,8 @@ const registry: Record<string, Executor> = {
   ...worddocRegistry,
   ...pdfRegistry,
   ...mailMergeRegistry,
-  ...telegramRegistry
+  ...telegramRegistry,
+  ...paperResearchRegistry
 }
 
 /**
@@ -6952,6 +6965,14 @@ export function describeToolCall(name: string, args: Record<string, unknown>): s
       return `Get media info for ${String(args.path ?? '')}`
     case 'run_python':
       return `Run Python ${String(args.path ?? '(inline code)')}`
+    case 'search_papers':
+      return `Search papers for "${String(args.query ?? '')}"`
+    case 'download_paper':
+      return `Download paper PDF ${String(args.pdf_url ?? '')}`
+    case 'summarize_paper':
+      return `Summarise paper ${String(args.pdf_path ?? '')}`
+    case 'research_papers':
+      return `Find & summarise papers on "${String(args.query ?? '')}"`
     case 'create_zip':
       return `Create zip ${String(args.output_path ?? args.output ?? '')}`
     case 'extract_zip':
