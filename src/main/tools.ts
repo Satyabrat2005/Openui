@@ -198,6 +198,9 @@ export const STATE_CHANGING_TOOLS = new Set<string>([
   'browser_navigate',
   'browser_click',
   'browser_fill_input',
+  // Attaching a local file to a page is outward-facing (it can hand a file to a
+  // website), so each upload takes one HITL approval like the other write tools.
+  'browser_upload_file',
   // Same one-approval-per-loop contract as computer_use, scoped to the page.
   'browser_vision_act',
   // Full-control browser actions that change tab/page/history state. The
@@ -2982,6 +2985,85 @@ async function browser_fill_input(
   }
 }
 
+// Upload cap, sized for the media this tool actually moves (videos to
+// YouTube/Drive, PDFs to web forms) — the same "named byte cap + stat().size
+// guard" pattern read_file's MAX_FILE_BYTES / figma's MAX_IMAGE_BYTES use, just
+// with a ceiling that fits real uploads instead of small text/image payloads.
+const MAX_UPLOAD_BYTES = 5 * 1024 * 1024 * 1024 // 5 GiB
+
+/**
+ * Attach a local file to a <input type="file"> on the current browser page.
+ *
+ * Uses Playwright's setInputFiles, which sets the file directly over the dev
+ * protocol — it never triggers or needs the native OS file-picker dialog, so it
+ * is both more reliable and needs no OS-level dialog automation. This one tool
+ * covers "upload a video to YouTube/Drive", "attach a file to a web form", and
+ * "upload to Slack/Discord via their web UI" — one general capability, not one
+ * per site. file_path is resolved read-only (the file already exists locally).
+ */
+async function browser_upload_file(args: Record<string, unknown>): Promise<ToolResult> {
+  const selector = typeof args.selector === 'string' ? args.selector.trim() : ''
+  if (!selector) return { ok: false, error: 'browser_upload_file requires a string "selector".' }
+  if (selector.length > MAX_SELECTOR_LEN) {
+    return { ok: false, error: 'browser_upload_file "selector" is too long.' }
+  }
+  const rawPath = typeof args.file_path === 'string' ? args.file_path.trim() : ''
+  if (!rawPath) return { ok: false, error: 'browser_upload_file requires a string "file_path".' }
+  // Fail closed on the connection before touching the filesystem, exactly like
+  // browser_click / browser_fill_input.
+  if (!_pwPage) return NOT_CONNECTED
+
+  // Read-only trust boundary — same as read_file and send_email attachments.
+  let file: string
+  try {
+    file = resolveSafePath(rawPath, { mutating: false })
+  } catch (e) {
+    return { ok: false, error: `browser_upload_file: ${errText(e)}` }
+  }
+
+  // Cap the size before handing anything to the browser.
+  try {
+    const info = await stat(file)
+    if (info.isDirectory()) {
+      return { ok: false, error: `browser_upload_file: "${file}" is a directory, not a file.` }
+    }
+    if (info.size > MAX_UPLOAD_BYTES) {
+      return {
+        ok: false,
+        error: `browser_upload_file: file is too large (${info.size} bytes; limit ${MAX_UPLOAD_BYTES}).`
+      }
+    }
+  } catch (e) {
+    return { ok: false, error: `browser_upload_file: cannot read "${file}" — ${errText(e)}` }
+  }
+
+  try {
+    const el = _pwPage.locator(selector).first()
+    // Confirm the selector resolves to a real file input, so a mis-aimed
+    // selector returns a clear message instead of a generic Playwright error.
+    const [tag, type] = await Promise.all([
+      el.evaluate((n: Element) => n.tagName).catch(() => ''),
+      el.getAttribute('type').catch(() => '')
+    ])
+    if (String(tag).toUpperCase() !== 'INPUT' || String(type).toLowerCase() !== 'file') {
+      const matched = tag
+        ? `<${String(tag).toLowerCase()}${type ? ` type="${type}"` : ''}>`
+        : 'nothing'
+      return {
+        ok: false,
+        error:
+          `browser_upload_file: "${selector}" does not resolve to a file input ` +
+          `(<input type="file">) — it matched ${matched}. Point the selector at the ` +
+          `page's file input (browser_read_elements can help locate it).`
+      }
+    }
+    await el.setInputFiles(file, { timeout: 15_000 })
+    return { ok: true, output: `Uploaded "${file}" into the file input matching "${selector}".` }
+  } catch (err) {
+    return { ok: false, error: `browser_upload_file failed: ${errText(err)}` }
+  }
+}
+
 // ── Full browser control: tabs, scroll, structured reads, waits, keys ─────────
 //
 // These round out the automation surface so the agent can drive multi-tab flows
@@ -5375,6 +5457,22 @@ export const toolSchemas: ToolSchema[] = [
     }
   },
   {
+    name: 'browser_upload_file',
+    description:
+      'Attach a LOCAL file to a file input (<input type="file">) on the current Playwright browser page — ' +
+      'e.g. upload a video to YouTube/Drive, attach a file to a web form, or upload to Slack/Discord via web. ' +
+      'Sets the file directly over the dev protocol, so it needs NO native file-picker dialog. Point "selector" ' +
+      'at the page\'s file input (use browser_read_elements to find it); "file_path" must already exist locally.',
+    parameters: {
+      type: 'object',
+      properties: {
+        selector: { type: 'string', description: 'CSS selector for the <input type="file"> element.' },
+        file_path: { type: 'string', description: 'Path to the local file to upload (must already exist).' }
+      },
+      required: ['selector', 'file_path']
+    }
+  },
+  {
     name: 'browser_read_elements',
     description:
       'List the clickable/fillable elements on the current page (links, buttons, inputs, selects) each with a ' +
@@ -5841,6 +5939,7 @@ const registry: Record<string, Executor> = {
   browser_click,
   browser_extract_text,
   browser_fill_input,
+  browser_upload_file,
   browser_vision_act,
   browser_list_tabs,
   browser_switch_tab,
@@ -6088,6 +6187,8 @@ export function describeToolCall(name: string, args: Record<string, unknown>): s
       return `Draft (not send) a refund email${args.company ? ` to ${String(args.company)}` : ''}`
     case 'browser_fill_input':
       return `Fill "${String(args.selector ?? '')}"`
+    case 'browser_upload_file':
+      return `Upload "${String(args.file_path ?? '')}" to "${String(args.selector ?? '')}"`
     case 'list_open_prs':
       return `List open PRs in ${String(args.repo ?? '')}`
     case 'get_pr_diff':
