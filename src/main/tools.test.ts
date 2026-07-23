@@ -23,8 +23,11 @@ import {
   executeTool,
   parseDuckDuckGoResults,
   scoreContactCandidates,
+  validateGroupMembers,
+  MAX_GROUP_MEMBERS,
   STATE_CHANGING_TOOLS,
   DESTRUCTIVE_TOOLS,
+  toolSchemas,
   TIER_TOOL_REQUIREMENTS,
   slugifyForPath,
   researchKeywords,
@@ -53,6 +56,77 @@ afterEach(async () => {
     const dir = createdTempDirs.pop()!
     await rm(dir, { recursive: true, force: true })
   }
+})
+
+// ── Tool-surface integrity ───────────────────────────────────────────────────
+// The registry is ONE flat namespace shared by every module spread into it
+// (github, figma, design, spreadsheet, presentation, worddoc …). A duplicate
+// name is silently corrupting rather than loud: executeTool resolves the schema
+// with toolSchemas.find(), which returns the FIRST match, while the registry
+// spread keeps the LAST implementation — so the two can end up mismatched.
+describe('tool surface integrity', () => {
+  it('has no duplicate tool names across every module spread into toolSchemas', () => {
+    const seen = new Map<string, number>()
+    for (const s of toolSchemas) seen.set(s.name, (seen.get(s.name) ?? 0) + 1)
+    const duplicates = [...seen.entries()].filter(([, n]) => n > 1).map(([name]) => name)
+    expect(duplicates).toEqual([])
+  })
+
+  it('registers the presentation and document tools exactly once each', () => {
+    const names = toolSchemas.map((s) => s.name)
+    for (const tool of [
+      'create_presentation',
+      'add_slide',
+      'add_chart',
+      'add_slide_table',
+      'set_slide_notes',
+      'list_slides',
+      'create_document',
+      'add_heading',
+      'add_paragraph',
+      'add_doc_table',
+      'add_image',
+      'add_page_break',
+      'list_document_structure',
+      'read_pdf',
+      'create_pdf',
+      'merge_pdfs',
+      'split_pdf',
+      'watermark_pdf',
+      'export_to_pdf',
+      'mail_merge'
+    ]) {
+      expect(names.filter((n) => n === tool), `${tool} must appear exactly once`).toHaveLength(1)
+    }
+  })
+
+  it('gates every mutating pptx/docx tool but leaves the two list tools read-only', () => {
+    for (const tool of [
+      'create_presentation',
+      'add_slide',
+      'add_chart',
+      'add_slide_table',
+      'set_slide_notes',
+      'create_document',
+      'add_heading',
+      'add_paragraph',
+      'add_doc_table',
+      'add_image',
+      'add_page_break',
+      'create_pdf',
+      'merge_pdfs',
+      'split_pdf',
+      'watermark_pdf',
+      'export_to_pdf',
+      'mail_merge'
+    ]) {
+      expect(STATE_CHANGING_TOOLS.has(tool), `${tool} must be HITL-gated`).toBe(true)
+    }
+    // Read-only, like list_sheets.
+    expect(STATE_CHANGING_TOOLS.has('list_slides')).toBe(false)
+    expect(STATE_CHANGING_TOOLS.has('list_document_structure')).toBe(false)
+    expect(STATE_CHANGING_TOOLS.has('read_pdf')).toBe(false)
+  })
 })
 
 // ── The HITL approval gate (the merge/destructive safety boundary) ────────────
@@ -267,6 +341,7 @@ describe('browser tools — require an approved connect_browser first', () => {
     ['browser_navigate', { url: 'https://example.com' }],
     ['browser_click', { selector: '#pay' }],
     ['browser_fill_input', { selector: '#q', text: 'hi' }],
+    ['browser_upload_file', { selector: '#file', file_path: '/tmp/x.png' }],
     ['browser_extract_text', {}],
     ['browser_vision_act', { goal: 'dismiss the cookie banner' }],
     ['research_web', { query: 'weather in tokyo' }]
@@ -349,6 +424,108 @@ describe('scoreContactCandidates', () => {
     const lines = ['Ashu A', 'Ashu B', 'Ashu C', 'Ashu D', 'Ashu E', 'Ashu F', 'Ashu G']
     const r = scoreContactCandidates('ashu', lines)
     expect(r.candidates.length).toBe(5)
+  })
+})
+
+// ── create_whatsapp_group / leave_whatsapp_group — group management ───────────
+describe('create_whatsapp_group + leave_whatsapp_group', () => {
+  it('both are state-changing AND destructive (always confirm, never auto-run)', () => {
+    for (const tool of ['create_whatsapp_group', 'leave_whatsapp_group']) {
+      expect(STATE_CHANGING_TOOLS.has(tool)).toBe(true)
+      expect(DESTRUCTIVE_TOOLS.has(tool)).toBe(true)
+      // Group management runs on the local/free tier — not behind a paywall.
+      expect(TIER_TOOL_REQUIREMENTS[tool]).toBeUndefined()
+    }
+  })
+
+  it('create rejects a missing group name before any automation runs', async () => {
+    const r = await executeTool(
+      'create_whatsapp_group',
+      { members: ['Ashu'] },
+      { tier: 'free', bypassHitl: true }
+    )
+    expect(r).toMatchObject({ ok: false })
+    expect((r as { error: string }).error).toMatch(/name/i)
+  })
+
+  it('create rejects an empty member list before any automation runs', async () => {
+    const r = await executeTool(
+      'create_whatsapp_group',
+      { name: 'Trip Planning', members: [] },
+      { tier: 'free', bypassHitl: true }
+    )
+    expect(r).toMatchObject({ ok: false })
+    expect((r as { error: string }).error).toMatch(/member/i)
+  })
+
+  it('create rejects an oversized member list before any automation runs', async () => {
+    const members = Array.from({ length: MAX_GROUP_MEMBERS + 1 }, (_, i) => `Person ${i}`)
+    const r = await executeTool(
+      'create_whatsapp_group',
+      { name: 'Huge Group', members },
+      { tier: 'free', bypassHitl: true }
+    )
+    expect(r).toMatchObject({ ok: false })
+    expect((r as { error: string }).error).toMatch(/too many|max/i)
+  })
+
+  it('leave rejects a missing group name before any automation runs', async () => {
+    const r = await executeTool('leave_whatsapp_group', {}, { tier: 'free', bypassHitl: true })
+    expect(r).toMatchObject({ ok: false })
+    expect((r as { error: string }).error).toMatch(/group_name/i)
+  })
+})
+
+// ── validateGroupMembers — pure member-list validation (WhatsApp-free) ─────────
+describe('validateGroupMembers', () => {
+  it('accepts a clean list unchanged, in input order', () => {
+    const r = validateGroupMembers(['Ashu', 'Mom', 'Ravi'])
+    expect(r.error).toBeUndefined()
+    expect(r.members).toEqual(['Ashu', 'Mom', 'Ravi'])
+  })
+
+  it('rejects a non-array input', () => {
+    const r = validateGroupMembers('Ashu')
+    expect(r.members).toBeUndefined()
+    expect(r.error).toMatch(/array/i)
+  })
+
+  it('rejects a non-string member', () => {
+    const r = validateGroupMembers(['Ashu', 42])
+    expect(r.members).toBeUndefined()
+    expect(r.error).toMatch(/string/i)
+  })
+
+  it('drops blanks and de-duplicates case-insensitively', () => {
+    const r = validateGroupMembers(['Ashu', '  ', 'ashu', 'Mom'])
+    expect(r.error).toBeUndefined()
+    expect(r.members).toEqual(['Ashu', 'Mom'])
+  })
+
+  it('strips control chars so a stray newline cannot submit early', () => {
+    const r = validateGroupMembers(['Ashu\n', 'Ra\tvi'])
+    expect(r.error).toBeUndefined()
+    expect(r.members).toEqual(['Ashu', 'Ravi'])
+  })
+
+  it('rejects an all-blank list as having no members', () => {
+    const r = validateGroupMembers(['   ', '\n'])
+    expect(r.members).toBeUndefined()
+    expect(r.error).toMatch(/at least one/i)
+  })
+
+  it('rejects more members than the cap', () => {
+    const members = Array.from({ length: MAX_GROUP_MEMBERS + 1 }, (_, i) => `Person ${i}`)
+    const r = validateGroupMembers(members)
+    expect(r.members).toBeUndefined()
+    expect(r.error).toMatch(/too many/i)
+  })
+
+  it('accepts exactly the cap', () => {
+    const members = Array.from({ length: MAX_GROUP_MEMBERS }, (_, i) => `Person ${i}`)
+    const r = validateGroupMembers(members)
+    expect(r.error).toBeUndefined()
+    expect(r.members).toHaveLength(MAX_GROUP_MEMBERS)
   })
 })
 
@@ -504,6 +681,30 @@ describe('assisted account tools', () => {
   it('draft_refund_email rejects an empty request (fails before any file write)', async () => {
     const r = await executeTool('draft_refund_email', {}, { tier: 'free', bypassHitl: true })
     expect(r).toMatchObject({ ok: false })
+  })
+})
+
+// ── Gmail draft — a distinct object from a sent message, deliberately un-gated ──
+describe('create_email_draft (no HITL — nothing leaves the account)', () => {
+  it('is in neither HITL set: sending is gated, drafting is not', () => {
+    // A draft never leaves the mailbox, so unlike send_email it takes no approval.
+    expect(STATE_CHANGING_TOOLS.has('create_email_draft')).toBe(false)
+    expect(DESTRUCTIVE_TOOLS.has('create_email_draft')).toBe(false)
+    // The actual send is still the gated, irreversible step.
+    expect(STATE_CHANGING_TOOLS.has('send_email')).toBe(true)
+    expect(DESTRUCTIVE_TOOLS.has('send_email')).toBe(true)
+  })
+
+  it('runs without a HITL pause and reaches the not-connected path', async () => {
+    // Not gated → executeTool invokes the executor directly (no pending_approval),
+    // which returns the friendly not-connected error rather than pausing.
+    const r = await executeTool(
+      'create_email_draft',
+      { to: 'a@x.com', body: 'hello' },
+      { tier: 'free' }
+    )
+    expect(r).toMatchObject({ ok: false })
+    expect((r as { error: string }).error).toMatch(/not connected/i)
   })
 })
 

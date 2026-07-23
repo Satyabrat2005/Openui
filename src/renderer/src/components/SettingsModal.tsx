@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import type { AutonomyLevel, ConsentStatus } from '../env'
+import type { AutonomyLevel, ConsentStatus, WhatsAppAutoReplyConfig } from '../env'
 import type { UpdateStatus } from '../hooks/useUpdater'
 import { applyTheme, coerceThemePref, type ThemePref } from '../lib/theme'
 
@@ -13,6 +13,21 @@ const AUTONOMY_OPTIONS: { value: AutonomyLevel; label: string; hint: string }[] 
   { value: 'ask-each', label: 'Ask each', hint: 'Confirm every action before it runs.' },
   { value: 'approve-plan', label: 'Approve plan', hint: 'Review the plan once, then it runs on its own.' },
   { value: 'full-auto', label: 'Full auto', hint: 'Run everything without asking. Highest risk.' }
+]
+
+// Languages the local (free-tier) screen OCR can read. "auto" detects from the
+// OS locale. Keep the codes/labels in sync with OCR_LANGUAGES in src/main/ocr.ts
+// and the download list in scripts/fetch-traineddata.cjs.
+const OCR_LANGUAGE_OPTIONS: { value: string; label: string }[] = [
+  { value: 'auto', label: 'Auto (detect from system)' },
+  { value: 'eng', label: 'English' },
+  { value: 'spa', label: 'Spanish' },
+  { value: 'fra', label: 'French' },
+  { value: 'deu', label: 'German' },
+  { value: 'por', label: 'Portuguese' },
+  { value: 'hin', label: 'Hindi' },
+  { value: 'jpn', label: 'Japanese' },
+  { value: 'chi_sim', label: 'Chinese (Simplified)' }
 ]
 
 // Launch switch for the bring-your-own-key Cloud AI section. OFF for the
@@ -50,10 +65,23 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
   // (persisted to the local settings store, read by the main-process Figma tool).
   const [figmaToken, setFigmaToken] = useState('')
   const [figmaSaved, setFigmaSaved] = useState(false)
+  // Local screen-OCR language (free tier). "auto" ⇒ detect from the OS locale;
+  // read by configuredOcrLang() in the main process (tools.ts).
+  const [ocrLanguage, setOcrLanguage] = useState('auto')
+  const [ocrLangSaved, setOcrLangSaved] = useState(false)
   // GitHub personal access token — read by the main-process GitHub tools when
   // the GITHUB_TOKEN env var is absent (the normal case for end users).
   const [githubToken, setGithubToken] = useState('')
   const [githubSaved, setGithubSaved] = useState(false)
+  // Telegram bot token — a per-user credential the user creates via @BotFather
+  // and pastes here; read by the main-process Telegram tools (never a proxy —
+  // a bot token is inherently user-owned, like the Figma/GitHub PATs).
+  const [telegramToken, setTelegramToken] = useState('')
+  const [telegramSaved, setTelegramSaved] = useState(false)
+  // Slack bot/user token — read by the main-process Slack tools when the
+  // SLACK_TOKEN env var is absent. Same per-user credential reasoning as Figma/GitHub.
+  const [slackToken, setSlackToken] = useState('')
+  const [slackSaved, setSlackSaved] = useState(false)
   // Cloud AI (bring-your-own-key): an Anthropic key plus an explicit routing
   // toggle. BOTH are required before any turn leaves the machine — the key is
   // capability, the toggle is intent (see shouldRouteToCloud in models.ts).
@@ -74,6 +102,18 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
   const [gmailConnected, setGmailConnected] = useState(false)
   const [gmailConnecting, setGmailConnecting] = useState(false)
   const [gmailMessage, setGmailMessage] = useState('')
+  // Google Drive — same shared OAuth client as Calendar/Gmail, own refresh token
+  // and Connect button (the narrow drive.file scope is its own OAuth grant).
+  const [driveConnected, setDriveConnected] = useState(false)
+  const [driveConnecting, setDriveConnecting] = useState(false)
+  const [driveMessage, setDriveMessage] = useState('')
+  // WhatsApp allowlisted auto-reply. The whole config lives in one object; the
+  // watcher only ever COMPOSES a suggested reply for these contacts — sending
+  // stays a human click. Default-off; empty allowlist means nothing runs.
+  const [waConfig, setWaConfig] = useState<WhatsAppAutoReplyConfig | null>(null)
+  const [waSaved, setWaSaved] = useState(false)
+  const [waNewName, setWaNewName] = useState('')
+  const [waNewInstruction, setWaNewInstruction] = useState('')
 
   useEffect(() => {
     let cancelled = false
@@ -122,6 +162,34 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
       .catch(() => {})
 
     window.openui
+      .getSetting('telegram_bot_token')
+      .then((value) => {
+        if (!cancelled && typeof value === 'string') setTelegramToken(value)
+      })
+      .catch(() => {})
+
+    window.openui
+      .getSetting('ocr_language')
+      .then((value) => {
+        if (!cancelled && typeof value === 'string' && value.trim()) setOcrLanguage(value)
+      })
+      .catch(() => {})
+
+    window.openui
+      .getSetting('slack_token')
+      .then((value) => {
+        if (!cancelled && typeof value === 'string') setSlackToken(value)
+      })
+      .catch(() => {})
+
+    window.openui
+      .getWhatsAppAutoReply()
+      .then((cfg) => {
+        if (!cancelled) setWaConfig(cfg)
+      })
+      .catch(() => {})
+
+    window.openui
       .getSetting('anthropic_api_key')
       .then((value) => {
         if (!cancelled && typeof value === 'string') setAnthropicKey(value)
@@ -163,6 +231,13 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
       })
       .catch(() => {})
 
+    window.openui
+      .googleDriveStatus()
+      .then((s) => {
+        if (!cancelled) setDriveConnected(Boolean(s?.connected))
+      })
+      .catch(() => {})
+
     const off = window.openui.onConsentUpdated((status: ConsentStatus) => {
       setEnabled(status === 'granted')
     })
@@ -196,6 +271,19 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
     })
   }
 
+  // Persist the screen-OCR language, with a brief "Saved" confirmation.
+  const chooseOcrLanguage = (value: string): void => {
+    const prev = ocrLanguage
+    setOcrLanguage(value) // optimistic; reverted on failure
+    void window.openui
+      .setSetting('ocr_language', value)
+      .then(() => {
+        setOcrLangSaved(true)
+        window.setTimeout(() => setOcrLangSaved(false), 1500)
+      })
+      .catch(() => setOcrLanguage(prev))
+  }
+
   // Persist the Figma token (trimmed) on blur, with a brief "Saved" confirmation.
   const saveFigmaToken = (): void => {
     void window.openui
@@ -215,6 +303,68 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
         window.setTimeout(() => setGithubSaved(false), 1500)
       })
       .catch(() => {})
+  }
+
+  const saveTelegramToken = (): void => {
+    void window.openui
+      .setSetting('telegram_bot_token', telegramToken.trim())
+      .then(() => {
+        setTelegramSaved(true)
+        window.setTimeout(() => setTelegramSaved(false), 1500)
+      })
+      .catch(() => {})
+  }
+
+  const saveSlackToken = (): void => {
+    void window.openui
+      .setSetting('slack_token', slackToken.trim())
+      .then(() => {
+        setSlackSaved(true)
+        window.setTimeout(() => setSlackSaved(false), 1500)
+      })
+      .catch(() => {})
+  }
+
+  // Persist a whole WhatsApp auto-reply config change (the main process
+  // normalises + clamps it and reconciles the watcher, then returns what it
+  // actually stored, which we adopt so the UI reflects the clamped truth).
+  const persistWaConfig = (next: WhatsAppAutoReplyConfig): void => {
+    setWaConfig(next) // optimistic
+    void window.openui
+      .setWhatsAppAutoReply(next)
+      .then((saved) => {
+        setWaConfig(saved)
+        setWaSaved(true)
+        window.setTimeout(() => setWaSaved(false), 1500)
+      })
+      .catch(() => {})
+  }
+
+  const toggleWaEnabled = (): void => {
+    if (!waConfig) return
+    persistWaConfig({ ...waConfig, enabled: !waConfig.enabled })
+  }
+
+  const addWaContact = (): void => {
+    if (!waConfig) return
+    const name = waNewName.trim()
+    if (!name) return
+    const instruction = waNewInstruction.trim()
+    // Skip a case-insensitive duplicate; main de-dupes too, but this keeps the UI honest.
+    if (waConfig.allowlist.some((e) => e.name.toLowerCase() === name.toLowerCase())) {
+      setWaNewName('')
+      setWaNewInstruction('')
+      return
+    }
+    const entry = instruction ? { name, instruction } : { name }
+    persistWaConfig({ ...waConfig, allowlist: [...waConfig.allowlist, entry] })
+    setWaNewName('')
+    setWaNewInstruction('')
+  }
+
+  const removeWaContact = (name: string): void => {
+    if (!waConfig) return
+    persistWaConfig({ ...waConfig, allowlist: waConfig.allowlist.filter((e) => e.name !== name) })
   }
 
   const saveAnthropicKey = (): void => {
@@ -276,6 +426,25 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
       setGmailMessage('Connection failed.')
     } finally {
       setGmailConnecting(false)
+    }
+  }
+
+  const connectGoogleDrive = async (): Promise<void> => {
+    if (driveConnecting) return
+    setDriveConnecting(true)
+    setDriveMessage('Waiting for Google sign-in in your browser…')
+    try {
+      // Same shared client id/secret as Google Calendar — persist the latest
+      // values first so the main-process flow can read them.
+      await window.openui.setSetting('google_oauth_client_id', gcalClientId.trim())
+      await window.openui.setSetting('google_oauth_client_secret', gcalClientSecret.trim())
+      const result = await window.openui.connectGoogleDrive()
+      setDriveConnected(result.ok)
+      setDriveMessage(result.ok ? 'Connected.' : result.error || 'Connection failed.')
+    } catch {
+      setDriveMessage('Connection failed.')
+    } finally {
+      setDriveConnecting(false)
     }
   }
 
@@ -413,8 +582,9 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
             {figmaSaved && <span className="ou-settings-saved">Saved</span>}
           </div>
           <div className="ou-settings-desc" style={{ marginBottom: 8 }}>
-            Paste a personal access token to let OpenUI review your Figma designs. Create one at
-            figma.com → Settings → Security → Personal access tokens. Stored locally on this device.
+            Paste a personal access token to let OpenUI review your Figma designs, export their
+            design tokens, and build frames as code. Create one at figma.com → Settings → Security →
+            Personal access tokens. Read-only access is enough. Stored locally on this device.
           </div>
           <input
             type="password"
@@ -428,6 +598,152 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
             spellCheck={false}
           />
         </div>
+
+        {/* Screen OCR language (free-tier local OCR) */}
+        <div className="ou-settings-section">
+          <div className="ou-settings-headrow">
+            <div className="ou-settings-label">Screen OCR language</div>
+            {ocrLangSaved && <span className="ou-settings-saved">Saved</span>}
+          </div>
+          <div className="ou-settings-desc" style={{ marginBottom: 8 }}>
+            Language used to read your screen with local OCR (free tier). Pick the language your
+            apps are in so non-English text is read correctly; “Auto” follows your system language.
+          </div>
+          <select
+            className="ou-settings-input"
+            value={ocrLanguage}
+            onChange={(e) => chooseOcrLanguage(e.target.value)}
+            aria-label="Screen OCR language"
+          >
+            {OCR_LANGUAGE_OPTIONS.map((o) => (
+              <option key={o.value} value={o.value}>
+                {o.label}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        {/* WhatsApp allowlisted auto-reply. Compose-and-click by design: the
+            watcher only drafts suggestions for these contacts; sending is always
+            a human click. Default-off; empty allowlist = nothing runs. */}
+        {waConfig && (
+          <div className="ou-settings-section">
+            <div className="ou-settings-headrow">
+              <div className="ou-settings-label">WhatsApp auto-reply</div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                {waSaved && <span className="ou-settings-saved">Saved</span>}
+                <span
+                  style={{
+                    fontSize: 11,
+                    fontWeight: 600,
+                    color: waConfig.enabled ? 'var(--ou-success)' : 'var(--ou-text-faint)',
+                    background: waConfig.enabled ? 'var(--ou-success-soft)' : 'var(--ou-surface-2)',
+                    borderRadius: 999,
+                    padding: '2px 8px'
+                  }}
+                >
+                  {waConfig.enabled ? 'ON' : 'OFF'}
+                </span>
+              </div>
+            </div>
+            <div className="ou-settings-desc" style={{ marginBottom: 10 }}>
+              When on, OpenUI watches for new WhatsApp messages from the contacts you list below and{' '}
+              <strong style={{ color: 'var(--ou-text)' }}>drafts a suggested reply</strong> for each. It never sends on its
+              own — you review every draft and click to send. Nothing runs for anyone not on this list.
+            </div>
+
+            <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', marginBottom: 12 }}>
+              <input type="checkbox" checked={waConfig.enabled} onChange={toggleWaEnabled} />
+              <span style={{ fontSize: 12.5, color: 'var(--ou-text)' }}>
+                Enable the background watcher {waConfig.allowlist.length === 0 && '(add a contact below first)'}
+              </span>
+            </label>
+
+            {/* Current allowlist */}
+            {waConfig.allowlist.length > 0 && (
+              <div style={{ marginBottom: 10 }}>
+                {waConfig.allowlist.map((entry) => (
+                  <div
+                    key={entry.name}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'flex-start',
+                      justifyContent: 'space-between',
+                      gap: 8,
+                      border: '1px solid var(--ou-border)',
+                      borderRadius: 8,
+                      padding: '7px 10px',
+                      marginBottom: 6
+                    }}
+                  >
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--ou-text)' }}>{entry.name}</div>
+                      {entry.instruction && (
+                        <div style={{ fontSize: 11.5, color: 'var(--ou-text-dim)', lineHeight: 1.4, marginTop: 2 }}>
+                          {entry.instruction}
+                        </div>
+                      )}
+                    </div>
+                    <button
+                      onClick={() => removeWaContact(entry.name)}
+                      aria-label={`Remove ${entry.name} from the auto-reply allowlist`}
+                      style={{
+                        border: 'none',
+                        background: 'transparent',
+                        color: 'var(--ou-danger)',
+                        fontSize: 12,
+                        fontWeight: 600,
+                        cursor: 'pointer',
+                        flexShrink: 0
+                      }}
+                    >
+                      Remove
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Add a contact */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              <input
+                type="text"
+                className="ou-settings-input"
+                value={waNewName}
+                onChange={(e) => setWaNewName(e.target.value)}
+                placeholder="Contact or group name (exactly as in WhatsApp)"
+                aria-label="Contact or group name to allow auto-reply drafts for"
+                spellCheck={false}
+              />
+              <input
+                type="text"
+                className="ou-settings-input"
+                value={waNewInstruction}
+                onChange={(e) => setWaNewInstruction(e.target.value)}
+                placeholder="Optional instruction, e.g. “reply as if I'm busy, keep it short”"
+                aria-label="Optional per-contact reply instruction"
+                spellCheck={false}
+              />
+              <button
+                onClick={addWaContact}
+                disabled={!waNewName.trim()}
+                style={{
+                  alignSelf: 'flex-start',
+                  border: '1px solid var(--ou-border)',
+                  borderRadius: 8,
+                  padding: '7px 14px',
+                  fontSize: 12.5,
+                  fontWeight: 600,
+                  color: waNewName.trim() ? 'var(--ou-text)' : 'var(--ou-text-faint)',
+                  background: 'var(--ou-surface-2)',
+                  cursor: waNewName.trim() ? 'pointer' : 'default'
+                }}
+              >
+                Add to allowlist
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* Cloud AI: bring-your-own-key frontier model (opt-in). Hidden for the
             Ollama-only launch; see CLOUD_TIER_ENABLED above. */}
@@ -490,6 +806,55 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
             onBlur={saveGithubToken}
             placeholder="ghp_…"
             aria-label="GitHub personal access token"
+            autoComplete="off"
+            spellCheck={false}
+          />
+        </div>
+
+        {/* Integrations: Telegram bot token (created via @BotFather) */}
+        <div className="ou-settings-section">
+          <div className="ou-settings-headrow">
+            <div className="ou-settings-label">Telegram</div>
+            {telegramSaved && <span className="ou-settings-saved">Saved</span>}
+          </div>
+          <div className="ou-settings-desc" style={{ marginBottom: 8 }}>
+            Paste a bot token to let OpenUI send and read Telegram messages through your own bot.
+            Create one by messaging @BotFather → /newbot. Note: a bot can only message people who have
+            started a chat with it first. Stored locally on this device.
+          </div>
+          <input
+            type="password"
+            className="ou-settings-input"
+            value={telegramToken}
+            onChange={(e) => setTelegramToken(e.target.value)}
+            onBlur={saveTelegramToken}
+            placeholder="123456789:AA…"
+            aria-label="Telegram bot token"
+            autoComplete="off"
+            spellCheck={false}
+          />
+        </div>
+
+        {/* Integrations: Slack bot/user token */}
+        <div className="ou-settings-section">
+          <div className="ou-settings-headrow">
+            <div className="ou-settings-label">Slack</div>
+            {slackSaved && <span className="ou-settings-saved">Saved</span>}
+          </div>
+          <div className="ou-settings-desc" style={{ marginBottom: 8 }}>
+            Paste a Slack token to let OpenUI send, read, and search Slack messages. A bot token
+            (xoxb-) with chat:write, channels:read and channels:history covers most tasks; search
+            needs a user token (xoxp-) with search:read. Create one at api.slack.com/apps. Stored
+            locally on this device.
+          </div>
+          <input
+            type="password"
+            className="ou-settings-input"
+            value={slackToken}
+            onChange={(e) => setSlackToken(e.target.value)}
+            onBlur={saveSlackToken}
+            placeholder="xoxb-…"
+            aria-label="Slack token"
             autoComplete="off"
             spellCheck={false}
           />
@@ -566,6 +931,33 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
               {gmailConnecting ? 'Connecting…' : gmailConnected ? 'Reconnect' : 'Connect'}
             </button>
             {gmailMessage && <span className="ou-settings-msg">{gmailMessage}</span>}
+          </div>
+        </div>
+
+        {/* Integrations: Google Drive (shares the Calendar OAuth client above, own refresh token) */}
+        <div className="ou-settings-section">
+          <div className="ou-settings-headrow">
+            <div className="ou-settings-label">Google Drive</div>
+            <span className={`ou-settings-status${driveConnected ? ' ok' : ''}`}>
+              {driveConnected ? 'Connected' : 'Not connected'}
+            </span>
+          </div>
+          <div className="ou-settings-desc" style={{ marginBottom: 8 }}>
+            Lets OpenUI upload, download and share files in Drive. Uses the same Google OAuth Client
+            ID and Secret entered above for Google Calendar (enable the Drive API on that same
+            project). Requests only the narrow drive.file scope — access to files OpenUI creates or
+            you open with it, never your whole Drive.
+          </div>
+          <div className="ou-settings-btnrow" style={{ marginTop: 0 }}>
+            <button
+              type="button"
+              className="ou-settings-btn"
+              onClick={() => void connectGoogleDrive()}
+              disabled={driveConnecting || !gcalClientId.trim() || !gcalClientSecret.trim()}
+            >
+              {driveConnecting ? 'Connecting…' : driveConnected ? 'Reconnect' : 'Connect'}
+            </button>
+            {driveMessage && <span className="ou-settings-msg">{driveMessage}</span>}
           </div>
         </div>
 

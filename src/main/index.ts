@@ -15,8 +15,10 @@ import { registerWaitlistIPC } from './waitlist'
 import { closeBrowser } from './tools'
 import { connectGoogleCalendar, isGoogleCalendarConnected } from './googleCalendar'
 import { connectGmail, isGmailConnected } from './gmail'
+import { connectGoogleDrive, isGoogleDriveConnected } from './googleDrive'
 import { connectMcpServer, disconnectAll, type McpServerConfig } from './mcp-client'
 import { initDatabase, database } from './database'
+import { registerWhatsAppAutoReplyIpc } from './whatsappWatcherService'
 import { registerDeepLinkProtocol, setupDeepLinkHandlers } from './auth/deeplink'
 import { openAuthWindow, isAuthWebContents } from './auth/authWindow'
 import { logout, getCurrentUser, getUserTier, startTokenRefreshLoop, stopTokenRefreshLoop, ensureGuestSession } from './auth/sessionManager'
@@ -545,6 +547,10 @@ app.whenReady().then(async () => {
     if (typeof key === 'string') database.settings.setSetting(key, value)
   })
 
+  // WhatsApp allowlisted auto-reply: get/set config, kill switch, status, and
+  // the background watcher that resumes only if the user left it enabled.
+  registerWhatsAppAutoReplyIpc(() => win)
+
   // ── Google Calendar (dedicated OAuth, see googleCalendar.ts) ───────────────
   ipcMain.handle('openui:google-calendar-status', () => ({ connected: isGoogleCalendarConnected() }))
   ipcMain.handle('openui:connect-google-calendar', () => connectGoogleCalendar())
@@ -552,6 +558,10 @@ app.whenReady().then(async () => {
   // ── Gmail (shares the Calendar OAuth client, own refresh token — see gmail.ts) ──
   ipcMain.handle('openui:gmail-status', () => ({ connected: isGmailConnected() }))
   ipcMain.handle('openui:connect-gmail', () => connectGmail())
+
+  // ── Google Drive (shares the Calendar OAuth client, own refresh token — see googleDrive.ts) ──
+  ipcMain.handle('openui:google-drive-status', () => ({ connected: isGoogleDriveConnected() }))
+  ipcMain.handle('openui:connect-google-drive', () => connectGoogleDrive())
 
   // Lets the user pick a real file (e.g. a resume) to attach to an outgoing
   // email. dialog.showOpenDialog runs in the main process and returns an
