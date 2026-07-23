@@ -9,6 +9,7 @@ import PlanApprovalModal from './components/PlanApprovalModal'
 import OnboardingWizard from './components/onboarding/OnboardingWizard'
 import ConsentModal from './components/ConsentModal'
 import WorkflowsUI from './components/WorkflowsUI'
+import WhatsAppAutoReplyBanner from './components/WhatsAppAutoReplyBanner'
 import { useAssistantAnimations } from './hooks/useAssistantAnimations'
 import { useOnboarding } from './hooks/useOnboarding'
 import { AuthProvider } from './context/AuthContext'
@@ -195,6 +196,11 @@ function AppShell(): JSX.Element {
   return (
     <div ref={overlayRef} className="openui-overlay">
       <TitleBar />
+      {/* Always-on WhatsApp auto-reply indicator + kill switch + draft review.
+          Self-hides unless the watcher is active or a draft is waiting. */}
+      <ErrorBoundary label="WhatsApp auto-reply" compact>
+        <WhatsAppAutoReplyBanner />
+      </ErrorBoundary>
       <div className={`ou-content${taskViewActive ? ' ou-taskview' : ''}`}>
       {isLoading ? (
         <LoadingScreen />

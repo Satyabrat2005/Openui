@@ -289,6 +289,24 @@ export interface TaskCard {
   endedAt?: number
 }
 
+/** One allowlisted contact/group the user opted in to auto-DRAFT replies for. */
+export type WhatsAppAllowlistEntry = { name: string; instruction?: string }
+/** The WhatsApp auto-reply config (mirrors main's AutoReplyConfig). */
+export interface WhatsAppAutoReplyConfig {
+  enabled: boolean
+  pollIntervalMs: number
+  allowlist: WhatsAppAllowlistEntry[]
+  perContactHourlyCap: number
+  globalHourlyCap: number
+}
+/** A suggested reply the watcher composed for the user to review + send. */
+export interface WhatsAppDraftReply {
+  contact: string
+  incomingPreview: string
+  draftText: string
+  at: string
+}
+
 export interface OpenUIApi {
   // Window
   hide: () => void
@@ -402,12 +420,26 @@ export interface OpenUIApi {
   // App settings (key/value persisted in SQLite).
   getSetting: (key: string) => Promise<unknown>
   setSetting: (key: string, value: unknown) => Promise<void>
+  // WhatsApp allowlisted auto-reply (compose-and-click; never autonomous).
+  getWhatsAppAutoReply: () => Promise<WhatsAppAutoReplyConfig>
+  setWhatsAppAutoReply: (config: WhatsAppAutoReplyConfig) => Promise<WhatsAppAutoReplyConfig>
+  killWhatsAppAutoReply: () => Promise<WhatsAppAutoReplyConfig>
+  whatsAppAutoReplyStatus: () => Promise<{ active: boolean }>
+  sendWhatsAppAutoReplyDraft: (
+    contact: string,
+    message: string
+  ) => Promise<{ ok: boolean; output?: string; error?: string }>
+  onWhatsAppAutoReplyDraft: (cb: (draft: WhatsAppDraftReply) => void) => () => void
+  onWhatsAppAutoReplyActive: (cb: (active: boolean) => void) => () => void
   // Google Calendar (dedicated OAuth connect + status).
   googleCalendarStatus: () => Promise<{ connected: boolean }>
   connectGoogleCalendar: () => Promise<{ ok: boolean; output?: string; error?: string }>
   // Gmail (shares the Calendar OAuth client, own refresh token).
   gmailStatus: () => Promise<{ connected: boolean }>
   connectGmail: () => Promise<{ ok: boolean; output?: string; error?: string }>
+  // Google Drive (shares the Calendar OAuth client, own refresh token).
+  googleDriveStatus: () => Promise<{ connected: boolean }>
+  connectGoogleDrive: () => Promise<{ ok: boolean; output?: string; error?: string }>
   pickAttachment: () => Promise<{ path: string; name: string } | null>
   // Team / Shared Workflows.
   listWorkflows: () => Promise<Workflow[]>

@@ -8,11 +8,12 @@ import {
   deriveSubject,
   isGmailConnected,
   sendGmailMessage,
+  createGmailDraft,
   findEmailThread
 } from './gmail'
 
 describe('buildAuthUrl', () => {
-  it('requests offline access, both gmail scopes, and forced consent', () => {
+  it('requests offline access, all gmail scopes, and forced consent', () => {
     const u = buildAuthUrl('cid.apps.googleusercontent.com', 'http://127.0.0.1:5555/callback')
     expect(u).toContain('accounts.google.com')
     expect(u).toContain('client_id=cid.apps.googleusercontent.com')
@@ -21,6 +22,8 @@ describe('buildAuthUrl', () => {
     expect(u).toContain('prompt=consent')
     const decoded = decodeURIComponent(u)
     expect(decoded).toContain('https://www.googleapis.com/auth/gmail.send')
+    // gmail.compose is required for the drafts endpoints (create_email_draft).
+    expect(decoded).toContain('https://www.googleapis.com/auth/gmail.compose')
     expect(decoded).toContain('https://www.googleapis.com/auth/gmail.readonly')
     expect(decoded).toContain('http://127.0.0.1:5555/callback')
   })
@@ -153,5 +156,17 @@ describe('connection gating (no creds → not connected, never hits the network)
     const r = await findEmailThread('')
     expect(r.ok).toBe(false)
     expect(r.error).toMatch(/query/)
+  })
+
+  it('createGmailDraft surfaces a validation error before any request when "to" has no valid address', async () => {
+    const r = await createGmailDraft({ to: ['not-an-email'], body: 'hello' })
+    expect(r.ok).toBe(false)
+    expect(r.error).toMatch(/to/)
+  })
+
+  it('createGmailDraft surfaces a validation error before any request when body is empty', async () => {
+    const r = await createGmailDraft({ to: ['a@x.com'], body: '   ' })
+    expect(r.ok).toBe(false)
+    expect(r.error).toMatch(/body/)
   })
 })
