@@ -43,6 +43,7 @@ import { githubToolSchemas, githubRegistry } from './github'
 import { figmaToolSchemas, figmaRegistry } from './figma'
 import { designToolSchemas, designRegistry } from './designFlow'
 import { spreadsheetToolSchemas, spreadsheetRegistry } from './spreadsheet'
+import { telegramToolSchemas, telegramRegistry } from './telegram'
 import { runInteractivePython, writeSandboxFile } from './sandbox'
 import {
   isGoogleCalendarConnected,
@@ -254,6 +255,10 @@ export const STATE_CHANGING_TOOLS = new Set<string>([
   'write_spreadsheet',
   'update_cells',
   'add_formula',
+  // Sends a Telegram message to another person via the user's bot — outward-facing
+  // and irreversible, so it is ALSO in DESTRUCTIVE_TOOLS below (always confirms,
+  // never runs on autopilot). list/read Telegram tools are read-only, omitted.
+  'send_telegram_message',
   // Running arbitrary Python is sensitive — always confirm (also in DESTRUCTIVE_TOOLS).
   'run_python',
 ])
@@ -289,6 +294,9 @@ export const DESTRUCTIVE_TOOLS = new Set<string>([
   // Sends an email to another person — outward-facing and cannot be unsent,
   // so it always confirms and never runs under any autonomy mode.
   'send_email',
+  // Sends a Telegram message via the user's bot — outward-facing and cannot be
+  // unsent, same treatment as send_email / send_whatsapp_message.
+  'send_telegram_message',
   'open_pull_request',
   'merge_pr',
   // Executes code — must be confirmed even under autopilot.
@@ -4906,6 +4914,7 @@ export const toolSchemas: ToolSchema[] = [
   ...figmaToolSchemas,
   ...designToolSchemas,
   ...spreadsheetToolSchemas,
+  ...telegramToolSchemas,
   {
     name: 'run_python',
     description:
@@ -5873,7 +5882,8 @@ const registry: Record<string, Executor> = {
   ...githubRegistry,
   ...figmaRegistry,
   ...designRegistry,
-  ...spreadsheetRegistry
+  ...spreadsheetRegistry,
+  ...telegramRegistry
 }
 
 /**
@@ -6140,6 +6150,12 @@ export function describeToolCall(name: string, args: Record<string, unknown>): s
       return `Add formula ${String(args.cell ?? '')} in ${String(args.path ?? '')}`
     case 'list_sheets':
       return `List sheets in ${String(args.path ?? '')}`
+    case 'send_telegram_message':
+      return `Send Telegram message to chat ${String(args.chat_id ?? '')}`
+    case 'list_telegram_chats':
+      return 'List Telegram chats'
+    case 'read_telegram_messages':
+      return `Read Telegram messages in chat ${String(args.chat_id ?? '')}`
     case 'run_python':
       return `Run Python ${String(args.path ?? '(inline code)')}`
     default:
