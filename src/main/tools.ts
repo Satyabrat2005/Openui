@@ -57,6 +57,7 @@ import { presentationToolSchemas, presentationRegistry } from './presentation'
 import { worddocToolSchemas, worddocRegistry } from './worddoc'
 import { pdfToolSchemas, pdfRegistry } from './pdf'
 import { mailMergeToolSchemas, mailMergeRegistry } from './mailmerge'
+import { telegramToolSchemas, telegramRegistry } from './telegram'
 import { runInteractivePython, writeSandboxFile } from './sandbox'
 import {
   isGoogleCalendarConnected,
@@ -323,6 +324,10 @@ export const STATE_CHANGING_TOOLS = new Set<string>([
   'export_to_pdf',
   // Fans out into many files at once — always confirm before a batch run.
   'mail_merge',
+  // Sends a Telegram message to another person via the user's bot — outward-facing
+  // and irreversible, so it is ALSO in DESTRUCTIVE_TOOLS below (always confirms,
+  // never runs on autopilot). list/read Telegram tools are read-only, omitted.
+  'send_telegram_message',
   // Running arbitrary Python is sensitive — always confirm (also in DESTRUCTIVE_TOOLS).
   'run_python',
 ])
@@ -363,6 +368,9 @@ export const DESTRUCTIVE_TOOLS = new Set<string>([
   // Sends an email to another person — outward-facing and cannot be unsent,
   // so it always confirms and never runs under any autonomy mode.
   'send_email',
+  // Sends a Telegram message via the user's bot — outward-facing and cannot be
+  // unsent, same treatment as send_email / send_whatsapp_message.
+  'send_telegram_message',
   'open_pull_request',
   'merge_pr',
   // Shares a Drive file with another person by email — grants standing access and
@@ -5443,6 +5451,7 @@ export const toolSchemas: ToolSchema[] = [
   ...worddocToolSchemas,
   ...pdfToolSchemas,
   ...mailMergeToolSchemas,
+  ...telegramToolSchemas,
   {
     name: 'run_python',
     description:
@@ -6469,7 +6478,8 @@ const registry: Record<string, Executor> = {
   ...presentationRegistry,
   ...worddocRegistry,
   ...pdfRegistry,
-  ...mailMergeRegistry
+  ...mailMergeRegistry,
+  ...telegramRegistry
 }
 
 /**
@@ -6744,6 +6754,12 @@ export function describeToolCall(name: string, args: Record<string, unknown>): s
       return `Add formula ${String(args.cell ?? '')} in ${String(args.path ?? '')}`
     case 'list_sheets':
       return `List sheets in ${String(args.path ?? '')}`
+    case 'send_telegram_message':
+      return `Send Telegram message to chat ${String(args.chat_id ?? '')}`
+    case 'list_telegram_chats':
+      return 'List Telegram chats'
+    case 'read_telegram_messages':
+      return `Read Telegram messages in chat ${String(args.chat_id ?? '')}`
     case 'upload_to_drive':
       return `Upload ${String(args.local_path ?? args.path ?? '')} to Google Drive`
     case 'download_from_drive':
