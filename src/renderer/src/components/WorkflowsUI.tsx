@@ -244,7 +244,7 @@ export default function WorkflowsUI({ onClose, onRunWorkflow }: Props): JSX.Elem
                     onClick={() => handleRun(wf)}
                     disabled={busy}
                     title="Run workflow"
-                    style={iconBtn('#a78bfa')}
+                    style={iconBtn('var(--ou-violet)')}
                     aria-label={`Run ${wf.name}`}
                   >
                     ▶
@@ -308,8 +308,8 @@ export default function WorkflowsUI({ onClose, onRunWorkflow }: Props): JSX.Elem
                           <span
                             style={{
                               fontFamily: 'monospace',
-                              color: '#a78bfa',
-                              background: 'rgba(167,139,250,0.1)',
+                              color: 'var(--ou-violet)',
+                              background: 'var(--ou-violet-soft)',
                               padding: '1px 5px',
                               borderRadius: 4
                             }}
@@ -339,9 +339,9 @@ export default function WorkflowsUI({ onClose, onRunWorkflow }: Props): JSX.Elem
               flex: 1,
               padding: '9px 0',
               borderRadius: 8,
-              border: '1px solid rgba(167,139,250,0.35)',
-              background: 'rgba(167,139,250,0.1)',
-              color: '#a78bfa',
+              border: '1px solid var(--ou-violet-border)',
+              background: 'var(--ou-violet-soft)',
+              color: 'var(--ou-violet)',
               fontSize: 13,
               fontWeight: 500,
               cursor: busy ? 'not-allowed' : 'pointer',

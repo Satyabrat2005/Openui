@@ -36,6 +36,47 @@
   --ou-user-bubble: rgba(99, 102, 241, 0.12);
   --ou-ai-bubble: rgba(255, 255, 255, 0.03);
 
+  /* Violet — the secondary "workflows / history" accent. Previously scattered
+     as the raw literal #a78bfa across component inline styles. */
+  --ou-violet: #a78bfa;
+  --ou-violet-soft: rgba(167, 139, 250, 0.15);
+  --ou-violet-border: rgba(167, 139, 250, 0.30);
+
+  /* Semantic status colours — one source of truth for the success green, the
+     danger/live red and the warning amber that were repeated per-component. */
+  --ou-success: #34c759;
+  --ou-success-soft: rgba(52, 199, 89, 0.14);
+  --ou-danger: #ff5a4d;
+  --ou-danger-soft: rgba(255, 90, 77, 0.14);
+  --ou-warn: #f5a623;
+  --ou-live: #ff5a4d;          /* the ActivityPanel "Live" capture indicator */
+
+  /* Radius scale — one ramp instead of ad-hoc 6/8/10/12/16/18/20 px values. */
+  --ou-r-xs: 6px;
+  --ou-r-sm: 8px;
+  --ou-r-md: 12px;
+  --ou-r-lg: 16px;
+  --ou-r-xl: 20px;
+  --ou-r-pill: 999px;
+
+  /* Elevation scale — a small set of shared shadows for cards, popovers, modals. */
+  --ou-shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.28);
+  --ou-shadow-md: 0 8px 24px rgba(0, 0, 0, 0.35);
+  --ou-shadow-lg: 0 18px 50px rgba(0, 0, 0, 0.50);
+  --ou-shadow-pop: 0 16px 44px rgba(0, 0, 0, 0.55);
+  --ou-shadow-modal: 0 24px 70px rgba(0, 0, 0, 0.60);
+
+  /* Overlay tokens — the translucent "glass"/hover fills that used to be raw
+     rgba(255,255,255,α) literals. Theming these (white-on-dark → black-on-light)
+     is what lets the light theme flip without touching every component. */
+  --ou-hover: rgba(255, 255, 255, 0.04);
+  --ou-glass: rgba(255, 255, 255, 0.05);
+  --ou-glass-strong: rgba(255, 255, 255, 0.07);
+  --ou-glass-border: rgba(255, 255, 255, 0.10);
+  --ou-sidebar-bg: rgba(10, 10, 12, 0.98);
+  --ou-scrollbar: rgba(255, 255, 255, 0.15);
+  --ou-scrollbar-hover: rgba(255, 255, 255, 0.25);
+
   /* Signature gradient — indigo → violet → fuchsia. Used on brand orbs,
      the New Chat button, the send button and the hero title. */
   --ou-grad: linear-gradient(135deg, #6366f1 0%, #8b5cf6 50%, #d946ef 100%);
@@ -45,30 +86,87 @@
   --ou-font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', 'Cascadia Code', Menlo, Consolas, monospace;
 }
 
+/* ─────────────────────────────────────────
+   LIGHT THEME — applied when the user picks Light (or System resolves to light),
+   via data-theme="light" on <html> (see lib/theme.ts). Redefines the same token
+   contract with light values; because components consume tokens, they flip here
+   without per-component light styles. Deeper decorative surfaces keep sensible
+   defaults. Dark remains the default (no data-theme / data-theme="dark").
+───────────────────────────────────────── */
+:root[data-theme='light'] {
+  --ou-bg: #f6f7f9;            /* app base — soft off-white */
+  --ou-bg-2: #ffffff;          /* chat area */
+  --ou-surface: #ffffff;       /* sidebar / raised surface */
+  --ou-surface-2: #eceef3;     /* cards / hover */
+  --ou-surface-3: #e0e3ea;     /* stronger hover / pressed */
+  --ou-border: rgba(15, 23, 42, 0.09);
+  --ou-border-strong: rgba(15, 23, 42, 0.15);
+  --ou-text: #16181d;          /* primary text */
+  --ou-text-dim: #515866;      /* secondary text */
+  --ou-text-faint: #858c99;    /* tertiary / labels */
+
+  --ou-accent: #5457ec;        /* indigo, deepened for contrast on white */
+  --ou-accent-strong: #4338ca;
+  --ou-accent-2: #4f46e5;
+  --ou-accent-soft: rgba(99, 102, 241, 0.12);
+  --ou-accent-glow: rgba(99, 102, 241, 0.20);
+  --ou-user-bubble: rgba(99, 102, 241, 0.10);
+  --ou-ai-bubble: rgba(15, 23, 42, 0.035);
+
+  --ou-violet: #7c5cf0;
+  --ou-violet-soft: rgba(139, 92, 246, 0.13);
+  --ou-violet-border: rgba(139, 92, 246, 0.32);
+
+  --ou-success: #1f9d54;       /* darker status colours read on white */
+  --ou-success-soft: rgba(31, 157, 84, 0.14);
+  --ou-danger: #e23b30;
+  --ou-danger-soft: rgba(226, 59, 48, 0.12);
+  --ou-warn: #c9820a;
+  --ou-live: #e23b30;
+
+  --ou-hover: rgba(15, 23, 42, 0.045);
+  --ou-glass: rgba(15, 23, 42, 0.035);
+  --ou-glass-strong: rgba(15, 23, 42, 0.055);
+  --ou-glass-border: rgba(15, 23, 42, 0.10);
+  --ou-sidebar-bg: rgba(255, 255, 255, 0.98);
+  --ou-scrollbar: rgba(15, 23, 42, 0.18);
+  --ou-scrollbar-hover: rgba(15, 23, 42, 0.30);
+
+  --ou-shadow-sm: 0 2px 8px rgba(15, 23, 42, 0.08);
+  --ou-shadow-md: 0 8px 24px rgba(15, 23, 42, 0.10);
+  --ou-shadow-lg: 0 18px 50px rgba(15, 23, 42, 0.15);
+  --ou-shadow-pop: 0 16px 44px rgba(15, 23, 42, 0.17);
+  --ou-shadow-modal: 0 24px 70px rgba(15, 23, 42, 0.22);
+}
+
 /* Accent text selection across the whole app. */
 ::selection {
   background: rgba(99, 102, 241, 0.28);
   color: #fff;
 }
+:root[data-theme='light'] ::selection {
+  background: rgba(99, 102, 241, 0.20);
+  color: inherit;
+}
 
 /* Thin, rounded custom scrollbars everywhere (sidebar, thread, panels). */
 * {
   scrollbar-width: thin;
-  scrollbar-color: rgba(255, 255, 255, 0.15) transparent;
+  scrollbar-color: var(--ou-scrollbar) transparent;
 }
 *::-webkit-scrollbar {
   width: 6px;
   height: 6px;
 }
 *::-webkit-scrollbar-track {
-  background: rgba(255, 255, 255, 0.03);
+  background: transparent;
 }
 *::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.15);
+  background: var(--ou-scrollbar);
   border-radius: 99px;
 }
 *::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.25);
+  background: var(--ou-scrollbar-hover);
 }
 
 /* Honour a user's reduced-motion preference: kill decorative animation. */
@@ -232,8 +330,11 @@ body {
   align-items: center;
   height: 40px;
   flex-shrink: 0;
-  background: var(--ou-bg);
+  /* Subtly raised material with a hairline top highlight, so the chrome reads
+     as a considered surface rather than a flat black strip. */
+  background: linear-gradient(180deg, var(--ou-surface) 0%, var(--ou-bg) 100%);
   border-bottom: 1px solid var(--ou-border);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
   user-select: none;
   -webkit-app-region: drag;
 }
@@ -425,11 +526,14 @@ body {
   transition: background 0.13s ease, border-color 0.13s ease;
 }
 .ou-conv-row:hover {
-  background: rgba(255, 255, 255, 0.04);
+  background: var(--ou-surface-2);
 }
 .ou-conv-row.active {
-  background: var(--ou-accent-soft);
+  background: linear-gradient(90deg, var(--ou-accent-soft), transparent 92%);
   border-left-color: var(--ou-accent);
+}
+.ou-conv-row.active:hover {
+  background: linear-gradient(90deg, var(--ou-accent-soft), transparent 80%);
 }
 .ou-conv-icon {
   color: var(--ou-text-faint);
@@ -443,10 +547,18 @@ body {
   flex: 1;
   min-width: 0;
   font-size: 12.5px;
-  color: var(--ou-text);
+  color: var(--ou-text-dim);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  transition: color 0.13s ease;
+}
+.ou-conv-row:hover .ou-conv-title {
+  color: var(--ou-text);
+}
+.ou-conv-row.active .ou-conv-title {
+  color: var(--ou-text);
+  font-weight: 550;
 }
 .ou-conv-time {
   font-size: 10.5px;
@@ -849,14 +961,14 @@ body {
   align-items: flex-end;
   gap: 8px;
   padding: 10px 12px;
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 20px;
+  background: var(--ou-glass);
+  border: 1px solid var(--ou-glass-border);
+  border-radius: var(--ou-r-xl);
   flex-shrink: 0;
   width: 100%;
   max-width: 768px;
   margin: 12px auto 0;
-  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.35);
+  box-shadow: var(--ou-shadow-md);
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
   transition: border-color 0.18s ease, box-shadow 0.18s ease, background 0.18s ease;
@@ -864,8 +976,8 @@ body {
 
 .input-strip:focus-within {
   border-color: var(--ou-accent);
-  background: rgba(255, 255, 255, 0.06);
-  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.35), 0 0 0 3px var(--ou-accent-glow);
+  background: var(--ou-glass-strong);
+  box-shadow: var(--ou-shadow-md), 0 0 0 3px var(--ou-accent-glow);
 }
 
 /* Compact mic button inside the input strip (shown in chat view) */
@@ -902,9 +1014,9 @@ body {
   gap: 5px;
   height: 30px;
   padding: 0 10px;
-  border-radius: 99px;
+  border-radius: var(--ou-r-pill);
   border: 1px solid var(--ou-border-strong);
-  background: rgba(255, 255, 255, 0.04);
+  background: var(--ou-glass);
   color: var(--ou-text-dim);
   font-size: 12px;
   font-weight: 500;
@@ -942,8 +1054,8 @@ body {
   align-items: center;
   gap: 6px;
   padding: 7px 13px;
-  border-radius: 99px;
-  background: rgba(255, 255, 255, 0.03);
+  border-radius: var(--ou-r-pill);
+  background: var(--ou-glass);
   border: 1px solid var(--ou-border);
   font-size: 12.5px;
   font-weight: 500;
@@ -1727,8 +1839,8 @@ body {
   justify-content: space-between;
   gap: 10px;
   background: linear-gradient(135deg, rgba(102, 126, 234, 0.16) 0%, rgba(124, 58, 237, 0.16) 100%);
-  border: 1px solid rgba(167, 139, 250, 0.3);
-  border-radius: 10px;
+  border: 1px solid var(--ou-violet-border);
+  border-radius: var(--ou-r-md);
   padding: 9px 12px;
   margin-bottom: 14px;
 }
@@ -1813,9 +1925,9 @@ body {
   gap: 12px;
   text-align: left;
   padding: 15px 16px;
-  border-radius: 16px;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  background: rgba(255, 255, 255, 0.03);
+  border-radius: var(--ou-r-lg);
+  border: 1px solid var(--ou-glass-border);
+  background: var(--ou-glass);
   cursor: pointer;
   transition: transform 0.18s ease, border-color 0.18s ease,
     background 0.18s ease, box-shadow 0.18s ease;
@@ -1823,9 +1935,9 @@ body {
 }
 .ou-suggest-card:hover {
   transform: translateY(-2px);
-  background: rgba(255, 255, 255, 0.05);
+  background: var(--ou-glass-strong);
   border-color: var(--ou-accent);
-  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.35), 0 0 0 1px var(--ou-accent-soft);
+  box-shadow: var(--ou-shadow-md), 0 0 0 1px var(--ou-accent-soft);
 }
 .ou-suggest-card:active {
   transform: scale(0.98);
@@ -2586,7 +2698,8 @@ body {
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: #ff5a4d;
+  background: var(--ou-live);
+  box-shadow: 0 0 6px var(--ou-live);
   animation: ou-pulse 1s ease-in-out infinite;
 }
 .ou-activity-app {
@@ -2648,9 +2761,9 @@ body {
 .ou-hist-row {
   display: flex;
   align-items: center;
-  gap: 9px;
-  padding: 7px 8px;
-  border-radius: 9px;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: var(--ou-r-sm);
   transition: background 0.12s;
 }
 .ou-hist-row:hover {
@@ -2662,7 +2775,7 @@ body {
   justify-content: center;
   width: 26px;
   height: 26px;
-  border-radius: 7px;
+  border-radius: var(--ou-r-xs);
   background: var(--ou-surface);
   border: 1px solid var(--ou-border);
   flex-shrink: 0;
@@ -2692,8 +2805,8 @@ body {
   flex-shrink: 0;
   background: var(--ou-text-faint);
 }
-.ou-hist-dot.done { background: #34c759; }
-.ou-hist-dot.failed { background: #ff5a4d; }
+.ou-hist-dot.done { background: var(--ou-success); }
+.ou-hist-dot.failed { background: var(--ou-danger); }
 
 /* ═══════════════════════════════════════════════════════════════════════════
    TASK VIEW — three-zone layout (left rail | center timeline | right previews)
@@ -2952,11 +3065,11 @@ body {
 }
 .ou-preview-card {
   margin: 10px 12px 0;
-  border-radius: 12px;
+  border-radius: var(--ou-r-md);
   overflow: hidden;
   border: 1px solid var(--ou-border);
   background: var(--ou-surface);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  box-shadow: var(--ou-shadow-md);
   flex-shrink: 0;
   animation: openui-rise 0.3s cubic-bezier(0.34, 1.2, 0.64, 1) both;
 }
@@ -2994,13 +3107,19 @@ body {
   display: inline-flex;
   align-items: center;
   gap: 5px;
+  padding: 2px 8px 2px 6px;
+  border-radius: var(--ou-r-pill);
+  background: var(--ou-danger-soft);
   font-size: 9px;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.05em;
-  color: #ff5a4d;
+  color: var(--ou-live);
   flex-shrink: 0;
 }
+/* The preview body is the device "bezel": a matte inset that frames the live
+   capture so its contents read as a mirror of the user's screen, not as
+   OpenUI's own UI. Padding creates the bezel; the shot floats inside it. */
 .ou-preview-body {
   position: relative;
   height: 150px;
@@ -3008,10 +3127,27 @@ body {
   align-items: center;
   justify-content: center;
   overflow: hidden;
-  background: radial-gradient(120% 120% at 50% 0%, rgba(47, 123, 255, 0.14), transparent 60%);
+  padding: 10px;
+  background:
+    radial-gradient(120% 120% at 50% 0%, var(--ou-accent-glow), transparent 60%),
+    var(--ou-bg);
 }
 .ou-preview-card.sub .ou-preview-body { height: 96px; }
-.ou-preview-shot { width: 100%; height: 100%; object-fit: cover; display: block; }
+/* Live screen capture, framed like a small display: rounded, hairline bezel,
+   an inner highlight + shadow for glass depth, and a soft drop shadow so it
+   sits above the bezel rather than being pasted flat into the card. */
+.ou-preview-shot {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  border-radius: var(--ou-r-sm);
+  border: 1px solid var(--ou-border-strong);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.10),
+    inset 0 0 0 1px rgba(0, 0, 0, 0.35),
+    0 6px 18px rgba(0, 0, 0, 0.45);
+}
 .ou-preview-foot { padding: 8px 10px; font-size: 11px; color: var(--ou-text-dim); border-top: 1px solid var(--ou-border); }
 
 /* Per-kind icon tints for the new wrappers (mirrors the existing tint block). */
@@ -3036,4 +3172,371 @@ body {
     margin-left: 0;
     margin-right: 0;
   }
+}
+
+/* ═════════════════════════════════════════════════════════════════════════
+   COMPONENT CLASSES migrated out of per-component inline style objects, so the
+   token system is the single source of truth for colour, radius and elevation.
+   ═════════════════════════════════════════════════════════════════════════ */
+
+/* ── Session sidebar shell (dynamic pinned/slide-in positioning stays inline
+      in AssistantPopup since it depends on live window width) ─────────────── */
+.ou-sidebar {
+  display: flex;
+  flex-direction: column;
+  background: var(--ou-sidebar-bg);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border-right: 1px solid var(--ou-border);
+  transition: transform 0.24s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* ── Header icon buttons (new-chat / history / settings) ────────────────── */
+.ou-header-btn {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: none;
+  border-radius: var(--ou-r-xs);
+  background: transparent;
+  color: var(--ou-text-faint);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.ou-header-btn:hover {
+  background: var(--ou-surface-2);
+  color: var(--ou-text);
+}
+/* Active toggle (history panel open) — the violet secondary accent. */
+.ou-header-btn.active {
+  background: var(--ou-violet-soft);
+  color: var(--ou-violet);
+}
+/* Green "update ready" pip on the settings gear. */
+.ou-header-dot {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--ou-success);
+  border: 1px solid rgba(0, 0, 0, 0.6);
+}
+
+/* ── Workflows floating action button (bottom-left) ─────────────────────── */
+.ou-workflows-fab {
+  position: fixed;
+  bottom: 24px;
+  left: 24px;
+  z-index: 9000;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 11px;
+  background: rgba(18, 18, 22, 0.85);
+  border: 1px solid var(--ou-violet-border);
+  border-radius: var(--ou-r-md);
+  color: var(--ou-violet);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  transition: background 0.15s, border-color 0.15s, transform 0.12s;
+}
+.ou-workflows-fab:hover {
+  background: var(--ou-violet-soft);
+  border-color: var(--ou-violet);
+  transform: translateY(-1px);
+}
+
+/* ── Settings sheet — dark, token-driven (was a light inline-styled modal) ─ */
+.ou-settings-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 9998;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+}
+.ou-settings {
+  width: 90%;
+  max-width: 400px;
+  max-height: 82vh;
+  overflow-y: auto;
+  padding: 22px 24px;
+  background: var(--ou-surface);
+  border: 1px solid var(--ou-border-strong);
+  border-radius: var(--ou-r-lg);
+  box-shadow: var(--ou-shadow-modal);
+  color: var(--ou-text);
+}
+.ou-settings-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 18px;
+}
+.ou-settings-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--ou-text);
+}
+.ou-settings-close {
+  border: none;
+  background: transparent;
+  font-size: 20px;
+  line-height: 1;
+  color: var(--ou-text-faint);
+  cursor: pointer;
+  padding: 2px 4px;
+}
+.ou-settings-close:hover {
+  color: var(--ou-text);
+}
+.ou-settings-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+}
+.ou-settings-section {
+  border-top: 1px solid var(--ou-border);
+  padding-top: 14px;
+  margin-top: 14px;
+}
+.ou-settings-grow {
+  flex: 1;
+  min-width: 0;
+}
+.ou-settings-label {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--ou-text);
+}
+.ou-settings-desc {
+  font-size: 12px;
+  color: var(--ou-text-dim);
+  line-height: 1.5;
+  margin-top: 3px;
+}
+.ou-settings-headrow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.ou-settings-saved {
+  font-size: 11px;
+  color: var(--ou-success);
+  font-weight: 500;
+}
+.ou-settings-status {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--ou-text-faint);
+}
+.ou-settings-status.ok {
+  color: var(--ou-success);
+}
+.ou-settings-status.info {
+  color: var(--ou-accent-2);
+}
+.ou-settings-input {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid var(--ou-border);
+  border-radius: var(--ou-r-sm);
+  padding: 8px 10px;
+  font-size: 12.5px;
+  font-family: inherit;
+  color: var(--ou-text);
+  background: var(--ou-bg);
+  outline: none;
+  transition: border-color 0.15s;
+}
+.ou-settings-input::placeholder {
+  color: var(--ou-text-faint);
+}
+.ou-settings-input:focus {
+  border-color: var(--ou-accent);
+}
+.ou-settings-input + .ou-settings-input {
+  margin-top: 6px;
+}
+/* Segmented control (automation autonomy) */
+.ou-seg {
+  display: flex;
+  gap: 4px;
+  background: var(--ou-bg);
+  border: 1px solid var(--ou-border);
+  border-radius: var(--ou-r-sm);
+  padding: 3px;
+  margin-top: 4px;
+}
+.ou-seg-btn {
+  flex: 1;
+  border: none;
+  border-radius: var(--ou-r-xs);
+  padding: 7px 4px;
+  font-size: 12px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  background: transparent;
+  color: var(--ou-text-dim);
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.ou-seg-btn:hover {
+  color: var(--ou-text);
+}
+.ou-seg-btn.active {
+  background: var(--ou-accent);
+  color: #fff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+}
+.ou-seg-hint {
+  font-size: 11.5px;
+  color: var(--ou-text-dim);
+  line-height: 1.45;
+  margin-top: 8px;
+}
+.ou-settings-btnrow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 8px;
+}
+.ou-settings-btn {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #fff;
+  background: var(--ou-accent);
+  border: none;
+  border-radius: var(--ou-r-sm);
+  padding: 7px 14px;
+  cursor: pointer;
+  transition: filter 0.15s;
+}
+.ou-settings-btn:hover:not(:disabled) {
+  filter: brightness(1.12);
+}
+.ou-settings-btn:disabled {
+  background: var(--ou-surface-3);
+  color: var(--ou-text-faint);
+  cursor: default;
+}
+.ou-settings-msg {
+  font-size: 11px;
+  color: var(--ou-text-dim);
+  line-height: 1.4;
+}
+.ou-settings-link {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--ou-accent-2);
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+}
+.ou-settings-link:disabled {
+  color: var(--ou-text-faint);
+  cursor: default;
+}
+/* iOS-style switch (dark) */
+.ou-switch {
+  flex-shrink: 0;
+  width: 44px;
+  height: 26px;
+  border-radius: var(--ou-r-pill);
+  border: none;
+  padding: 0;
+  position: relative;
+  cursor: pointer;
+  background: var(--ou-surface-3);
+  transition: background 0.18s ease;
+  margin-top: 2px;
+}
+.ou-switch.on {
+  background: var(--ou-success);
+}
+.ou-switch:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.ou-switch-thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+  transition: left 0.18s ease;
+}
+.ou-switch.on .ou-switch-thumb {
+  left: 20px;
+}
+
+/* ── "Was this helpful?" rating row under a completed reply ──────────────── */
+.ou-feedback {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+.ou-feedback.thanks {
+  font-size: 11px;
+  color: var(--ou-text-dim);
+}
+.ou-feedback-label {
+  font-size: 11px;
+  color: var(--ou-text-dim);
+}
+.ou-feedback-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 24px;
+  border: none;
+  border-radius: 14px;
+  background: var(--ou-glass-strong);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+.ou-feedback-btn:hover {
+  background: var(--ou-surface-2);
+}
+
+/* ── Light-theme touch-ups for a couple of surfaces whose text was tuned for a
+      dark background and would otherwise sit low-contrast on light. ────────── */
+:root[data-theme='light'] .signin-banner-text {
+  color: #5b21b6;
+}
+:root[data-theme='light'] .signin-banner {
+  background: linear-gradient(135deg, rgba(102, 126, 234, 0.14) 0%, rgba(124, 58, 237, 0.12) 100%);
+}
+/* The history-loading shimmer is tuned as white-on-dark; invert it on light so
+   the skeleton rows stay visible during the brief load. */
+:root[data-theme='light'] .ou-conv-skeleton {
+  background: linear-gradient(
+    90deg,
+    rgba(15, 23, 42, 0.05) 25%,
+    rgba(15, 23, 42, 0.10) 50%,
+    rgba(15, 23, 42, 0.05) 75%
+  );
+  background-size: 200% 100%;
 }

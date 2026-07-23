@@ -218,12 +218,19 @@ export default function AssistantPopup({
       setCaption('')
     })
 
+    // A fresh session just created its conversation row in main — adopt its id
+    // so the history list highlights this chat as the active one.
+    const offConvCreated = window.openui.onConversationCreated((conv) => {
+      setActiveConvId(conv.id)
+    })
+
     return () => {
       offChunk()
       offDone()
       offError()
       offWarning()
       offTranscript()
+      offConvCreated()
     }
   }, [setCaption, captionLockedRef, appendToLastAssistant, beginTurn, beginTask])
 
@@ -548,11 +555,13 @@ export default function AssistantPopup({
   return (
     <div id="openui-popup">
       <div className="ou-workspace">
-      {/* Session sidebar — pinned open on wide windows, slide-in on narrow ones */}
+      {/* Session sidebar — pinned open on wide windows, slide-in on narrow ones.
+          Static material lives in the .ou-sidebar class; only the dynamic
+          pinned/slide-in geometry (driven by live window width) stays inline. */}
       <div
         className="ou-sidebar"
-        style={{
-          ...(sidebarPinned
+        style={
+          sidebarPinned
             ? { position: 'relative', width: 260, flexShrink: 0, transform: 'none' }
             : {
                 position: 'absolute',
@@ -562,43 +571,11 @@ export default function AssistantPopup({
                 width: 280,
                 zIndex: 100,
                 transform: showHistory ? 'translateX(0)' : 'translateX(-100%)',
-              }),
-          transition: 'transform 0.24s cubic-bezier(0.4,0,0.2,1)',
-          background: 'rgba(10,10,12,0.98)',
-          backdropFilter: 'blur(20px)',
-          WebkitBackdropFilter: 'blur(20px)',
-          borderRight: '1px solid rgba(255,255,255,0.08)',
-          display: 'flex',
-          flexDirection: 'column',
-        }}
+              }
+        }
       >
         {/* New Chat button */}
-        <button
-          type="button"
-          onClick={handleNewChat}
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: 7,
-            margin: '12px 10px 4px',
-            padding: '7px 12px',
-            background: 'rgba(255,255,255,0.07)',
-            border: '1px solid rgba(255,255,255,0.1)',
-            borderRadius: 8,
-            cursor: 'pointer',
-            color: '#e5e5e7',
-            fontSize: 12,
-            fontFamily: '-apple-system, sans-serif',
-            fontWeight: 500,
-            transition: 'background 0.12s',
-          }}
-          onMouseEnter={(e) => {
-            ;(e.currentTarget as HTMLButtonElement).style.background = 'rgba(255,255,255,0.12)'
-          }}
-          onMouseLeave={(e) => {
-            ;(e.currentTarget as HTMLButtonElement).style.background = 'rgba(255,255,255,0.07)'
-          }}
-        >
+        <button type="button" className="ou-newchat" onClick={handleNewChat}>
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none">
             <path d="M12 5v14M5 12h14" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
           </svg>
@@ -606,19 +583,7 @@ export default function AssistantPopup({
         </button>
 
         {/* Section label */}
-        <div
-          style={{
-            padding: '10px 14px 4px',
-            fontSize: 10,
-            fontWeight: 600,
-            color: '#636366',
-            fontFamily: '-apple-system, sans-serif',
-            textTransform: 'uppercase',
-            letterSpacing: '0.06em',
-          }}
-        >
-          Recent
-        </div>
+        <div className="ou-side-label">Recent</div>
 
         {/* Conversation list */}
         <ConversationList onSelect={handleConvSelect} selectedId={activeConvId ?? undefined} />
@@ -649,29 +614,8 @@ export default function AssistantPopup({
             type="button"
             aria-label="New chat"
             title="New chat"
+            className="ou-header-btn"
             onClick={handleNewChat}
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              width: 26,
-              height: 26,
-              borderRadius: 7,
-              border: 'none',
-              background: 'transparent',
-              cursor: 'pointer',
-              color: '#8e8e93',
-              padding: 0,
-              transition: 'background 0.15s, color 0.15s',
-            }}
-            onMouseEnter={(e) => {
-              e.currentTarget.style.background = 'var(--ou-surface-2)'
-              e.currentTarget.style.color = 'var(--ou-text)'
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.background = 'transparent'
-              e.currentTarget.style.color = '#8e8e93'
-            }}
           >
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
               <path
@@ -688,21 +632,8 @@ export default function AssistantPopup({
             type="button"
             aria-label="History"
             title="Conversation history"
+            className={`ou-header-btn${showHistory ? ' active' : ''}`}
             onClick={() => setShowHistory((v) => !v)}
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              width: 26,
-              height: 26,
-              borderRadius: 7,
-              border: 'none',
-              background: showHistory ? 'rgba(167,139,250,0.15)' : 'transparent',
-              cursor: 'pointer',
-              color: showHistory ? '#a78bfa' : '#8e8e93',
-              padding: 0,
-              transition: 'background 0.15s, color 0.15s',
-            }}
           >
             {/* Clock / history icon */}
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none">
@@ -715,21 +646,8 @@ export default function AssistantPopup({
             type="button"
             aria-label="Settings"
             title="Settings"
+            className="ou-header-btn"
             onClick={() => setShowSettings(true)}
-            style={{
-              position: 'relative',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              width: 26,
-              height: 26,
-              borderRadius: 7,
-              border: 'none',
-              background: 'transparent',
-              cursor: 'pointer',
-              color: '#8e8e93',
-              padding: 0
-            }}
           >
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
               <circle cx="12" cy="12" r="3" stroke="currentColor" strokeWidth="1.6" />
@@ -742,20 +660,7 @@ export default function AssistantPopup({
               />
             </svg>
             {/* Green dot when a downloaded update is waiting to be installed */}
-            {updateState.status === 'downloaded' && (
-              <span
-                style={{
-                  position: 'absolute',
-                  top: 2,
-                  right: 2,
-                  width: 5,
-                  height: 5,
-                  borderRadius: '50%',
-                  background: '#34c759',
-                  border: '1px solid rgba(0,0,0,0.6)',
-                }}
-              />
-            )}
+            {updateState.status === 'downloaded' && <span className="ou-header-dot" />}
           </button>
           <AuthButton />
         </div>
@@ -990,40 +895,12 @@ function FeedbackButtons({
   onRate: (kind: 'up' | 'down') => void
 }): JSX.Element {
   if (given) {
-    return (
-      <div
-        style={{
-          textAlign: 'center',
-          marginTop: 8,
-          fontSize: 11,
-          color: 'rgba(255,255,255,0.55)',
-          fontFamily: '-apple-system, BlinkMacSystemFont, sans-serif'
-        }}
-      >
-        Thanks — OpenUI learns from your feedback.
-      </div>
-    )
+    return <div className="ou-feedback thanks">Thanks — OpenUI learns from your feedback.</div>
   }
 
   return (
-    <div
-      style={{
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        gap: 8,
-        marginTop: 8
-      }}
-    >
-      <span
-        style={{
-          fontSize: 11,
-          color: 'rgba(255,255,255,0.5)',
-          fontFamily: '-apple-system, BlinkMacSystemFont, sans-serif'
-        }}
-      >
-        Was this helpful?
-      </span>
+    <div className="ou-feedback">
+      <span className="ou-feedback-label">Was this helpful?</span>
       <RatingButton label="Good response" emoji="👍" onClick={() => onRate('up')} />
       <RatingButton label="Not right" emoji="👎" onClick={() => onRate('down')} />
     </div>
@@ -1040,28 +917,7 @@ function RatingButton({
   onClick: () => void
 }): JSX.Element {
   return (
-    <button
-      type="button"
-      aria-label={label}
-      title={label}
-      onClick={onClick}
-      style={{
-        border: 'none',
-        background: 'rgba(255,255,255,0.10)',
-        borderRadius: 14,
-        width: 28,
-        height: 24,
-        fontSize: 13,
-        lineHeight: 1,
-        cursor: 'pointer',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        transition: 'background 0.15s ease'
-      }}
-      onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(255,255,255,0.22)')}
-      onMouseLeave={(e) => (e.currentTarget.style.background = 'rgba(255,255,255,0.10)')}
-    >
+    <button type="button" aria-label={label} title={label} className="ou-feedback-btn" onClick={onClick}>
       {emoji}
     </button>
   )

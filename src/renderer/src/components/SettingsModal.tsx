@@ -1,6 +1,13 @@
 import { useEffect, useState } from 'react'
 import type { AutonomyLevel, ConsentStatus, WhatsAppAutoReplyConfig } from '../env'
 import type { UpdateStatus } from '../hooks/useUpdater'
+import { applyTheme, coerceThemePref, type ThemePref } from '../lib/theme'
+
+const THEME_OPTIONS: { value: ThemePref; label: string }[] = [
+  { value: 'system', label: 'System' },
+  { value: 'light', label: 'Light' },
+  { value: 'dark', label: 'Dark' }
+]
 
 const AUTONOMY_OPTIONS: { value: AutonomyLevel; label: string; hint: string }[] = [
   { value: 'ask-each', label: 'Ask each', hint: 'Confirm every action before it runs.' },
@@ -48,6 +55,8 @@ interface Props {
 export default function SettingsModal({ onClose, appVersion, updateStatus, onCheckForUpdates }: Props): JSX.Element {
   const [enabled, setEnabled] = useState(false)
   const [busy, setBusy] = useState(false)
+  // Appearance: light / dark / follow-OS. Default matches the app default (dark).
+  const [theme, setTheme] = useState<ThemePref>('dark')
   // AI Improvement (local self-improvement loop). Default ON: absent setting → on.
   const [aiImprovement, setAiImprovement] = useState(true)
   // Automation autonomy. Default matches the main-process default (approve-plan).
@@ -112,6 +121,13 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
       .getConsentStatus()
       .then((status) => {
         if (!cancelled) setEnabled(status === 'granted')
+      })
+      .catch(() => {})
+
+    window.openui
+      .getSetting('theme')
+      .then((value) => {
+        if (!cancelled) setTheme(coerceThemePref(value))
       })
       .catch(() => {})
 
@@ -235,6 +251,16 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
     const prev = autonomy
     setAutonomy(value) // optimistic; reverted on failure
     void window.openui.setSetting('autonomy_level', value).catch(() => setAutonomy(prev))
+  }
+
+  const chooseTheme = (value: ThemePref): void => {
+    const prev = theme
+    setTheme(value)
+    applyTheme(value) // apply live so the change is visible immediately
+    void window.openui.setSetting('theme', value).catch(() => {
+      setTheme(prev)
+      applyTheme(prev)
+    })
   }
 
   const toggleAiImprovement = (): void => {
@@ -450,70 +476,53 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
       role="dialog"
       aria-modal="true"
       aria-label="Settings"
-      style={{
-        position: 'fixed',
-        inset: 0,
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        zIndex: 9998,
-        background: 'rgba(0, 0, 0, 0.35)'
-      }}
+      className="ou-settings-scrim"
       onMouseDown={(e) => {
         // Click outside the card dismisses; clicks inside are stopped below.
         e.stopPropagation()
         onClose()
       }}
     >
-      <div
-        onMouseDown={(e) => e.stopPropagation()}
-        style={{
-          background: 'rgba(255, 255, 255, 0.98)',
-          backdropFilter: 'blur(20px)',
-          borderRadius: 14,
-          padding: '22px 24px',
-          maxWidth: 380,
-          width: '90%',
-          maxHeight: '80vh',
-          overflowY: 'auto',
-          boxShadow: '0 12px 40px rgba(0, 0, 0, 0.22), 0 0 0 0.5px rgba(0,0,0,0.08)',
-          fontFamily: '-apple-system, BlinkMacSystemFont, sans-serif'
-        }}
-      >
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            marginBottom: 18
-          }}
-        >
-          <h3 style={{ margin: 0, fontSize: 15, fontWeight: 600, color: '#1c1c1e' }}>Settings</h3>
+      <div className="ou-settings" onMouseDown={(e) => e.stopPropagation()}>
+        <div className="ou-settings-head">
+          <h3 className="ou-settings-title">Settings</h3>
           <button
             type="button"
             aria-label="Close settings"
+            className="ou-settings-close"
             onClick={onClose}
-            style={{
-              border: 'none',
-              background: 'transparent',
-              fontSize: 18,
-              lineHeight: 1,
-              color: '#8e8e93',
-              cursor: 'pointer',
-              padding: 2
-            }}
           >
             ×
           </button>
         </div>
 
+        {/* Appearance: light / dark / follow-OS */}
+        <div>
+          <div className="ou-settings-label">Appearance</div>
+          <div className="ou-settings-desc" style={{ marginBottom: 10 }}>
+            Choose a light or dark look, or follow your system setting.
+          </div>
+          <div className="ou-seg" role="radiogroup" aria-label="Appearance">
+            {THEME_OPTIONS.map((opt) => (
+              <button
+                key={opt.value}
+                type="button"
+                role="radio"
+                aria-checked={theme === opt.value}
+                onClick={() => chooseTheme(opt.value)}
+                className={`ou-seg-btn${theme === opt.value ? ' active' : ''}`}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
         {/* Privacy: anonymous usage analytics */}
-        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 14 }}>
-          <div style={{ flex: 1 }}>
-            <div style={{ fontSize: 13.5, fontWeight: 600, color: '#1c1c1e' }}>
-              Anonymous Usage Analytics
-            </div>
-            <div style={{ fontSize: 12, color: '#8e8e93', lineHeight: 1.5, marginTop: 3 }}>
+        <div className="ou-settings-row ou-settings-section">
+          <div className="ou-settings-grow">
+            <div className="ou-settings-label">Anonymous Usage Analytics</div>
+            <div className="ou-settings-desc">
               Help us improve OpenUI by sharing anonymous usage data. No personal data is ever
               collected.
             </div>
@@ -527,19 +536,10 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
         </div>
 
         {/* AI Improvement: local self-improvement loop */}
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'flex-start',
-            gap: 14,
-            borderTop: '1px solid rgba(0,0,0,0.06)',
-            paddingTop: 14,
-            marginTop: 14
-          }}
-        >
-          <div style={{ flex: 1 }}>
-            <div style={{ fontSize: 13.5, fontWeight: 600, color: '#1c1c1e' }}>AI Improvement</div>
-            <div style={{ fontSize: 12, color: '#8e8e93', lineHeight: 1.5, marginTop: 3 }}>
+        <div className="ou-settings-row ou-settings-section">
+          <div className="ou-settings-grow">
+            <div className="ou-settings-label">AI Improvement</div>
+            <div className="ou-settings-desc">
               OpenUI learns from your usage patterns to improve its responses over time. No data
               leaves your machine — improvement happens locally.
             </div>
@@ -553,68 +553,42 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
         </div>
 
         {/* Automation: how autonomous the agent is when carrying out tasks */}
-        <div
-          style={{
-            borderTop: '1px solid rgba(0,0,0,0.06)',
-            paddingTop: 14,
-            marginTop: 14
-          }}
-        >
-          <div style={{ fontSize: 13.5, fontWeight: 600, color: '#1c1c1e' }}>Automation</div>
-          <div style={{ fontSize: 12, color: '#8e8e93', lineHeight: 1.5, marginTop: 3, marginBottom: 10 }}>
+        <div className="ou-settings-section">
+          <div className="ou-settings-label">Automation</div>
+          <div className="ou-settings-desc" style={{ marginBottom: 10 }}>
             How much OpenUI does on its own when running a multi-step task.
           </div>
-          <div style={{ display: 'flex', gap: 6, background: '#f2f2f7', borderRadius: 9, padding: 3 }}>
+          <div className="ou-seg">
             {AUTONOMY_OPTIONS.map((opt) => (
               <button
                 key={opt.value}
                 type="button"
                 onClick={() => chooseAutonomy(opt.value)}
-                style={{
-                  flex: 1,
-                  border: 'none',
-                  borderRadius: 7,
-                  padding: '7px 4px',
-                  fontSize: 12,
-                  fontWeight: 600,
-                  fontFamily: 'inherit',
-                  cursor: 'pointer',
-                  background: autonomy === opt.value ? '#ffffff' : 'transparent',
-                  color: autonomy === opt.value ? '#0a84ff' : '#636366',
-                  boxShadow: autonomy === opt.value ? '0 1px 3px rgba(0,0,0,0.12)' : 'none',
-                  transition: 'background 0.15s ease, color 0.15s ease'
-                }}
+                className={`ou-seg-btn${autonomy === opt.value ? ' active' : ''}`}
               >
                 {opt.label}
               </button>
             ))}
           </div>
-          <div style={{ fontSize: 11.5, color: '#8e8e93', lineHeight: 1.45, marginTop: 8 }}>
+          <div className="ou-seg-hint">
             {AUTONOMY_OPTIONS.find((o) => o.value === autonomy)?.hint}
           </div>
         </div>
 
         {/* Integrations: Figma personal access token */}
-        <div
-          style={{
-            borderTop: '1px solid rgba(0,0,0,0.06)',
-            paddingTop: 14,
-            marginTop: 14
-          }}
-        >
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-            <div style={{ fontSize: 13.5, fontWeight: 600, color: '#1c1c1e' }}>Figma</div>
-            {figmaSaved && (
-              <span style={{ fontSize: 11, color: '#34c759', fontWeight: 500 }}>Saved</span>
-            )}
+        <div className="ou-settings-section">
+          <div className="ou-settings-headrow">
+            <div className="ou-settings-label">Figma</div>
+            {figmaSaved && <span className="ou-settings-saved">Saved</span>}
           </div>
-          <div style={{ fontSize: 12, color: '#8e8e93', lineHeight: 1.5, marginTop: 3, marginBottom: 8 }}>
+          <div className="ou-settings-desc" style={{ marginBottom: 8 }}>
             Paste a personal access token to let OpenUI review your Figma designs, export their
             design tokens, and build frames as code. Create one at figma.com → Settings → Security →
             Personal access tokens. Read-only access is enough. Stored locally on this device.
           </div>
           <input
             type="password"
+            className="ou-settings-input"
             value={figmaToken}
             onChange={(e) => setFigmaToken(e.target.value)}
             onBlur={saveFigmaToken}
@@ -622,55 +596,24 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
             aria-label="Figma personal access token"
             autoComplete="off"
             spellCheck={false}
-            style={{
-              width: '100%',
-              boxSizing: 'border-box',
-              border: '1px solid rgba(0,0,0,0.12)',
-              borderRadius: 8,
-              padding: '8px 10px',
-              fontSize: 12.5,
-              fontFamily: 'inherit',
-              color: '#1c1c1e',
-              background: '#fff',
-              outline: 'none'
-            }}
           />
         </div>
 
         {/* Screen OCR language (free-tier local OCR) */}
-        <div
-          style={{
-            borderTop: '1px solid rgba(0,0,0,0.06)',
-            paddingTop: 14,
-            marginTop: 14
-          }}
-        >
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-            <div style={{ fontSize: 13.5, fontWeight: 600, color: '#1c1c1e' }}>Screen OCR language</div>
-            {ocrLangSaved && (
-              <span style={{ fontSize: 11, color: '#34c759', fontWeight: 500 }}>Saved</span>
-            )}
+        <div className="ou-settings-section">
+          <div className="ou-settings-headrow">
+            <div className="ou-settings-label">Screen OCR language</div>
+            {ocrLangSaved && <span className="ou-settings-saved">Saved</span>}
           </div>
-          <div style={{ fontSize: 12, color: '#8e8e93', lineHeight: 1.5, marginTop: 3, marginBottom: 8 }}>
+          <div className="ou-settings-desc" style={{ marginBottom: 8 }}>
             Language used to read your screen with local OCR (free tier). Pick the language your
             apps are in so non-English text is read correctly; “Auto” follows your system language.
           </div>
           <select
+            className="ou-settings-input"
             value={ocrLanguage}
             onChange={(e) => chooseOcrLanguage(e.target.value)}
             aria-label="Screen OCR language"
-            style={{
-              width: '100%',
-              boxSizing: 'border-box',
-              border: '1px solid rgba(0,0,0,0.12)',
-              borderRadius: 8,
-              padding: '8px 10px',
-              fontSize: 12.5,
-              fontFamily: 'inherit',
-              color: '#1c1c1e',
-              background: '#fff',
-              outline: 'none'
-            }}
           >
             {OCR_LANGUAGE_OPTIONS.map((o) => (
               <option key={o.value} value={o.value}>
@@ -684,17 +627,17 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
             watcher only drafts suggestions for these contacts; sending is always
             a human click. Default-off; empty allowlist = nothing runs. */}
         {waConfig && (
-          <div style={{ borderTop: '1px solid rgba(0,0,0,0.06)', paddingTop: 14, marginTop: 14 }}>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-              <div style={{ fontSize: 13.5, fontWeight: 600, color: '#1c1c1e' }}>WhatsApp auto-reply</div>
+          <div className="ou-settings-section">
+            <div className="ou-settings-headrow">
+              <div className="ou-settings-label">WhatsApp auto-reply</div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                {waSaved && <span style={{ fontSize: 11, color: '#34c759', fontWeight: 500 }}>Saved</span>}
+                {waSaved && <span className="ou-settings-saved">Saved</span>}
                 <span
                   style={{
                     fontSize: 11,
                     fontWeight: 600,
-                    color: waConfig.enabled ? '#34c759' : '#8e8e93',
-                    background: waConfig.enabled ? 'rgba(52,199,89,0.12)' : 'rgba(142,142,147,0.12)',
+                    color: waConfig.enabled ? 'var(--ou-success)' : 'var(--ou-text-faint)',
+                    background: waConfig.enabled ? 'var(--ou-success-soft)' : 'var(--ou-surface-2)',
                     borderRadius: 999,
                     padding: '2px 8px'
                   }}
@@ -703,15 +646,15 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
                 </span>
               </div>
             </div>
-            <div style={{ fontSize: 12, color: '#8e8e93', lineHeight: 1.5, marginTop: 3, marginBottom: 10 }}>
+            <div className="ou-settings-desc" style={{ marginBottom: 10 }}>
               When on, OpenUI watches for new WhatsApp messages from the contacts you list below and{' '}
-              <strong style={{ color: '#1c1c1e' }}>drafts a suggested reply</strong> for each. It never sends on its
+              <strong style={{ color: 'var(--ou-text)' }}>drafts a suggested reply</strong> for each. It never sends on its
               own — you review every draft and click to send. Nothing runs for anyone not on this list.
             </div>
 
             <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', marginBottom: 12 }}>
               <input type="checkbox" checked={waConfig.enabled} onChange={toggleWaEnabled} />
-              <span style={{ fontSize: 12.5, color: '#1c1c1e' }}>
+              <span style={{ fontSize: 12.5, color: 'var(--ou-text)' }}>
                 Enable the background watcher {waConfig.allowlist.length === 0 && '(add a contact below first)'}
               </span>
             </label>
@@ -727,16 +670,16 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
                       alignItems: 'flex-start',
                       justifyContent: 'space-between',
                       gap: 8,
-                      border: '1px solid rgba(0,0,0,0.08)',
+                      border: '1px solid var(--ou-border)',
                       borderRadius: 8,
                       padding: '7px 10px',
                       marginBottom: 6
                     }}
                   >
                     <div style={{ minWidth: 0 }}>
-                      <div style={{ fontSize: 12.5, fontWeight: 600, color: '#1c1c1e' }}>{entry.name}</div>
+                      <div style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--ou-text)' }}>{entry.name}</div>
                       {entry.instruction && (
-                        <div style={{ fontSize: 11.5, color: '#8e8e93', lineHeight: 1.4, marginTop: 2 }}>
+                        <div style={{ fontSize: 11.5, color: 'var(--ou-text-dim)', lineHeight: 1.4, marginTop: 2 }}>
                           {entry.instruction}
                         </div>
                       )}
@@ -747,7 +690,7 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
                       style={{
                         border: 'none',
                         background: 'transparent',
-                        color: '#ff3b30',
+                        color: 'var(--ou-danger)',
                         fontSize: 12,
                         fontWeight: 600,
                         cursor: 'pointer',
@@ -765,56 +708,34 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
               <input
                 type="text"
+                className="ou-settings-input"
                 value={waNewName}
                 onChange={(e) => setWaNewName(e.target.value)}
                 placeholder="Contact or group name (exactly as in WhatsApp)"
                 aria-label="Contact or group name to allow auto-reply drafts for"
                 spellCheck={false}
-                style={{
-                  width: '100%',
-                  boxSizing: 'border-box',
-                  border: '1px solid rgba(0,0,0,0.12)',
-                  borderRadius: 8,
-                  padding: '8px 10px',
-                  fontSize: 12.5,
-                  fontFamily: 'inherit',
-                  color: '#1c1c1e',
-                  background: '#fff',
-                  outline: 'none'
-                }}
               />
               <input
                 type="text"
+                className="ou-settings-input"
                 value={waNewInstruction}
                 onChange={(e) => setWaNewInstruction(e.target.value)}
                 placeholder="Optional instruction, e.g. “reply as if I'm busy, keep it short”"
                 aria-label="Optional per-contact reply instruction"
                 spellCheck={false}
-                style={{
-                  width: '100%',
-                  boxSizing: 'border-box',
-                  border: '1px solid rgba(0,0,0,0.12)',
-                  borderRadius: 8,
-                  padding: '8px 10px',
-                  fontSize: 12.5,
-                  fontFamily: 'inherit',
-                  color: '#1c1c1e',
-                  background: '#fff',
-                  outline: 'none'
-                }}
               />
               <button
                 onClick={addWaContact}
                 disabled={!waNewName.trim()}
                 style={{
                   alignSelf: 'flex-start',
-                  border: '1px solid rgba(0,0,0,0.12)',
+                  border: '1px solid var(--ou-border)',
                   borderRadius: 8,
                   padding: '7px 14px',
                   fontSize: 12.5,
                   fontWeight: 600,
-                  color: waNewName.trim() ? '#1c1c1e' : '#c7c7cc',
-                  background: '#fff',
+                  color: waNewName.trim() ? 'var(--ou-text)' : 'var(--ou-text-faint)',
+                  background: 'var(--ou-surface-2)',
                   cursor: waNewName.trim() ? 'pointer' : 'default'
                 }}
               >
@@ -827,17 +748,11 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
         {/* Cloud AI: bring-your-own-key frontier model (opt-in). Hidden for the
             Ollama-only launch; see CLOUD_TIER_ENABLED above. */}
         {CLOUD_TIER_ENABLED && (
-        <div
-          style={{
-            borderTop: '1px solid rgba(0,0,0,0.06)',
-            paddingTop: 14,
-            marginTop: 14
-          }}
-        >
-          <div style={{ display: 'flex', alignItems: 'flex-start', gap: 14 }}>
-            <div style={{ flex: 1 }}>
-              <div style={{ fontSize: 13.5, fontWeight: 600, color: '#1c1c1e' }}>Cloud AI</div>
-              <div style={{ fontSize: 12, color: '#8e8e93', lineHeight: 1.5, marginTop: 3 }}>
+        <div className="ou-settings-section">
+          <div className="ou-settings-row">
+            <div className="ou-settings-grow">
+              <div className="ou-settings-label">Cloud AI</div>
+              <div className="ou-settings-desc">
                 By default OpenUI runs entirely on your local model — nothing leaves this machine.
                 Turn this on to route turns to a frontier Claude model instead, using your own
                 Anthropic key. Local stays the fallback if the cloud call fails.
@@ -850,18 +765,17 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
               onClick={toggleCloudRouting}
             />
           </div>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 12 }}>
-            <div style={{ fontSize: 12.5, fontWeight: 500, color: '#1c1c1e' }}>Anthropic API key</div>
-            {anthropicSaved && (
-              <span style={{ fontSize: 11, color: '#34c759', fontWeight: 500 }}>Saved</span>
-            )}
+          <div className="ou-settings-headrow" style={{ marginTop: 12 }}>
+            <div className="ou-settings-label">Anthropic API key</div>
+            {anthropicSaved && <span className="ou-settings-saved">Saved</span>}
           </div>
-          <div style={{ fontSize: 12, color: '#8e8e93', lineHeight: 1.5, marginTop: 3, marginBottom: 8 }}>
+          <div className="ou-settings-desc" style={{ marginBottom: 8 }}>
             Get one at console.anthropic.com → API keys. Stored locally on this device; the toggle
             above stays off until a key is saved.
           </div>
           <input
             type="password"
+            className="ou-settings-input"
             value={anthropicKey}
             onChange={(e) => setAnthropicKey(e.target.value)}
             onBlur={saveAnthropicKey}
@@ -869,43 +783,24 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
             aria-label="Anthropic API key"
             autoComplete="off"
             spellCheck={false}
-            style={{
-              width: '100%',
-              boxSizing: 'border-box',
-              border: '1px solid rgba(0,0,0,0.12)',
-              borderRadius: 8,
-              padding: '8px 10px',
-              fontSize: 12.5,
-              fontFamily: 'inherit',
-              color: '#1c1c1e',
-              background: '#fff',
-              outline: 'none'
-            }}
           />
         </div>
         )}
 
         {/* Integrations: GitHub personal access token */}
-        <div
-          style={{
-            borderTop: '1px solid rgba(0,0,0,0.06)',
-            paddingTop: 14,
-            marginTop: 14
-          }}
-        >
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-            <div style={{ fontSize: 13.5, fontWeight: 600, color: '#1c1c1e' }}>GitHub</div>
-            {githubSaved && (
-              <span style={{ fontSize: 11, color: '#34c759', fontWeight: 500 }}>Saved</span>
-            )}
+        <div className="ou-settings-section">
+          <div className="ou-settings-headrow">
+            <div className="ou-settings-label">GitHub</div>
+            {githubSaved && <span className="ou-settings-saved">Saved</span>}
           </div>
-          <div style={{ fontSize: 12, color: '#8e8e93', lineHeight: 1.5, marginTop: 3, marginBottom: 8 }}>
+          <div className="ou-settings-desc" style={{ marginBottom: 8 }}>
             Paste a personal access token with &quot;repo&quot; scope to let OpenUI create repos,
             push code, and open pull requests for you. Create one at github.com → Settings →
             Developer settings → Personal access tokens. Stored locally on this device.
           </div>
           <input
             type="password"
+            className="ou-settings-input"
             value={githubToken}
             onChange={(e) => setGithubToken(e.target.value)}
             onBlur={saveGithubToken}
@@ -913,42 +808,23 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
             aria-label="GitHub personal access token"
             autoComplete="off"
             spellCheck={false}
-            style={{
-              width: '100%',
-              boxSizing: 'border-box',
-              border: '1px solid rgba(0,0,0,0.12)',
-              borderRadius: 8,
-              padding: '8px 10px',
-              fontSize: 12.5,
-              fontFamily: 'inherit',
-              color: '#1c1c1e',
-              background: '#fff',
-              outline: 'none'
-            }}
           />
         </div>
 
         {/* Integrations: Telegram bot token (created via @BotFather) */}
-        <div
-          style={{
-            borderTop: '1px solid rgba(0,0,0,0.06)',
-            paddingTop: 14,
-            marginTop: 14
-          }}
-        >
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-            <div style={{ fontSize: 13.5, fontWeight: 600, color: '#1c1c1e' }}>Telegram</div>
-            {telegramSaved && (
-              <span style={{ fontSize: 11, color: '#34c759', fontWeight: 500 }}>Saved</span>
-            )}
+        <div className="ou-settings-section">
+          <div className="ou-settings-headrow">
+            <div className="ou-settings-label">Telegram</div>
+            {telegramSaved && <span className="ou-settings-saved">Saved</span>}
           </div>
-          <div style={{ fontSize: 12, color: '#8e8e93', lineHeight: 1.5, marginTop: 3, marginBottom: 8 }}>
+          <div className="ou-settings-desc" style={{ marginBottom: 8 }}>
             Paste a bot token to let OpenUI send and read Telegram messages through your own bot.
             Create one by messaging @BotFather → /newbot. Note: a bot can only message people who have
             started a chat with it first. Stored locally on this device.
           </div>
           <input
             type="password"
+            className="ou-settings-input"
             value={telegramToken}
             onChange={(e) => setTelegramToken(e.target.value)}
             onBlur={saveTelegramToken}
@@ -956,36 +832,16 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
             aria-label="Telegram bot token"
             autoComplete="off"
             spellCheck={false}
-            style={{
-              width: '100%',
-              boxSizing: 'border-box',
-              border: '1px solid rgba(0,0,0,0.12)',
-              borderRadius: 8,
-              padding: '8px 10px',
-              fontSize: 12.5,
-              fontFamily: 'inherit',
-              color: '#1c1c1e',
-              background: '#fff',
-              outline: 'none'
-            }}
           />
         </div>
 
         {/* Integrations: Slack bot/user token */}
-        <div
-          style={{
-            borderTop: '1px solid rgba(0,0,0,0.06)',
-            paddingTop: 14,
-            marginTop: 14
-          }}
-        >
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-            <div style={{ fontSize: 13.5, fontWeight: 600, color: '#1c1c1e' }}>Slack</div>
-            {slackSaved && (
-              <span style={{ fontSize: 11, color: '#34c759', fontWeight: 500 }}>Saved</span>
-            )}
+        <div className="ou-settings-section">
+          <div className="ou-settings-headrow">
+            <div className="ou-settings-label">Slack</div>
+            {slackSaved && <span className="ou-settings-saved">Saved</span>}
           </div>
-          <div style={{ fontSize: 12, color: '#8e8e93', lineHeight: 1.5, marginTop: 3, marginBottom: 8 }}>
+          <div className="ou-settings-desc" style={{ marginBottom: 8 }}>
             Paste a Slack token to let OpenUI send, read, and search Slack messages. A bot token
             (xoxb-) with chat:write, channels:read and channels:history covers most tasks; search
             needs a user token (xoxp-) with search:read. Create one at api.slack.com/apps. Stored
@@ -993,6 +849,7 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
           </div>
           <input
             type="password"
+            className="ou-settings-input"
             value={slackToken}
             onChange={(e) => setSlackToken(e.target.value)}
             onBlur={saveSlackToken}
@@ -1000,42 +857,25 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
             aria-label="Slack token"
             autoComplete="off"
             spellCheck={false}
-            style={{
-              width: '100%',
-              boxSizing: 'border-box',
-              border: '1px solid rgba(0,0,0,0.12)',
-              borderRadius: 8,
-              padding: '8px 10px',
-              fontSize: 12.5,
-              fontFamily: 'inherit',
-              color: '#1c1c1e',
-              background: '#fff',
-              outline: 'none'
-            }}
           />
         </div>
 
         {/* Integrations: Google Calendar (dedicated OAuth for invites + Meet links) */}
-        <div style={{ borderTop: '1px solid rgba(0,0,0,0.06)', paddingTop: 14, marginTop: 14 }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-            <div style={{ fontSize: 13.5, fontWeight: 600, color: '#1c1c1e' }}>Google Calendar</div>
-            <span
-              style={{
-                fontSize: 11,
-                color: gcalConnected ? '#34c759' : '#8e8e93',
-                fontWeight: 500
-              }}
-            >
+        <div className="ou-settings-section">
+          <div className="ou-settings-headrow">
+            <div className="ou-settings-label">Google Calendar</div>
+            <span className={`ou-settings-status${gcalConnected ? ' ok' : ''}`}>
               {gcalConnected ? 'Connected' : 'Not connected'}
             </span>
           </div>
-          <div style={{ fontSize: 12, color: '#8e8e93', lineHeight: 1.5, marginTop: 3, marginBottom: 8 }}>
+          <div className="ou-settings-desc" style={{ marginBottom: 8 }}>
             Lets OpenUI email calendar invites and attach Google Meet links. Create an OAuth
             &quot;Desktop app&quot; client at console.cloud.google.com (enable the Google Calendar API),
             paste its Client ID and Secret below, then click Connect. Stored locally on this device.
           </div>
           <input
             type="password"
+            className="ou-settings-input"
             value={gcalClientId}
             onChange={(e) => setGcalClientId(e.target.value)}
             onBlur={saveGcalClientId}
@@ -1043,22 +883,10 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
             aria-label="Google OAuth client ID"
             autoComplete="off"
             spellCheck={false}
-            style={{
-              width: '100%',
-              boxSizing: 'border-box',
-              border: '1px solid rgba(0,0,0,0.12)',
-              borderRadius: 8,
-              padding: '8px 10px',
-              fontSize: 12.5,
-              fontFamily: 'inherit',
-              color: '#1c1c1e',
-              background: '#fff',
-              outline: 'none',
-              marginBottom: 6
-            }}
           />
           <input
             type="password"
+            className="ou-settings-input"
             value={gcalClientSecret}
             onChange={(e) => setGcalClientSecret(e.target.value)}
             onBlur={saveGcalClientSecret}
@@ -1066,167 +894,94 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
             aria-label="Google OAuth client secret"
             autoComplete="off"
             spellCheck={false}
-            style={{
-              width: '100%',
-              boxSizing: 'border-box',
-              border: '1px solid rgba(0,0,0,0.12)',
-              borderRadius: 8,
-              padding: '8px 10px',
-              fontSize: 12.5,
-              fontFamily: 'inherit',
-              color: '#1c1c1e',
-              background: '#fff',
-              outline: 'none'
-            }}
           />
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 8 }}>
+          <div className="ou-settings-btnrow">
             <button
               type="button"
+              className="ou-settings-btn"
               onClick={() => void connectGoogleCalendar()}
               disabled={gcalConnecting || !gcalClientId.trim() || !gcalClientSecret.trim()}
-              style={{
-                fontSize: 12.5,
-                fontWeight: 500,
-                color: '#fff',
-                background: gcalConnecting ? '#8e8e93' : '#0a84ff',
-                border: 'none',
-                borderRadius: 8,
-                padding: '7px 14px',
-                cursor: gcalConnecting ? 'default' : 'pointer'
-              }}
             >
               {gcalConnecting ? 'Connecting…' : gcalConnected ? 'Reconnect' : 'Connect'}
             </button>
-            {gcalMessage && (
-              <span style={{ fontSize: 11, color: '#8e8e93', lineHeight: 1.4 }}>{gcalMessage}</span>
-            )}
+            {gcalMessage && <span className="ou-settings-msg">{gcalMessage}</span>}
           </div>
         </div>
 
         {/* Integrations: Gmail (shares the Calendar OAuth client above, own refresh token) */}
-        <div style={{ borderTop: '1px solid rgba(0,0,0,0.06)', paddingTop: 14, marginTop: 14 }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-            <div style={{ fontSize: 13.5, fontWeight: 600, color: '#1c1c1e' }}>Gmail</div>
-            <span
-              style={{
-                fontSize: 11,
-                color: gmailConnected ? '#34c759' : '#8e8e93',
-                fontWeight: 500
-              }}
-            >
+        <div className="ou-settings-section">
+          <div className="ou-settings-headrow">
+            <div className="ou-settings-label">Gmail</div>
+            <span className={`ou-settings-status${gmailConnected ? ' ok' : ''}`}>
               {gmailConnected ? 'Connected' : 'Not connected'}
             </span>
           </div>
-          <div style={{ fontSize: 12, color: '#8e8e93', lineHeight: 1.5, marginTop: 3, marginBottom: 8 }}>
+          <div className="ou-settings-desc" style={{ marginBottom: 8 }}>
             Lets OpenUI send email and follow up on threads. Uses the same Google OAuth Client ID
             and Secret entered above for Google Calendar (enable the Gmail API on that same
             project), just click Connect.
           </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <div className="ou-settings-btnrow" style={{ marginTop: 0 }}>
             <button
               type="button"
+              className="ou-settings-btn"
               onClick={() => void connectGmail()}
               disabled={gmailConnecting || !gcalClientId.trim() || !gcalClientSecret.trim()}
-              style={{
-                fontSize: 12.5,
-                fontWeight: 500,
-                color: '#fff',
-                background: gmailConnecting ? '#8e8e93' : '#0a84ff',
-                border: 'none',
-                borderRadius: 8,
-                padding: '7px 14px',
-                cursor: gmailConnecting ? 'default' : 'pointer'
-              }}
             >
               {gmailConnecting ? 'Connecting…' : gmailConnected ? 'Reconnect' : 'Connect'}
             </button>
-            {gmailMessage && (
-              <span style={{ fontSize: 11, color: '#8e8e93', lineHeight: 1.4 }}>{gmailMessage}</span>
-            )}
+            {gmailMessage && <span className="ou-settings-msg">{gmailMessage}</span>}
           </div>
         </div>
 
         {/* Integrations: Google Drive (shares the Calendar OAuth client above, own refresh token) */}
-        <div style={{ borderTop: '1px solid rgba(0,0,0,0.06)', paddingTop: 14, marginTop: 14 }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-            <div style={{ fontSize: 13.5, fontWeight: 600, color: '#1c1c1e' }}>Google Drive</div>
-            <span
-              style={{
-                fontSize: 11,
-                color: driveConnected ? '#34c759' : '#8e8e93',
-                fontWeight: 500
-              }}
-            >
+        <div className="ou-settings-section">
+          <div className="ou-settings-headrow">
+            <div className="ou-settings-label">Google Drive</div>
+            <span className={`ou-settings-status${driveConnected ? ' ok' : ''}`}>
               {driveConnected ? 'Connected' : 'Not connected'}
             </span>
           </div>
-          <div style={{ fontSize: 12, color: '#8e8e93', lineHeight: 1.5, marginTop: 3, marginBottom: 8 }}>
+          <div className="ou-settings-desc" style={{ marginBottom: 8 }}>
             Lets OpenUI upload, download and share files in Drive. Uses the same Google OAuth Client
             ID and Secret entered above for Google Calendar (enable the Drive API on that same
             project). Requests only the narrow drive.file scope — access to files OpenUI creates or
             you open with it, never your whole Drive.
           </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <div className="ou-settings-btnrow" style={{ marginTop: 0 }}>
             <button
               type="button"
+              className="ou-settings-btn"
               onClick={() => void connectGoogleDrive()}
               disabled={driveConnecting || !gcalClientId.trim() || !gcalClientSecret.trim()}
-              style={{
-                fontSize: 12.5,
-                fontWeight: 500,
-                color: '#fff',
-                background: driveConnecting ? '#8e8e93' : '#0a84ff',
-                border: 'none',
-                borderRadius: 8,
-                padding: '7px 14px',
-                cursor: driveConnecting ? 'default' : 'pointer'
-              }}
             >
               {driveConnecting ? 'Connecting…' : driveConnected ? 'Reconnect' : 'Connect'}
             </button>
-            {driveMessage && (
-              <span style={{ fontSize: 11, color: '#8e8e93', lineHeight: 1.4 }}>{driveMessage}</span>
-            )}
+            {driveMessage && <span className="ou-settings-msg">{driveMessage}</span>}
           </div>
         </div>
 
         {/* App version & update check */}
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            borderTop: '1px solid rgba(0,0,0,0.06)',
-            paddingTop: 14,
-            marginTop: 14,
-          }}
-        >
+        <div className="ou-settings-row ou-settings-section" style={{ alignItems: 'center', justifyContent: 'space-between' }}>
           <div>
-            <div style={{ fontSize: 13.5, fontWeight: 600, color: '#1c1c1e' }}>App Version</div>
-            <div style={{ fontSize: 12, color: '#8e8e93', marginTop: 2 }}>
+            <div className="ou-settings-label">App Version</div>
+            <div className="ou-settings-desc" style={{ marginTop: 2 }}>
               OpenUI{appVersion ? ` v${appVersion}` : ''}
             </div>
           </div>
           <div style={{ textAlign: 'right' }}>
             {updateStatus === 'checking' ? (
-              <span style={{ fontSize: 11, color: '#8e8e93' }}>Checking…</span>
+              <span className="ou-settings-status">Checking…</span>
             ) : updateStatus === 'latest' ? (
-              <span style={{ fontSize: 11, color: '#34c759', fontWeight: 500 }}>Up to date</span>
+              <span className="ou-settings-status ok">Up to date</span>
             ) : updateStatus === 'available' || updateStatus === 'downloaded' ? (
-              <span style={{ fontSize: 11, color: '#0a84ff', fontWeight: 500 }}>
+              <span className="ou-settings-status info">
                 {updateStatus === 'downloaded' ? 'Ready to install' : 'Update available'}
               </span>
             ) : (
               <button
-                style={{
-                  fontSize: 11,
-                  fontWeight: 500,
-                  color: '#0a84ff',
-                  background: 'none',
-                  border: 'none',
-                  cursor: onCheckForUpdates ? 'pointer' : 'default',
-                  padding: 0,
-                }}
+                type="button"
+                className="ou-settings-link"
                 onClick={onCheckForUpdates}
                 disabled={!onCheckForUpdates}
               >
@@ -1240,7 +995,7 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
   )
 }
 
-/** Minimal iOS-style switch. */
+/** Minimal iOS-style switch (dark theme, token-driven). */
 function Switch({
   on,
   disabled,
@@ -1260,33 +1015,9 @@ function Switch({
       aria-label={label}
       disabled={disabled}
       onClick={onClick}
-      style={{
-        flexShrink: 0,
-        width: 44,
-        height: 26,
-        borderRadius: 13,
-        border: 'none',
-        padding: 0,
-        position: 'relative',
-        cursor: disabled ? 'default' : 'pointer',
-        background: on ? '#34c759' : '#e5e5ea',
-        transition: 'background 0.18s ease',
-        marginTop: 2
-      }}
+      className={`ou-switch${on ? ' on' : ''}`}
     >
-      <span
-        style={{
-          position: 'absolute',
-          top: 2,
-          left: on ? 20 : 2,
-          width: 22,
-          height: 22,
-          borderRadius: '50%',
-          background: 'white',
-          boxShadow: '0 1px 3px rgba(0,0,0,0.25)',
-          transition: 'left 0.18s ease'
-        }}
-      />
+      <span className="ou-switch-thumb" />
     </button>
   )
 }
