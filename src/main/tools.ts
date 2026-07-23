@@ -43,6 +43,7 @@ import { githubToolSchemas, githubRegistry } from './github'
 import { figmaToolSchemas, figmaRegistry } from './figma'
 import { designToolSchemas, designRegistry } from './designFlow'
 import { spreadsheetToolSchemas, spreadsheetRegistry } from './spreadsheet'
+import { paperResearchToolSchemas, paperResearchRegistry } from './paperResearch'
 import { runInteractivePython, writeSandboxFile } from './sandbox'
 import {
   isGoogleCalendarConnected,
@@ -256,6 +257,16 @@ export const STATE_CHANGING_TOOLS = new Set<string>([
   'add_formula',
   // Running arbitrary Python is sensitive — always confirm (also in DESTRUCTIVE_TOOLS).
   'run_python',
+  // Academic-research pipeline. search_papers is read-only (network reads only,
+  // no disk write) and intentionally absent. The three writers each take one
+  // approval when called standalone; research_papers batches a whole find-and-
+  // summarise run behind a SINGLE approval (its internal download/summarise calls
+  // run in-process and never re-trigger HITL), so a 10-paper request is one click.
+  // Like research_audit / write_latex they write into a fresh research folder and
+  // never overwrite, so they are NOT in DESTRUCTIVE_TOOLS.
+  'download_paper',
+  'summarize_paper',
+  'research_papers',
 ])
 
 /**
@@ -4906,6 +4917,7 @@ export const toolSchemas: ToolSchema[] = [
   ...figmaToolSchemas,
   ...designToolSchemas,
   ...spreadsheetToolSchemas,
+  ...paperResearchToolSchemas,
   {
     name: 'run_python',
     description:
@@ -5873,7 +5885,8 @@ const registry: Record<string, Executor> = {
   ...githubRegistry,
   ...figmaRegistry,
   ...designRegistry,
-  ...spreadsheetRegistry
+  ...spreadsheetRegistry,
+  ...paperResearchRegistry
 }
 
 /**
@@ -6142,6 +6155,14 @@ export function describeToolCall(name: string, args: Record<string, unknown>): s
       return `List sheets in ${String(args.path ?? '')}`
     case 'run_python':
       return `Run Python ${String(args.path ?? '(inline code)')}`
+    case 'search_papers':
+      return `Search papers for "${String(args.query ?? '')}"`
+    case 'download_paper':
+      return `Download paper PDF ${String(args.pdf_url ?? '')}`
+    case 'summarize_paper':
+      return `Summarise paper ${String(args.pdf_path ?? '')}`
+    case 'research_papers':
+      return `Find & summarise papers on "${String(args.query ?? '')}"`
     default:
       return name
   }
