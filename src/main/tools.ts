@@ -272,11 +272,14 @@ export const STATE_CHANGING_TOOLS = new Set<string>([
   'write_spreadsheet',
   'update_cells',
   'add_formula',
-  // Google Drive: upload/download/share change state (list_drive_files is
-  // read-only, omitted). share_drive_file is ALSO in DESTRUCTIVE_TOOLS below —
+  // Google Drive: upload/export/download/share change state (list_drive_files is
+  // read-only, omitted). export_to_google_doc creates a new Doc in the user's own
+  // Drive — same category as upload_to_drive, so state-changing but NOT destructive.
+  // share_drive_file is ALSO in DESTRUCTIVE_TOOLS below —
   // it grants another person standing access to a file and emails them, the same
   // outward-facing category as send_email.
   'upload_to_drive',
+  'export_to_google_doc',
   'download_from_drive',
   'share_drive_file',
   // Media (ffmpeg) writes (get_media_info is read-only, omitted). Each writes a
@@ -6713,6 +6716,8 @@ export function describeToolCall(name: string, args: Record<string, unknown>): s
       return `List sheets in ${String(args.path ?? '')}`
     case 'upload_to_drive':
       return `Upload ${String(args.local_path ?? args.path ?? '')} to Google Drive`
+    case 'export_to_google_doc':
+      return `Export ${String(args.local_path ?? args.path ?? '')} to a Google Doc`
     case 'download_from_drive':
       return `Download Drive file ${String(args.file_id ?? '')} → ${String(args.dest_path ?? args.path ?? '')}`
     case 'list_drive_files':

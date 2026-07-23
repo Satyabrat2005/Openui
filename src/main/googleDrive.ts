@@ -38,7 +38,7 @@
 import { request as httpsRequest } from 'node:https'
 import { createServer } from 'node:http'
 import { readFile, writeFile, stat } from 'node:fs/promises'
-import { basename } from 'node:path'
+import { basename, extname } from 'node:path'
 import { GCAL_CLIENT_ID_KEY, GCAL_CLIENT_SECRET_KEY } from './googleCalendar'
 import { resolveSafePath } from './fs/pathSafety'
 import type { ExecutorContext, ToolResult, ToolSchema } from './tools'
@@ -342,6 +342,40 @@ function driveApiError(json: Record<string, unknown>, status: number): string {
   return (json.error as { message?: string } | undefined)?.message || `HTTP ${status}`
 }
 
+/**
+ * POST a multipart/related create to the Drive upload endpoint (metadata + media)
+ * and return the parsed status/json. Shared by upload_to_drive (raw bytes) and
+ * export_to_google_doc (source bytes + a Google-Doc target mimeType that makes
+ * Drive convert on upload). `contentType` is the SOURCE media type; `fields`
+ * selects which file fields Drive echoes back.
+ */
+async function driveMultipartUpload(
+  data: Buffer,
+  metadata: Record<string, unknown>,
+  contentType: string,
+  fields: string
+): Promise<{ status: number; json: Record<string, unknown> }> {
+  const body = buildUploadMultipartBody(metadata, data.toString('base64'), contentType)
+  const token = await getAccessToken()
+  const { status, body: text } = await httpsSend(
+    'POST',
+    `${UPLOAD_BASE}/files?uploadType=multipart&fields=${fields}`,
+    {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': `multipart/related; boundary=${MULTIPART_BOUNDARY}`,
+      'Content-Length': String(Buffer.byteLength(body))
+    },
+    body
+  )
+  let json: Record<string, unknown> = {}
+  try {
+    json = text ? (JSON.parse(text) as Record<string, unknown>) : {}
+  } catch {
+    /* leave empty */
+  }
+  return { status, json }
+}
+
 // ── upload_to_drive ───────────────────────────────────────────────────────────
 
 async function upload_to_drive(args: Record<string, unknown>): Promise<ToolResult> {
@@ -371,26 +405,13 @@ async function upload_to_drive(args: Record<string, unknown>): Promise<ToolResul
   const folder = typeof args.folder === 'string' ? args.folder.trim() : ''
   if (folder) metadata.parents = [folder]
 
-  const body = buildUploadMultipartBody(metadata, data.toString('base64'), 'application/octet-stream')
-
   try {
-    const token = await getAccessToken()
-    const { status, body: text } = await httpsSend(
-      'POST',
-      `${UPLOAD_BASE}/files?uploadType=multipart&fields=id,name,webViewLink`,
-      {
-        Authorization: `Bearer ${token}`,
-        'Content-Type': `multipart/related; boundary=${MULTIPART_BOUNDARY}`,
-        'Content-Length': String(Buffer.byteLength(body))
-      },
-      body
+    const { status, json } = await driveMultipartUpload(
+      data,
+      metadata,
+      'application/octet-stream',
+      'id,name,webViewLink'
     )
-    let json: Record<string, unknown> = {}
-    try {
-      json = text ? (JSON.parse(text) as Record<string, unknown>) : {}
-    } catch {
-      /* leave empty */
-    }
     if (status >= 400) return { ok: false, error: `Google Drive rejected the upload: ${driveApiError(json, status)}` }
     const id = String(json.id ?? '')
     const link = typeof json.webViewLink === 'string' ? `\n${json.webViewLink}` : ''
@@ -400,6 +421,104 @@ async function upload_to_drive(args: Record<string, unknown>): Promise<ToolResul
     }
   } catch (e) {
     return { ok: false, error: `upload_to_drive failed: ${errText(e)}` }
+  }
+}
+
+// ── export_to_google_doc ──────────────────────────────────────────────────────
+
+/** The native Google Docs mimeType. Setting it as the TARGET metadata mimeType on
+ *  an upload makes Drive convert the source content into a real, editable Doc. */
+export const GOOGLE_DOC_MIME = 'application/vnd.google-apps.document'
+
+/** Google's max SOURCE size for converting a file to a Google Document (50 MB) —
+ *  stricter than the module's general 100 MB transfer cap, enforced up front so an
+ *  oversized file is refused with a clear message instead of an opaque API reject. */
+export const MAX_DOC_CONVERT_BYTES = 50 * 1024 * 1024
+
+/**
+ * Local file extensions Drive can convert into a native Google Doc, mapped to the
+ * source Content-Type to declare in the multipart media part. Anything outside
+ * this set (images, PDFs, binaries) would produce a garbage Doc, so it is refused.
+ */
+const DOC_SOURCE_TYPES: Record<string, string> = {
+  '.md': 'text/markdown',
+  '.markdown': 'text/markdown',
+  '.txt': 'text/plain',
+  '.html': 'text/html',
+  '.htm': 'text/html',
+  '.rtf': 'application/rtf',
+  '.doc': 'application/msword',
+  '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  '.odt': 'application/vnd.oasis.opendocument.text'
+}
+export const DOC_SOURCE_EXTENSIONS = Object.keys(DOC_SOURCE_TYPES)
+
+/** Source Content-Type for a filename Drive can convert to a Doc, or null if the
+ *  extension is unsupported. Pure/exported for unit testing. */
+export function sourceMimeTypeForDoc(filename: string): string | null {
+  const ext = extname(filename).toLowerCase()
+  return DOC_SOURCE_TYPES[ext] ?? null
+}
+
+async function export_to_google_doc(args: Record<string, unknown>): Promise<ToolResult> {
+  let file: string
+  try {
+    file = resolveSafePath(args.local_path ?? args.path, { mutating: false })
+  } catch (e) {
+    return { ok: false, error: `export_to_google_doc: ${errText(e)}` }
+  }
+
+  const sourceType = sourceMimeTypeForDoc(file)
+  if (!sourceType) {
+    return {
+      ok: false,
+      error: `export_to_google_doc: cannot convert "${basename(file)}" to a Google Doc. Supported source types: ${DOC_SOURCE_EXTENSIONS.join(', ')} (e.g. a .md or .docx summary).`
+    }
+  }
+
+  let data: Buffer
+  try {
+    const info = await stat(file)
+    if (!info.isFile()) return { ok: false, error: `export_to_google_doc: "${file}" is not a file.` }
+    if (info.size > MAX_DOC_CONVERT_BYTES) {
+      return {
+        ok: false,
+        error: `export_to_google_doc: "${file}" is ${(info.size / (1024 * 1024)).toFixed(1)} MB, over Google's ${MAX_DOC_CONVERT_BYTES / (1024 * 1024)} MB document-conversion limit.`
+      }
+    }
+    data = await readFile(file)
+  } catch (e) {
+    return { ok: false, error: `export_to_google_doc: could not read file — ${errText(e)}` }
+  }
+
+  // A Google Doc carries no file extension — name it after the source, sans suffix.
+  const docName = basename(file, extname(file)) || basename(file)
+  const metadata: Record<string, unknown> = { name: docName, mimeType: GOOGLE_DOC_MIME }
+  const folder = typeof args.folder === 'string' ? args.folder.trim() : ''
+  if (folder) metadata.parents = [folder]
+
+  try {
+    const { status, json } = await driveMultipartUpload(
+      data,
+      metadata,
+      sourceType,
+      'id,name,webViewLink,mimeType'
+    )
+    if (status >= 400) {
+      return { ok: false, error: `export_to_google_doc: Google Drive rejected the conversion — ${driveApiError(json, status)}` }
+    }
+    const id = String(json.id ?? '')
+    // webViewLink is the canonical Doc URL; fall back to the standard /edit URL.
+    const url =
+      typeof json.webViewLink === 'string' && json.webViewLink
+        ? json.webViewLink
+        : `https://docs.google.com/document/d/${id}/edit`
+    return {
+      ok: true,
+      output: `Exported "${basename(file)}" to a Google Doc "${docName}"${folder ? ` (in folder ${folder})` : ''} — id ${id}.\n${url}`
+    }
+  } catch (e) {
+    return { ok: false, error: `export_to_google_doc failed: ${errText(e)}` }
   }
 }
 
@@ -544,6 +663,25 @@ export const driveToolSchemas: ToolSchema[] = [
     }
   },
   {
+    name: 'export_to_google_doc',
+    description:
+      'Convert a local document — a .md, .docx, .txt, .html, .rtf, .doc or .odt file — into a REAL, editable Google Doc in the ' +
+      'user\'s Drive, and return the document URL. This is the "make it a Google Doc instead of a local .md" output option: it ' +
+      'uploads the file with a Google-Docs target type so Drive converts it on the way in (no separate Docs step). ' +
+      'Uses the narrow drive.file scope; requires Google Drive to be connected in Settings.',
+    parameters: {
+      type: 'object',
+      properties: {
+        local_path: {
+          type: 'string',
+          description: 'Path to the local summary/document to convert (e.g. "~/OpenUI Research/summary.md" or a .docx).'
+        },
+        folder: { type: 'string', description: 'Optional Drive folder id (from list_drive_files) to create the Doc in.' }
+      },
+      required: ['local_path']
+    }
+  },
+  {
     name: 'download_from_drive',
     description:
       'Download a Google Drive file (by id) to a local path inside your home folder. Files up to 100 MB.',
@@ -592,6 +730,7 @@ export const driveRegistry: Record<
   (args: Record<string, unknown>, context?: ExecutorContext) => Promise<ToolResult>
 > = {
   upload_to_drive,
+  export_to_google_doc,
   download_from_drive,
   list_drive_files,
   share_drive_file
