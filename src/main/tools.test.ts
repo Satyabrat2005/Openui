@@ -341,6 +341,7 @@ describe('browser tools — require an approved connect_browser first', () => {
     ['browser_navigate', { url: 'https://example.com' }],
     ['browser_click', { selector: '#pay' }],
     ['browser_fill_input', { selector: '#q', text: 'hi' }],
+    ['browser_upload_file', { selector: '#file', file_path: '/tmp/x.png' }],
     ['browser_extract_text', {}],
     ['browser_vision_act', { goal: 'dismiss the cookie banner' }],
     ['research_web', { query: 'weather in tokyo' }]
