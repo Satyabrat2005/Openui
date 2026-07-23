@@ -11,6 +11,7 @@ import ConsentModal from './components/ConsentModal'
 import WorkflowsUI from './components/WorkflowsUI'
 import { useAssistantAnimations } from './hooks/useAssistantAnimations'
 import { useOnboarding } from './hooks/useOnboarding'
+import { applyTheme, coerceThemePref, watchSystemTheme } from './lib/theme'
 import { AuthProvider } from './context/AuthContext'
 import { TaskActivityProvider, useTaskActivity } from './context/TaskActivityContext'
 import type { PermissionTarget, HitlRequestPayload, PlanRequestPayload } from './env'
@@ -126,6 +127,17 @@ function AppShell(): JSX.Element {
   // Only run the popup entrance choreography once the chat UI is mounted.
   useAssistantAnimations(overlayRef, recordingRef, captionLockedRef, showChat)
 
+  // Apply the persisted theme preference at startup and keep it live with the
+  // OS scheme while the preference is 'system'. Dark is the default.
+  useEffect(() => {
+    const stop = watchSystemTheme()
+    window.openui
+      .getSetting('theme')
+      .then((value) => applyTheme(coerceThemePref(value)))
+      .catch(() => {})
+    return stop
+  }, [])
+
   useEffect(() => {
     return window.openui.onPermissionDenied((permission) => {
       setPermissionNeeded(permission as PermissionTarget)
@@ -224,24 +236,10 @@ function AppShell(): JSX.Element {
           </ErrorBoundary>
           {/* Workflows toggle button — bottom-left corner */}
           <button
+            type="button"
+            className="ou-workflows-fab"
             onClick={() => setShowWorkflows(true)}
             title="Team Workflows"
-            style={{
-              position: 'fixed',
-              bottom: 24,
-              left: 24,
-              zIndex: 9000,
-              background: 'rgba(18,18,22,0.85)',
-              border: '1px solid rgba(167,139,250,0.3)',
-              borderRadius: 10,
-              color: '#a78bfa',
-              cursor: 'pointer',
-              fontSize: 11,
-              fontWeight: 600,
-              padding: '6px 11px',
-              backdropFilter: 'blur(8px)',
-              letterSpacing: '0.03em'
-            }}
           >
             Workflows
           </button>

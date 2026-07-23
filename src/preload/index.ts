@@ -411,6 +411,14 @@ const api = {
   resumeConversation: (id: string): Promise<Array<{ role: string; content: string | null; created_at: number }>> =>
     ipcRenderer.invoke('openui:resume-conversation', id),
 
+  // Fired when a fresh session lazily creates its conversation row (on the first
+  // message). Lets the history list update live instead of only after a restart.
+  onConversationCreated: (cb: (conv: ConversationSummary) => void): (() => void) => {
+    const fn = wrap<ConversationSummary>(cb)
+    ipcRenderer.on('openui:conversation:created', fn)
+    return (): void => { ipcRenderer.removeListener('openui:conversation:created', fn) }
+  },
+
   // ── Telemetry ────────────────────────────────────────────────────────────────
   setTelemetryOptOut: (optOut: boolean): Promise<void> =>
     ipcRenderer.invoke('openui:set-telemetry-opt-out', optOut),

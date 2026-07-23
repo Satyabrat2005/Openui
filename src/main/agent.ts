@@ -1156,6 +1156,22 @@ export async function callModel(
 }
 
 /**
+ * Derive a short, human-readable conversation title from the first user
+ * message. Skips folded-in attachment markers ("[Attached file: …]"), collapses
+ * whitespace, and truncates — so the history list shows something
+ * distinguishable instead of a wall of identical "New Chat" rows.
+ */
+export function deriveConversationTitle(message: string): string {
+  const firstReal = message
+    .split('\n')
+    .map((l) => l.trim())
+    .find((l) => l.length > 0 && !l.startsWith('[Attached')) ?? ''
+  const clean = firstReal.replace(/\s+/g, ' ').trim()
+  if (!clean) return 'New Chat'
+  return clean.length > 48 ? `${clean.slice(0, 47).trimEnd()}…` : clean
+}
+
+/**
  * Drive a full agentic turn: stream a model response, and while it keeps
  * emitting tool calls, execute each tool in the main process, push the result
  * back into the conversation, and let the model continue reasoning. Task-list
@@ -1165,7 +1181,15 @@ export async function handleChat(win: BrowserWindow, userMessage: string, tier: 
   const rollbackLen = history.length // for clean rollback on failure
 
   if (!currentConversationId) {
-    currentConversationId = database.conversations.createConversation(getCurrentUserId(), 'New Chat')
+    const title = deriveConversationTitle(userMessage)
+    currentConversationId = database.conversations.createConversation(getCurrentUserId(), title)
+    // Surface the brand-new conversation to the renderer so the history list
+    // updates live (a new row under "Today") instead of only after a restart.
+    emit(win, 'openui:conversation:created', {
+      id: currentConversationId,
+      title,
+      created_at: Math.floor(Date.now() / 1000)
+    })
   }
   const convId = currentConversationId
 

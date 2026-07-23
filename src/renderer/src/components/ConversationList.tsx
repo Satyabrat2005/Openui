@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import type { ConversationSummary } from '../env'
 import { useAuth } from '../context/AuthContext'
 
@@ -60,7 +60,7 @@ export default function ConversationList({ onSelect, selectedId }: Props): JSX.E
   const [loading, setLoading] = useState(true)
   const { user } = useAuth()
 
-  useEffect(() => {
+  const refresh = useCallback((): void => {
     if (!user) {
       setConversations([])
       setLoading(false)
@@ -72,6 +72,16 @@ export default function ConversationList({ onSelect, selectedId }: Props): JSX.E
       .catch(() => setConversations([]))
       .finally(() => setLoading(false))
   }, [user])
+
+  useEffect(() => {
+    refresh()
+  }, [refresh])
+
+  // Live-update the list the moment a fresh session creates its conversation
+  // row in main, so a new chat appears under "Today" without an app restart.
+  useEffect(() => {
+    return window.openui.onConversationCreated(() => refresh())
+  }, [refresh])
 
   if (loading) {
     // Shimmer skeleton rows while history loads.

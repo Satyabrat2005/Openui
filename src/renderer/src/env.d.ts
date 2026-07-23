@@ -378,6 +378,8 @@ export interface OpenUIApi {
   getConversations: () => Promise<ConversationSummary[]>
   loadConversation: (id: string) => Promise<Array<{ role: string; content: string; created_at: number }>>
   resumeConversation: (id: string) => Promise<Array<{ role: string; content: string | null; created_at: number }>>
+  /** Fired when a new conversation row is created (first message of a session), so the history list can update live. */
+  onConversationCreated: (cb: (conv: ConversationSummary) => void) => () => void
   // Telemetry.
   setTelemetryOptOut: (optOut: boolean) => Promise<void>
   getTelemetryStatus: () => Promise<boolean>
