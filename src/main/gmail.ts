@@ -33,7 +33,12 @@ import { GCAL_CLIENT_ID_KEY, GCAL_CLIENT_SECRET_KEY } from './googleCalendar'
 export { GCAL_CLIENT_ID_KEY, GCAL_CLIENT_SECRET_KEY }
 export const GMAIL_REFRESH_TOKEN_KEY = 'gmail_refresh_token'
 
-const SCOPE = 'https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/gmail.readonly'
+// gmail.compose is required for the drafts.create/update endpoints (create_email_draft);
+// gmail.send alone does NOT authorise draft writes. compose supersedes send, but send is
+// kept explicit for clarity. Adding a scope means already-connected users must reconnect
+// Gmail once to re-consent — existing refresh tokens don't carry the new grant.
+const SCOPE =
+  'https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/gmail.compose https://www.googleapis.com/auth/gmail.readonly'
 const AUTH_ENDPOINT = 'https://accounts.google.com/o/oauth2/v2/auth'
 const TOKEN_ENDPOINT = 'https://oauth2.googleapis.com/token'
 const API_BASE = 'https://gmail.googleapis.com/gmail/v1'
@@ -60,6 +65,13 @@ export interface SendEmailInput {
   attachmentPath?: string
   threadId?: string
   inReplyTo?: string
+}
+export interface CreateDraftInput {
+  to: string[]
+  subject?: string
+  body: string
+  /** Omit to create a new draft; pass an existing draft's id to overwrite it in place. */
+  draftId?: string
 }
 export interface EmailResult {
   ok: boolean
@@ -391,6 +403,52 @@ export async function sendGmailMessage(input: SendEmailInput): Promise<EmailResu
     return { ok: true, output: `Sent email to ${to.join(', ')}: "${subject}"${attached}.` }
   } catch (e) {
     return { ok: false, error: `send_email failed: ${errText(e)}` }
+  }
+}
+
+/**
+ * Create or update a Gmail draft via the drafts API. A draft is a genuinely
+ * different object from a sent message — it lives in the user's own mailbox and
+ * is never delivered — so this is lower-stakes than sendGmailMessage: nothing
+ * leaves the account. Omit draftId to create a new draft; pass an existing
+ * draft's id to overwrite it in place. Mirrors sendGmailMessage's OAuth/API-call
+ * pattern exactly (same getAccessToken via apiJson, same MIME builder).
+ */
+export async function createGmailDraft(input: CreateDraftInput): Promise<EmailResult> {
+  const to = normalizeRecipients(input.to)
+  if (to.length === 0) {
+    return { ok: false, error: 'create_email_draft requires at least one valid "to" address.' }
+  }
+  if (!input.body || !input.body.trim()) {
+    return { ok: false, error: 'create_email_draft requires a non-empty "body".' }
+  }
+
+  const subject = input.subject?.trim() || deriveSubject(input.body)
+  let raw: string
+  try {
+    raw = buildMimeMessage({ to, subject, body: input.body })
+  } catch (e) {
+    return { ok: false, error: `create_email_draft: ${errText(e)}` }
+  }
+
+  // drafts.create is POST /users/me/drafts; drafts.update is PUT on the draft's
+  // resource. Both wrap the RFC 2822 message in { message: { raw } }.
+  const draftId = input.draftId?.trim()
+  const payload = { message: { raw } }
+  const method = draftId ? 'PUT' : 'POST'
+  const path = draftId ? `/users/me/drafts/${encodeURIComponent(draftId)}` : '/users/me/drafts'
+
+  try {
+    const { status, json } = await apiJson(method, path, undefined, payload)
+    if (status >= 400) {
+      const msg = (json.error as { message?: string } | undefined)?.message || `HTTP ${status}`
+      return { ok: false, error: `Gmail rejected the draft: ${msg}` }
+    }
+    const id = typeof json.id === 'string' ? json.id : (draftId ?? '')
+    const verb = draftId ? 'Updated' : 'Created'
+    return { ok: true, output: `${verb} email draft to ${to.join(', ')}: "${subject}" (draftId=${id}).` }
+  } catch (e) {
+    return { ok: false, error: `create_email_draft failed: ${errText(e)}` }
   }
 }
 

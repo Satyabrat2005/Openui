@@ -50,7 +50,12 @@ import {
   googleListToday,
   normalizeAttendees
 } from './googleCalendar'
-import { isGmailConnected, sendGmailMessage, findEmailThread as gmailFindThread } from './gmail'
+import {
+  isGmailConnected,
+  sendGmailMessage,
+  createGmailDraft,
+  findEmailThread as gmailFindThread
+} from './gmail'
 import { createHash } from 'node:crypto'
 import { callChatProxyText } from './edgeFunctions'
 import { trackEvent } from './telemetry/posthog'
@@ -1874,6 +1879,38 @@ async function send_email(args: Record<string, unknown>): Promise<ToolResult> {
   }
 
   return sendGmailMessage({ to, subject, body, attachmentPath, threadId, inReplyTo })
+}
+
+/**
+ * Compose an email DRAFT in the user's Gmail — a distinct object from a sent
+ * message that is never delivered. Because nothing leaves the account, this is
+ * deliberately NOT in STATE_CHANGING_TOOLS / DESTRUCTIVE_TOOLS: it runs without
+ * a HITL pause, unlike send_email. Pass draft_id to overwrite an existing draft.
+ */
+async function create_email_draft(args: Record<string, unknown>): Promise<ToolResult> {
+  if (!isGmailConnected()) {
+    return {
+      ok: false,
+      error: 'Gmail is not connected. Open Settings → Gmail and click Connect.'
+    }
+  }
+  const rawTo = args.to
+  const to = Array.isArray(rawTo)
+    ? rawTo.map((v) => String(v))
+    : typeof rawTo === 'string'
+      ? rawTo.split(/[,;]/)
+      : []
+  if (to.length === 0) {
+    return { ok: false, error: 'create_email_draft requires at least one "to" address.' }
+  }
+  const body = typeof args.body === 'string' ? args.body : ''
+  if (!body.trim()) {
+    return { ok: false, error: 'create_email_draft requires a non-empty "body".' }
+  }
+  const subject = typeof args.subject === 'string' ? args.subject : undefined
+  const draftId = typeof args.draft_id === 'string' ? args.draft_id : undefined
+
+  return createGmailDraft({ to, subject, body, draftId })
 }
 
 /** Search recent Gmail messages for a thread to reply into. Read-only. */
@@ -5043,6 +5080,33 @@ export const toolSchemas: ToolSchema[] = [
     }
   },
   {
+    name: 'create_email_draft',
+    description:
+      'Save an email DRAFT in the user\'s Gmail without sending it — use when the user wants to ' +
+      'prepare or stage an email for later review rather than send it now (e.g. "draft a reply to ' +
+      'Jane I can look over first"). A draft is a distinct object that stays in the mailbox and is ' +
+      'never delivered, so this does NOT ask for confirmation the way send_email does. If "subject" ' +
+      'is omitted, one is derived from the body. To revise an existing draft in place, pass its ' +
+      '"draft_id" (returned as draftId=... when the draft was created); omit it to create a new one. ' +
+      'To actually send, use send_email (which pauses for the user\'s confirmation).',
+    parameters: {
+      type: 'object',
+      properties: {
+        to: {
+          type: 'string',
+          description: 'Recipient email address(es), comma- or semicolon-separated for multiple.'
+        },
+        subject: { type: 'string', description: 'Email subject. Derived from the body when omitted.' },
+        body: { type: 'string', description: 'The email body text.' },
+        draft_id: {
+          type: 'string',
+          description: 'Existing Gmail draft id to overwrite (from a prior draftId=...); omit to create a new draft.'
+        }
+      },
+      required: ['to', 'body']
+    }
+  },
+  {
     name: 'find_email_thread',
     description:
       'Search recent Gmail messages for a thread to follow up on, e.g. "find my email to the ' +
@@ -5823,6 +5887,7 @@ const registry: Record<string, Executor> = {
   open_whatsapp_chat,
   send_whatsapp_message,
   send_email,
+  create_email_draft,
   find_email_thread,
   list_apps,
   search_files,
@@ -6001,6 +6066,12 @@ export function describeToolCall(name: string, args: Record<string, unknown>): s
       const to = Array.isArray(args.to) ? args.to.map((v) => String(v)).join(', ') : String(args.to ?? '')
       const subject = String(args.subject ?? '')
       return `Send email to ${to}${subject ? `: "${subject}"` : ''}`
+    }
+    case 'create_email_draft': {
+      const to = Array.isArray(args.to) ? args.to.map((v) => String(v)).join(', ') : String(args.to ?? '')
+      const subject = String(args.subject ?? '')
+      const verb = args.draft_id ? 'Update email draft to' : 'Draft email to'
+      return `${verb} ${to}${subject ? `: "${subject}"` : ''}`
     }
     case 'find_email_thread':
       return `Find email thread matching "${String(args.query ?? '')}"`

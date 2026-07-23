@@ -507,6 +507,30 @@ describe('assisted account tools', () => {
   })
 })
 
+// ── Gmail draft — a distinct object from a sent message, deliberately un-gated ──
+describe('create_email_draft (no HITL — nothing leaves the account)', () => {
+  it('is in neither HITL set: sending is gated, drafting is not', () => {
+    // A draft never leaves the mailbox, so unlike send_email it takes no approval.
+    expect(STATE_CHANGING_TOOLS.has('create_email_draft')).toBe(false)
+    expect(DESTRUCTIVE_TOOLS.has('create_email_draft')).toBe(false)
+    // The actual send is still the gated, irreversible step.
+    expect(STATE_CHANGING_TOOLS.has('send_email')).toBe(true)
+    expect(DESTRUCTIVE_TOOLS.has('send_email')).toBe(true)
+  })
+
+  it('runs without a HITL pause and reaches the not-connected path', async () => {
+    // Not gated → executeTool invokes the executor directly (no pending_approval),
+    // which returns the friendly not-connected error rather than pausing.
+    const r = await executeTool(
+      'create_email_draft',
+      { to: 'a@x.com', body: 'hello' },
+      { tier: 'free' }
+    )
+    expect(r).toMatchObject({ ok: false })
+    expect((r as { error: string }).error).toMatch(/not connected/i)
+  })
+})
+
 // ── Full browser-control tools — wiring + gating (no live browser needed) ──────
 describe('full browser-control tools', () => {
   it('read-only browser tools are NOT gated and reach the not-connected path', async () => {
