@@ -5,6 +5,46 @@ the newest work lands under **Unreleased** until the next version bump.
 
 ## [Unreleased]
 
+## v7.1.4 — 2026-07-24
+
+A test-hardening release. No shipping behavior changes — this pins the
+app's highest-risk safety path (the per-tool human-in-the-loop approval
+gate) with direct, mutation-verified tests and de-flakes the suite so
+those guarantees hold under parallel CI load. 1 PR, 1 commit since
+v7.1.3.
+
+### Testing
+
+- **HITL approval path (`agent.test.ts`, +14)** — drives a real
+  `pending_approval` through the agent loop: Allow re-runs the tool with
+  `bypassHitl`, Deny means the tool **never** executes, a 150s backstop
+  auto-denies so a turn can't hang, and stale / unknown-id / malformed
+  IPC payloads are ignored. Each gated tool takes its **own** approval —
+  one Allow is never a standing grant — plus `needsConfirmation`
+  re-entry and MCP fallback gating. Two safety invariants are pinned and
+  **verified by mutation** (each mutant is caught): destructive tools
+  still prompt under full-auto, and a non-boolean approval payload is
+  treated as a denial. (#128)
+- **StreamGate transitions (`toolCallParser.test.ts`, +8)** — covers the
+  previously-untested `null → tool | text` transitions: undecided-at-
+  finalize, multi-brace tails revealed exactly once, and a brace
+  arriving in the classifying delta. A response truncated at 1–2 leading
+  backticks is documented as withheld — the safe direction. (#128)
+- **Tool gate ordering (`tools.test.ts`, +4)** — the HITL gate fires
+  before arg validation and registry lookup, `bypassHitl` reaches the
+  executor, and `executeTool` still returns the literal `"Unknown tool"`
+  prefix that `agent.ts` string-matches to route MCP calls — an untyped
+  cross-module contract nothing else protected. (#128)
+
+### Fixed
+
+- **De-flaked the suite under parallel load.** `runLog.test.ts` now polls
+  for the expected line count (parsing only whole lines) instead of a
+  flat 50 ms sleep on a fire-and-forget `appendFile`; `models.test.ts`
+  resets modules per case to defeat the 30s pool cache and takes a
+  file-scoped timeout. Three consecutive full parallel runs: 824 passed,
+  1 skipped; typecheck and eslint clean. (#128)
+
 ## v7.1.3 — 2026-07-16
 
 Turns the browser layer into a full CDP-driven automation surface — your
