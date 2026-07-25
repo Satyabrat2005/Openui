@@ -60,6 +60,44 @@ function durationLabel(card: TaskCard): string {
   return `${m}:${String(s % 60).padStart(2, '0')}`
 }
 
+/**
+ * Poll a live thumbnail of the primary display while `active`, so the inspector
+ * can show a real "watch it run" feed — the same read-only desktopCapturer path
+ * read_screen() uses (main's `openui:screen:thumbnail`). 700ms reads like video
+ * without the capture cost of a true stream; the last frame is kept between
+ * polls so a transient failure never blanks the view.
+ */
+function useScreenThumbnail(active: boolean): string | null {
+  const [dataUrl, setDataUrl] = useState<string | null>(null)
+  const busy = useRef(false)
+  useEffect(() => {
+    if (!active) {
+      setDataUrl(null)
+      return
+    }
+    let live = true
+    const tick = async (): Promise<void> => {
+      if (busy.current) return
+      busy.current = true
+      try {
+        const res = await window.openui.captureScreenThumbnail()
+        if (live && res.ok && res.dataUrl) setDataUrl(res.dataUrl)
+      } catch {
+        /* transient capture failure — keep the last frame */
+      } finally {
+        busy.current = false
+      }
+    }
+    void tick()
+    const id = window.setInterval(() => void tick(), 700)
+    return () => {
+      live = false
+      window.clearInterval(id)
+    }
+  }, [active])
+  return dataUrl
+}
+
 interface RunConsoleProps {
   initialMessage?: string | null
   /** Active plain (non-choice) HITL request, surfaced inline when its run is visible. */
@@ -505,6 +543,11 @@ function Inspector({
   const done = run?.steps.filter((s) => s.status === 'done').length ?? 0
   const touched: TouchedResource[] = run?.touched ?? []
 
+  // Live screen feed: stream the real display while the selected run is active,
+  // so you can watch the automation happen (WhatsApp opening, clicks, typing).
+  const live = run?.status === 'in_progress'
+  const liveThumb = useScreenThumbnail(!!live)
+
   return (
     <aside className="ou-rc-inspector">
       <div className="ou-rc-insp-head">
@@ -523,6 +566,22 @@ function Inspector({
       </div>
 
       <div className="ou-rc-insp-body">
+        {live && (
+          <section className="ou-rc-insp-live-sec">
+            <div className="ou-rc-insp-section">
+              <span className="ou-rc-insp-label">LIVE VIEW</span>
+              <span className="ou-rc-insp-live-tag"><span className="ou-rc-insp-live-dot" />LIVE</span>
+            </div>
+            <div className="ou-rc-insp-live">
+              {liveThumb ? (
+                <img className="ou-rc-insp-live-img" src={liveThumb} alt="Live screen preview" />
+              ) : (
+                <div className="ou-rc-insp-live-wait">Waiting for screen…</div>
+              )}
+            </div>
+          </section>
+        )}
+
         <section>
           <div className="ou-rc-insp-section">
             <span className="ou-rc-insp-label">PLAN</span>
