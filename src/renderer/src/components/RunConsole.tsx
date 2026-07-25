@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { TaskCard, TouchedResource, Workflow, RunQueue, HitlRequestPayload, PlanRequestPayload } from '../env'
+import type { TaskCard, TouchedResource, Workflow, HitlRequestPayload, PlanRequestPayload } from '../env'
 import type { AppKind } from '../lib/appKind'
 import { useTaskActivity } from '../context/TaskActivityContext'
 import { useAuth } from '../context/AuthContext'
