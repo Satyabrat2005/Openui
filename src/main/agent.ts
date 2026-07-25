@@ -73,6 +73,57 @@ interface TaskUpdate {
 const history: Message[] = []
 let currentConversationId: string | null = null
 
+// Cap on how many transcript messages are sent to the model in one turn. The
+// full conversation still lives in `history` (and the DB), but resuming a very
+// long thread — or a long tool loop — must not silently overflow the model's
+// context window (Ollama truncates the MIDDLE of the prompt, where our tool
+// instructions live, so an oversized prompt degrades quietly). We send the most
+// recent messages, trimmed forward to begin on a `user` turn so role
+// alternation stays valid for providers that require it (Anthropic).
+export const MAX_CONTEXT_MESSAGES = 40
+export function contextForModel(msgs: Message[]): Message[] {
+  if (msgs.length <= MAX_CONTEXT_MESSAGES) return msgs
+  let start = msgs.length - MAX_CONTEXT_MESSAGES
+  while (start < msgs.length - 1 && msgs[start].role !== 'user') start++
+  return msgs.slice(start)
+}
+
+// ── TOUCHED audit trail (README § Inspector → TOUCHED) ──────────────────────
+// The tool registry carries no operation metadata, so we INFER the audit
+// operation from the tool-name shape (a documented judgment call). A denied
+// action is logged separately as HELD by the caller. These sets are ordered:
+// DRAFT beats POST beats WRITE; anything else reads.
+const TOUCHED_DRAFT_RE = /(^|_)draft($|_)|create_draft/i
+const TOUCHED_POST_RE = /(^|_)(send|post|reply|publish|share|dm|email)($|_)/i
+const TOUCHED_WRITE_RE = /(^|_)(create|update|delete|remove|move|rename|write|edit|append|add|upload|save|set|label|archive|trash|book|schedule)($|_)/i
+
+function touchedOperation(tool: string): 'READ' | 'WRITE' | 'DRAFT' | 'POST' {
+  if (TOUCHED_DRAFT_RE.test(tool)) return 'DRAFT'
+  if (TOUCHED_POST_RE.test(tool)) return 'POST'
+  if (TOUCHED_WRITE_RE.test(tool)) return 'WRITE'
+  return 'READ'
+}
+
+/** A short human label for the resource a tool acted on, pulled from its args. */
+function touchedResource(tool: string, args: Record<string, unknown>): string {
+  const pick = (k: string): string | undefined => {
+    const v = args[k]
+    return typeof v === 'string' && v.trim() ? v.trim() : undefined
+  }
+  const label =
+    pick('to') ?? pick('recipient') ?? pick('recipients') ?? pick('channel') ?? pick('chat') ??
+    pick('contact') ?? pick('path') ?? pick('file') ?? pick('filename') ?? pick('url') ??
+    pick('subject') ?? pick('title') ?? pick('name') ?? pick('query') ?? pick('q')
+  const clean = (label ?? tool.replace(/_/g, ' ')).replace(/\s+/g, ' ').trim()
+  return clean.length > 60 ? `${clean.slice(0, 59)}…` : clean
+}
+
+/** True when a tool result failed because the USER denied it at an approval gate
+ *  (→ audit it as HELD), as opposed to a genuine tool error (→ not audited). */
+function wasDeniedByUser(error: string | undefined): boolean {
+  return /^User (denied|declined|did not pick)/.test(error ?? '')
+}
+
 // Safety bound on the agentic loop so a model that keeps emitting tool calls
 // (or loops on a failing tool) can never spin forever.
 const MAX_TOOL_TURNS = 8
@@ -1447,7 +1498,9 @@ export async function handleChat(win: BrowserWindow, userMessage: string, tier: 
       // natural language streams through live. This is what keeps raw JSON off
       // the screen regardless of which provider/transport produced the response.
       const gate = new StreamGate((delta) => emit(win, 'openui:chat:chunk', delta))
-      const responseText = await callModel(win, effectiveTier, history, effectiveSystemPrompt, gate.push)
+      // Send a bounded window of the transcript (see contextForModel) so a long
+      // resumed thread can't silently overflow the model's context.
+      const responseText = await callModel(win, effectiveTier, contextForModel(history), effectiveSystemPrompt, gate.push)
       trackEvent(Events.CHAT_RESPONSE_RECEIVED, {
         tier: effectiveTier,
         model,
@@ -1680,6 +1733,21 @@ export async function handleChat(win: BrowserWindow, userMessage: string, tier: 
         argsSummary: label,
         error: result.ok ? undefined : result.error?.slice(0, 300)
       })
+
+      // Per-run audit trail (TOUCHED): record resources the agent ACTUALLY
+      // touched. A user-denied action is logged as HELD; a successful one by its
+      // inferred operation. Other failures touched nothing, so aren't audited.
+      // Reuses the same main→renderer emit plumbing as openui:chat:tool.
+      {
+        const denied = !result.ok && wasDeniedByUser(result.error)
+        if (result.ok || denied) {
+          emit(win, 'openui:task:touched', {
+            tool: toolCall.tool,
+            resource: touchedResource(toolCall.tool, toolCall.args),
+            operation: denied ? 'HELD' : touchedOperation(toolCall.tool)
+          })
+        }
+      }
 
       // Capture this reasoning + tool-execution step for the training store.
       recorder.recordStep({

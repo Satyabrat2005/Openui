@@ -248,6 +248,27 @@ export type ConnectionState = 'disconnected' | 'connecting' | 'connected' | 'err
 /** Status of a single timeline row or sub-agent. */
 export type StepStatus = 'pending' | 'working' | 'done' | 'error'
 
+/** How a touched resource was affected (README § Inspector → TOUCHED):
+ *  READ (grey) · WRITE/DRAFT (amber) · POST (green) · HELD (an action the user
+ *  denied at the approval gate — red). */
+export type TouchedOperation = 'READ' | 'WRITE' | 'DRAFT' | 'POST' | 'HELD'
+
+/** One row of the per-run audit trail. `app` is derived in the renderer from the
+ *  tool; main emits the raw tool + a human resource label + the operation. */
+export interface TaskTouchedPayload {
+  tool: string
+  /** Human-readable resource label, e.g. a recipient, file, channel, or URL. */
+  resource: string
+  operation: TouchedOperation
+}
+
+/** A TOUCHED audit row as stored on a TaskCard (app resolved from the tool). */
+export interface TouchedResource {
+  app: AppKind
+  resource: string
+  operation: TouchedOperation
+}
+
 /** A single sub-agent row inside a parallel group, tracked live in the UI. */
 export interface SubagentRow {
   subId: string
@@ -272,11 +293,24 @@ export interface ParallelGroup {
  * One user request grouped as a card in the task board. Steps are the individual
  * tool calls / plan rows the agent ran, keyed by their task-update id.
  */
+/** Which sidebar queue a run belongs to (README § State Management → Run console).
+ *  'active'  — running normally
+ *  'waiting' — in_progress but paused on a HITL/plan approval the user owes
+ *  'done'    — finished (done|failed)
+ *  Set imperatively from IPC events + approval state (see TaskActivityContext).
+ *  'scheduled' is NOT a queue value here — scheduled runs have no live TaskCard
+ *  and are sourced separately from window.openui.listWorkflows(). */
+export type RunQueue = 'active' | 'waiting' | 'done'
+
 export interface TaskCard {
   id: string
   title: string
   status: 'in_progress' | 'done' | 'failed'
   kind: 'chat' | 'assigned'
+  /** Sidebar queue bucket (see RunQueue). Undefined ≈ 'active' for older cards. */
+  queue?: RunQueue
+  /** Conversation this run belongs to — lets the ledger group runs by thread. */
+  conversationId?: string | null
   steps: TaskUpdatePayload[]
   /** Parallel sub-agent groups spawned during this card's run (real concurrency). */
   groups: ParallelGroup[]
@@ -285,6 +319,10 @@ export interface TaskCard {
   modelLabel?: string
   /** App the agent is currently driving (browser, whatsapp…), for the activity tile. */
   currentApp?: AppKind
+  /** Per-run audit trail — every real resource the agent touched this run. */
+  touched?: TouchedResource[]
+  /** The agent's answer for this run — streamed live, settled on completion. */
+  answer?: string
   startedAt: number
   endedAt?: number
 }
@@ -336,6 +374,8 @@ export interface OpenUIApi {
   onWarning: (cb: (warning: { message: string }) => void) => () => void
   onTask: (cb: (task: TaskUpdatePayload) => void) => () => void
   onTaskReset: (cb: () => void) => () => void
+  /** A real resource the agent just touched — feeds the per-run TOUCHED audit trail. */
+  onTaskTouched: (cb: (payload: TaskTouchedPayload) => void) => () => void
   /** Real model the backend is using this turn (never a model it isn't running). */
   onChatModel: (cb: (info: ChatModelPayload) => void) => () => void
 
