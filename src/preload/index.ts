@@ -79,6 +79,11 @@ type TaskUpdate = {
   status: 'pending' | 'working' | 'done' | 'error'
   detail?: string
 }
+type TaskTouchedPayload = {
+  tool: string
+  resource: string
+  operation: 'READ' | 'WRITE' | 'DRAFT' | 'POST' | 'HELD'
+}
 type AutonomousStatus = {
   active: boolean
   state: 'disabled' | 'monitoring' | 'working' | 'paused'
@@ -207,6 +212,14 @@ const api = {
     const fn = (() => cb()) as IpcListener
     ipcRenderer.on('openui:task:reset', fn)
     return (): void => { ipcRenderer.removeListener('openui:task:reset', fn) }
+  },
+
+  // A real resource the agent just touched (audit trail): the raw tool, a human
+  // resource label, and the operation (READ/WRITE/DRAFT/POST/HELD).
+  onTaskTouched: (cb: (payload: TaskTouchedPayload) => void): (() => void) => {
+    const fn = wrap<TaskTouchedPayload>(cb)
+    ipcRenderer.on('openui:task:touched', fn)
+    return (): void => { ipcRenderer.removeListener('openui:task:touched', fn) }
   },
 
   // The model the backend is ACTUALLY using this turn (agent.ts pushes it so the

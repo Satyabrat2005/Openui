@@ -57,16 +57,16 @@ export default function ConsentModal({ onClose }: Props): JSX.Element {
     >
       <div
         style={{
-          background: 'rgba(255, 255, 255, 0.98)',
-          backdropFilter: 'blur(20px)',
-          borderRadius: 14,
+          background: 'var(--ou-bg-panel)',
+          border: '1px solid var(--ou-border-card)',
+          borderRadius: 'var(--ou-r-composer)',
           padding: '24px 28px',
           maxWidth: 380,
           width: '90%',
           maxHeight: '85vh',
           overflowY: 'auto',
-          boxShadow: '0 12px 40px rgba(0, 0, 0, 0.22), 0 0 0 0.5px rgba(0,0,0,0.08)',
-          fontFamily: '-apple-system, BlinkMacSystemFont, sans-serif'
+          boxShadow: 'var(--ou-shadow-modal)',
+          fontFamily: 'var(--ou-font)'
         }}
       >
         {/* Chart / analytics icon */}
@@ -75,7 +75,8 @@ export default function ConsentModal({ onClose }: Props): JSX.Element {
             width: 40,
             height: 40,
             borderRadius: 10,
-            background: 'linear-gradient(145deg, #34c759, #248a3d)',
+            background: 'var(--ou-accent)',
+            boxShadow: 'var(--ou-btn-inset)',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
@@ -83,9 +84,9 @@ export default function ConsentModal({ onClose }: Props): JSX.Element {
           }}
         >
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
-            <path d="M5 19V11" stroke="white" strokeWidth="1.8" strokeLinecap="round" />
-            <path d="M12 19V5" stroke="white" strokeWidth="1.8" strokeLinecap="round" />
-            <path d="M19 19v-6" stroke="white" strokeWidth="1.8" strokeLinecap="round" />
+            <path d="M5 19V11" stroke="var(--ou-accent-on)" strokeWidth="1.8" strokeLinecap="round" />
+            <path d="M12 19V5" stroke="var(--ou-accent-on)" strokeWidth="1.8" strokeLinecap="round" />
+            <path d="M19 19v-6" stroke="var(--ou-accent-on)" strokeWidth="1.8" strokeLinecap="round" />
           </svg>
         </div>
 
@@ -94,14 +95,14 @@ export default function ConsentModal({ onClose }: Props): JSX.Element {
             margin: '0 0 8px',
             fontSize: 16,
             fontWeight: 600,
-            color: '#1c1c1e',
+            color: 'var(--ou-text-max)',
             letterSpacing: '-0.01em'
           }}
         >
           Help us improve OpenUI
         </h3>
 
-        <p style={{ margin: '0 0 16px', fontSize: 13, color: '#3c3c43', lineHeight: 1.55 }}>
+        <p style={{ margin: '0 0 16px', fontSize: 13, color: 'var(--ou-text-soft)', lineHeight: 1.55 }}>
           We&apos;d like to collect anonymous usage data to understand how OpenUI is used and make
           it better.
         </p>
@@ -120,7 +121,7 @@ export default function ConsentModal({ onClose }: Props): JSX.Element {
           <Item>Your API keys</Item>
         </Section>
 
-        <p style={{ margin: '4px 0 20px', fontSize: 12, color: '#8e8e93', lineHeight: 1.5 }}>
+        <p style={{ margin: '4px 0 20px', fontSize: 12, color: 'var(--ou-text-meta)', lineHeight: 1.5 }}>
           You can change this anytime in Settings.
         </p>
 
@@ -133,12 +134,12 @@ export default function ConsentModal({ onClose }: Props): JSX.Element {
             style={{
               flex: 1,
               padding: '9px 16px',
-              borderRadius: 8,
-              border: '0.5px solid #d1d1d6',
-              background: '#f2f2f7',
+              borderRadius: 'var(--ou-r-btn)',
+              border: '1px solid var(--ou-border-control)',
+              background: 'var(--ou-bg-chip)',
               fontSize: 13,
-              fontWeight: 500,
-              color: '#1c1c1e',
+              fontWeight: 600,
+              color: 'var(--ou-text-mid)',
               cursor: busy ? 'default' : 'pointer',
               fontFamily: 'inherit'
             }}
@@ -152,12 +153,13 @@ export default function ConsentModal({ onClose }: Props): JSX.Element {
             style={{
               flex: 1,
               padding: '9px 16px',
-              borderRadius: 8,
-              border: '0.5px solid #0a6cff',
-              background: '#007aff',
+              borderRadius: 'var(--ou-r-btn)',
+              border: 'none',
+              background: 'var(--ou-accent)',
+              boxShadow: 'var(--ou-btn-inset)',
               fontSize: 13,
-              fontWeight: 500,
-              color: 'white',
+              fontWeight: 650,
+              color: 'var(--ou-accent-on)',
               cursor: busy ? 'default' : 'pointer',
               fontFamily: 'inherit'
             }}
@@ -187,13 +189,13 @@ function Section({
           fontWeight: 600,
           textTransform: 'uppercase',
           letterSpacing: '0.04em',
-          color: tone === 'never' ? '#c7361f' : '#34739b',
+          color: tone === 'never' ? 'var(--ou-status-danger-text)' : 'var(--ou-accent-text)',
           marginBottom: 6
         }}
       >
         {title}
       </div>
-      <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12.5, color: '#3c3c43', lineHeight: 1.6 }}>
+      <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12.5, color: 'var(--ou-text-soft)', lineHeight: 1.6 }}>
         {children}
       </ul>
     </div>

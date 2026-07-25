@@ -45,23 +45,24 @@ export default function PermissionModal({ permission, onDismiss }: Props): JSX.E
     >
       <div
         style={{
-          background: 'rgba(255, 255, 255, 0.97)',
-          backdropFilter: 'blur(20px)',
-          borderRadius: 14,
+          background: 'var(--ou-bg-panel)',
+          border: '1px solid var(--ou-border-card)',
+          borderRadius: 'var(--ou-r-composer)',
           padding: '24px 28px',
           maxWidth: 340,
           width: '90%',
-          boxShadow: '0 12px 40px rgba(0, 0, 0, 0.22), 0 0 0 0.5px rgba(0,0,0,0.08)',
-          fontFamily: '-apple-system, BlinkMacSystemFont, sans-serif'
+          boxShadow: 'var(--ou-shadow-modal)',
+          fontFamily: 'var(--ou-font)'
         }}
       >
-        {/* Lock icon */}
+        {/* Lock icon — amber, since a permission prompt is an "attention" state. */}
         <div
           style={{
             width: 40,
             height: 40,
             borderRadius: 10,
-            background: 'linear-gradient(145deg, #ff9f0a, #ff6b00)',
+            background: 'var(--ou-fill-attention)',
+            border: '1px solid var(--ou-fill-attention-border)',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
@@ -69,8 +70,8 @@ export default function PermissionModal({ permission, onDismiss }: Props): JSX.E
           }}
         >
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
-            <rect x="5" y="11" width="14" height="10" rx="2" stroke="white" strokeWidth="2" fill="none" />
-            <path d="M8 11V7a4 4 0 0 1 8 0v4" stroke="white" strokeWidth="2" strokeLinecap="round" />
+            <rect x="5" y="11" width="14" height="10" rx="2" stroke="var(--ou-status-attention)" strokeWidth="2" fill="none" />
+            <path d="M8 11V7a4 4 0 0 1 8 0v4" stroke="var(--ou-status-attention)" strokeWidth="2" strokeLinecap="round" />
           </svg>
         </div>
 
@@ -79,7 +80,7 @@ export default function PermissionModal({ permission, onDismiss }: Props): JSX.E
             margin: '0 0 8px',
             fontSize: 15,
             fontWeight: 600,
-            color: '#1c1c1e',
+            color: 'var(--ou-text-max)',
             letterSpacing: '-0.01em'
           }}
         >
@@ -90,7 +91,7 @@ export default function PermissionModal({ permission, onDismiss }: Props): JSX.E
           style={{
             margin: '0 0 20px',
             fontSize: 13,
-            color: '#3c3c43',
+            color: 'var(--ou-text-soft)',
             lineHeight: 1.55
           }}
         >
@@ -102,11 +103,11 @@ export default function PermissionModal({ permission, onDismiss }: Props): JSX.E
             onClick={onDismiss}
             style={{
               padding: '7px 16px',
-              borderRadius: 8,
-              border: '0.5px solid #d1d1d6',
-              background: 'white',
+              borderRadius: 'var(--ou-r-btn)',
+              border: '1px solid var(--ou-border-control)',
+              background: 'var(--ou-bg-chip)',
               fontSize: 13,
-              color: '#3c3c43',
+              color: 'var(--ou-text-mid)',
               cursor: 'pointer',
               fontFamily: 'inherit'
             }}
@@ -117,13 +118,14 @@ export default function PermissionModal({ permission, onDismiss }: Props): JSX.E
             onClick={handleOpenSettings}
             style={{
               padding: '7px 16px',
-              borderRadius: 8,
+              borderRadius: 'var(--ou-r-btn)',
               border: 'none',
-              background: '#007aff',
+              background: 'var(--ou-accent)',
+              boxShadow: 'var(--ou-btn-inset)',
               fontSize: 13,
-              color: 'white',
+              color: 'var(--ou-accent-on)',
               cursor: 'pointer',
-              fontWeight: 500,
+              fontWeight: 650,
               fontFamily: 'inherit'
             }}
           >

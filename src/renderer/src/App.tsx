@@ -1,14 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import AssistantPopup from './components/AssistantPopup'
-import ConnectedRail from './components/ConnectedRail'
-import ActivityPanel from './components/ActivityPanel'
+import RunConsole from './components/RunConsole'
 import ErrorBoundary from './components/ErrorBoundary'
 import PermissionModal from './components/PermissionModal'
 import HitlModal from './components/HitlModal'
 import PlanApprovalModal from './components/PlanApprovalModal'
 import OnboardingWizard from './components/onboarding/OnboardingWizard'
 import ConsentModal from './components/ConsentModal'
-import WorkflowsUI from './components/WorkflowsUI'
 import WhatsAppAutoReplyBanner from './components/WhatsAppAutoReplyBanner'
 import { useAssistantAnimations } from './hooks/useAssistantAnimations'
 import { useOnboarding } from './hooks/useOnboarding'
@@ -42,8 +39,28 @@ const isMac = window.openui.platform === 'darwin'
  * rendering our own controls there and just reserve space via CSS
  * (.ou-titlebar-mac) so the brand label doesn't sit underneath them.
  */
-function TitleBar(): JSX.Element {
+/** 9px chevron used in the workspace switcher. */
+function Chevron(): JSX.Element {
+  return (
+    <svg className="ou-tb-switcher-chevron" width="9" height="9" viewBox="0 0 9 9" aria-hidden="true">
+      <path d="M2 3.4L4.5 5.9L7 3.4" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  )
+}
+
+/**
+ * The 38px window chrome (handoff § A). Two left-side variants:
+ *   • `setup`   — accent mark + "OpenUI" wordmark + mono "SETUP" (First Run).
+ *   • `console` — workspace switcher + a live mono counter of running / waiting
+ *     runs (sourced from TaskActivityContext, never hardcoded) + a ⌘K search
+ *     affordance. The right-side window controls are shared.
+ *
+ * The minimize / maximize / close IPC and the isMac / hiddenInset handling are
+ * unchanged — only the visual chrome differs.
+ */
+function TitleBar({ variant, onWorkspaceClick }: { variant: 'setup' | 'console'; onWorkspaceClick?: () => void }): JSX.Element {
   const [maximized, setMaximized] = useState(false)
+  const { runningCount, waitingCount } = useTaskActivity()
 
   useEffect(() => {
     window.openui.isMaximized().then(setMaximized).catch(() => {})
@@ -52,14 +69,60 @@ function TitleBar(): JSX.Element {
 
   return (
     <div className={isMac ? 'ou-titlebar ou-titlebar-mac' : 'ou-titlebar'}>
-      <div className="ou-titlebar-brand">
-        <div className="ou-titlebar-orb" />
-        <span className="ou-titlebar-name">OpenUI</span>
-      </div>
+      {variant === 'setup' ? (
+        <div className="ou-tb-setup">
+          <div className="ou-tb-mark" aria-hidden="true" />
+          <span className="ou-tb-wordmark">OpenUI</span>
+          <span className="ou-tb-setup-tag">SETUP</span>
+        </div>
+      ) : (
+        <div className="ou-tb-console">
+          {/* Workspace switcher — opens the conversation/workspace history drawer
+              (runs + conversations coexist: the ledger shows runs, this browses
+              full chat threads by day and resumes them). */}
+          <button type="button" className="ou-tb-switcher" aria-label="Switch workspace" title="Workspace & history" onClick={onWorkspaceClick}>
+            <div className="ou-tb-mark" aria-hidden="true" />
+            <span className="ou-tb-switcher-name">Work</span>
+            <Chevron />
+          </button>
+          <div className="ou-tb-divider" aria-hidden="true" />
+          {/* Live run counters — real, from TaskActivityContext. */}
+          <div className="ou-tb-counters" aria-live="polite">
+            <span className="ou-tb-count-running">{runningCount} running</span>
+            {waitingCount > 0 && (
+              <>
+                <span className="ou-tb-count-sep">/</span>
+                <span className="ou-tb-count-waiting">
+                  {waitingCount} waiting on you
+                </span>
+              </>
+            )}
+          </div>
+        </div>
+      )}
       <div
         className="ou-titlebar-drag"
         onDoubleClick={isMac ? undefined : () => window.openui.toggleMaximizeWindow()}
       />
+      {variant === 'console' && (
+        // ⌘K search affordance — a real control, intentionally a no-op for now.
+        // TODO: wire to a command palette / run search once that surface exists.
+        <button
+          type="button"
+          className="ou-tb-search"
+          aria-label="Search (Cmd K)"
+          title="Search"
+          onClick={() => {
+            /* no-op: search surface not built yet */
+          }}
+        >
+          <svg width="11" height="11" viewBox="0 0 11 11" aria-hidden="true">
+            <circle cx="4.6" cy="4.6" r="3.1" fill="none" stroke="currentColor" strokeWidth="1.3" />
+            <path d="M6.9 6.9L9.4 9.4" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+          </svg>
+          <span className="ou-tb-search-kbd">{isMac ? '⌘K' : 'Ctrl K'}</span>
+        </button>
+      )}
       {!isMac && (
         <div className="ou-winctl">
           <button
@@ -115,9 +178,15 @@ function AppShell(): JSX.Element {
 
   const [permissionNeeded, setPermissionNeeded] = useState<PermissionTarget | null>(null)
   const [consentNeeded, setConsentNeeded] = useState(false)
-  const [showWorkflows, setShowWorkflows] = useState(false)
   const [hitlRequest, setHitlRequest] = useState<HitlRequestPayload | null>(null)
   const [planRequest, setPlanRequest] = useState<PlanRequestPayload | null>(null)
+  // True while the Run Console is showing the approval INLINE on a visible run
+  // row — the blocking modal is then suppressed so there's one approval surface,
+  // not two. Falls back to the modal whenever the run isn't visible/focused.
+  const [inlineApproval, setInlineApproval] = useState(false)
+  // Workspace / conversation-history drawer — opened from the title-bar switcher
+  // OR the console's account row (runs + conversations coexist, see RunConsole).
+  const [historyOpen, setHistoryOpen] = useState(false)
 
   const { taskViewActive } = useTaskActivity()
   const { isComplete, isLoading, currentStep, setCurrentStep, completeOnboarding } = useOnboarding()
@@ -198,16 +267,36 @@ function AppShell(): JSX.Element {
     [completeOnboarding]
   )
 
-  const handleRunWorkflow = useCallback((workflowName: string): void => {
-    window.openui
-      .getTier()
-      .then((tier) => window.openui.chat(`Run workflow: ${workflowName}`, tier as 'free' | 'pro' | 'enterprise'))
-      .catch(() => {})
-  }, [])
+  // Shared HITL/plan responders — used by BOTH the inline callout and the modal
+  // fallback, so approve/deny run the exact same IPC either way (one pipeline).
+  const respondHitl = useCallback(
+    (approved: boolean): void => {
+      if (!hitlRequest) return
+      window.openui.respondHitl(hitlRequest.id, approved)
+      setHitlRequest(null)
+    },
+    [hitlRequest]
+  )
+  const respondPlan = useCallback(
+    (approved: boolean): void => {
+      if (!planRequest) return
+      window.openui.respondPlan(planRequest.id, approved)
+      setPlanRequest(null)
+    },
+    [planRequest]
+  )
+  // A choice-style HITL (candidate picker) needs the modal's picker UI, so it is
+  // never surfaced inline — only plain allow/deny requests are.
+  const inlineHitl = hitlRequest && !(hitlRequest.choices && hitlRequest.choices.length > 0) ? hitlRequest : null
 
   return (
     <div ref={overlayRef} className="openui-overlay">
-      <TitleBar />
+      {/* Setup chrome during onboarding/loading; console chrome once the app is
+          in the working surface (drives the workspace switcher + live counters). */}
+      <TitleBar
+        variant={showChat ? 'console' : 'setup'}
+        onWorkspaceClick={showChat ? () => setHistoryOpen(true) : undefined}
+      />
       {/* Always-on WhatsApp auto-reply indicator + kill switch + draft review.
           Self-hides unless the watcher is active or a draft is waiting. */}
       <ErrorBoundary label="WhatsApp auto-reply" compact>
@@ -224,39 +313,21 @@ function AppShell(): JSX.Element {
         />
       ) : (
         <>
-          <ErrorBoundary label="Chat">
-            <AssistantPopup
-              recordingRef={recordingRef}
-              captionLockedRef={captionLockedRef}
-              onPermissionNeeded={setPermissionNeeded}
+          {/* The three-column Run Console replaces the AssistantPopup + ActivityPanel
+              + ConnectedRail layout. It reuses the SAME chat pipeline (beginTask +
+              window.openui.chat) and the TaskActivityContext queue/touched model. */}
+          <ErrorBoundary label="Run console">
+            <RunConsole
               initialMessage={initialMessage}
+              hitlRequest={inlineHitl}
+              planRequest={planRequest}
+              onRespondHitl={respondHitl}
+              onRespondPlan={respondPlan}
+              onApprovalInline={setInlineApproval}
+              historyOpen={historyOpen}
+              onHistoryChange={setHistoryOpen}
             />
           </ErrorBoundary>
-          {taskViewActive && (
-            <ErrorBoundary label="Connected apps" compact>
-              <ConnectedRail />
-            </ErrorBoundary>
-          )}
-          <ErrorBoundary label="Activity" compact>
-            <ActivityPanel />
-          </ErrorBoundary>
-          {/* Workflows toggle button — bottom-left corner */}
-          <button
-            type="button"
-            className="ou-workflows-fab"
-            onClick={() => setShowWorkflows(true)}
-            title="Team Workflows"
-          >
-            Workflows
-          </button>
-          {showWorkflows && (
-            <ErrorBoundary label="Workflows" compact>
-              <WorkflowsUI
-                onClose={() => setShowWorkflows(false)}
-                onRunWorkflow={handleRunWorkflow}
-              />
-            </ErrorBoundary>
-          )}
           {permissionNeeded && (
             <PermissionModal
               permission={permissionNeeded}
@@ -266,7 +337,9 @@ function AppShell(): JSX.Element {
         </>
       )}
       {consentNeeded && <ConsentModal onClose={() => setConsentNeeded(false)} />}
-      {hitlRequest && (
+      {/* Modal fallback — only when the approval isn't already shown inline on a
+          visible run row (so a request is never silently missed, never doubled). */}
+      {hitlRequest && !inlineApproval && (
         <ErrorBoundary label="Confirmation dialog" compact>
           <HitlModal
             request={hitlRequest}
@@ -289,7 +362,7 @@ function AppShell(): JSX.Element {
           />
         </ErrorBoundary>
       )}
-      {planRequest && (
+      {planRequest && !inlineApproval && (
         <ErrorBoundary label="Plan approval" compact>
           <PlanApprovalModal
             request={planRequest}

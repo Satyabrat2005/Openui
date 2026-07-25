@@ -2,6 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useRef, useState, ty
 import type { TaskCard, TaskUpdatePayload, ParallelGroup, SubagentRow, StepStatus } from '../env'
 import { appKindForTool, appKindForName, type AppKind } from '../lib/appKind'
 import { labelForModel } from '../lib/modelLabel'
+import { deriveCounts } from '../lib/runQueue'
 
 /**
  * TaskActivityContext — the single source of truth for the center timeline (#1),
@@ -30,6 +31,10 @@ interface TaskActivityValue {
   activeModel: string | null
   /** True while any card is in progress — expands the UI into the task view (#6). */
   taskViewActive: boolean
+  /** Live title-bar/sidebar counter: cards actively running (not awaiting you). */
+  runningCount: number
+  /** Live title-bar/sidebar counter: cards paused on an approval you owe. */
+  waitingCount: number
   /** Card the user clicked in the left rail to focus, or null. */
   focusedId: string | null
   /** Open a new task card for a turn about to be sent. Returns the card id. */
@@ -77,8 +82,10 @@ export function TaskActivityProvider({ children }: { children: ReactNode }): JSX
       title: title.trim() || 'New task',
       status: 'in_progress',
       kind,
+      queue: 'active',
       steps: [],
       groups: [],
+      touched: [],
       startedAt: Date.now()
     }
     currentIdRef.current = id
@@ -96,7 +103,17 @@ export function TaskActivityProvider({ children }: { children: ReactNode }): JSX
     currentIdRef.current = id
     setTasks((prev) => [
       ...prev,
-      { id, title: 'Background task', status: 'in_progress', kind: 'chat', steps: [], groups: [], startedAt: Date.now() }
+      {
+        id,
+        title: 'Background task',
+        status: 'in_progress',
+        kind: 'chat',
+        queue: 'active',
+        steps: [],
+        groups: [],
+        touched: [],
+        startedAt: Date.now()
+      }
     ])
     return id
   }, [])
@@ -126,7 +143,10 @@ export function TaskActivityProvider({ children }: { children: ReactNode }): JSX
         const steps = c.steps.slice()
         if (i === -1) steps.push(step)
         else steps[i] = { ...steps[i], ...step }
-        return { ...c, steps }
+        // Fresh step activity means an approval the run was paused on has been
+        // resolved — the run is moving again, so it leaves the "waiting" queue.
+        const queue = c.queue === 'waiting' ? 'active' : c.queue
+        return { ...c, steps, queue }
       })
     })
 
@@ -134,9 +154,53 @@ export function TaskActivityProvider({ children }: { children: ReactNode }): JSX
     const offTool = window.openui.onToolCall(({ tool }) => {
       const kind = appKindForTool(tool)
       const cardId = ensureCard()
-      patchCard(cardId, (c) => ({ ...c, currentApp: kind }))
+      patchCard(cardId, (c) => ({
+        ...c,
+        currentApp: kind,
+        // A new tool call means the run is executing again — clear any approval wait.
+        queue: c.queue === 'waiting' ? 'active' : c.queue
+      }))
       setActiveApp(kind)
       setActiveTool(tool)
+    })
+
+    // Live answer streaming — append each natural-language delta to the current
+    // card so the run ledger renders the answer as it streams (README flagged
+    // "live streaming answer rendering" as a gap; this fills it). onDone settles
+    // it to the clean final text below.
+    const offChunk = window.openui.onChunk((delta) => {
+      const id = currentIdRef.current
+      if (id) patchCard(id, (c) => ({ ...c, answer: (c.answer ?? '') + delta }))
+    })
+
+    // Per-run audit trail (TOUCHED) — append every resource the agent touched.
+    const offTouched = window.openui.onTaskTouched(({ tool, resource, operation }) => {
+      const cardId = ensureCard()
+      patchCard(cardId, (c) => ({
+        ...c,
+        touched: [...(c.touched ?? []), { app: appKindForTool(tool), resource, operation }]
+      }))
+    })
+
+    // Tag the in-flight card with its conversation id the moment the backend
+    // creates the conversation row (lets the ledger group runs by thread).
+    const offConv = window.openui.onConversationCreated((conv) => {
+      const id = currentIdRef.current
+      if (id) patchCard(id, (c) => ({ ...c, conversationId: conv.id }))
+    })
+
+    // Approval gates move the current run into the "waiting on you" queue. The
+    // request is cleared back to 'active' by the next step/tool activity (above),
+    // by the HITL timeout, or by finalize — so a resolved request never sticks.
+    const toWaiting = (): void => {
+      const id = currentIdRef.current
+      if (id) patchCard(id, (c) => (c.status === 'in_progress' ? { ...c, queue: 'waiting' } : c))
+    }
+    const offHitl = window.openui.onHitlRequest(toWaiting)
+    const offPlan = window.openui.onPlanRequest(toWaiting)
+    const offHitlTimeout = window.openui.onHitlTimeout(() => {
+      const id = currentIdRef.current
+      if (id) patchCard(id, (c) => (c.queue === 'waiting' ? { ...c, queue: 'active' } : c))
     })
 
     // The real model the backend is using this turn — recorded on the card so the
@@ -192,6 +256,7 @@ export function TaskActivityProvider({ children }: { children: ReactNode }): JSX
           ...c,
           // A card with a failed step is a failed task even if the turn "completes".
           status: status === 'failed' || c.steps.some((s) => s.status === 'error') ? 'failed' : 'done',
+          queue: 'done',
           endedAt: Date.now()
         }))
       }
@@ -201,8 +266,18 @@ export function TaskActivityProvider({ children }: { children: ReactNode }): JSX
       setActiveModel(null)
     }
 
-    const offDone = window.openui.onDone(() => finalize('done'))
-    const offError = window.openui.onError(() => finalize('failed'))
+    const offDone = window.openui.onDone((result) => {
+      // Settle the streamed answer to the clean final text the agent committed
+      // (strips any streaming artifacts / withheld tool JSON).
+      const id = currentIdRef.current
+      if (id && result?.text) patchCard(id, (c) => ({ ...c, answer: result.text }))
+      finalize('done')
+    })
+    const offError = window.openui.onError((msg) => {
+      const id = currentIdRef.current
+      if (id && typeof msg === 'string') patchCard(id, (c) => ({ ...c, answer: msg }))
+      finalize('failed')
+    })
     // Turn boundary — the active-app tile should go idle between turns.
     const offReset = window.openui.onTaskReset(() => {
       setActiveApp(null)
@@ -212,6 +287,12 @@ export function TaskActivityProvider({ children }: { children: ReactNode }): JSX
     return () => {
       offTask()
       offTool()
+      offChunk()
+      offTouched()
+      offConv()
+      offHitl()
+      offPlan()
+      offHitlTimeout()
       offModel()
       offSubGroup()
       offSubTool()
@@ -225,10 +306,24 @@ export function TaskActivityProvider({ children }: { children: ReactNode }): JSX
   }, [ensureCard, patchCard, patchSub])
 
   const taskViewActive = tasks.some((t) => t.status === 'in_progress')
+  // Live queue counters for the title bar / sidebar, derived from the explicit
+  // queue field (see lib/runQueue — one shared, tested derivation).
+  const { running: runningCount, waiting: waitingCount } = deriveCounts(tasks)
 
   return (
     <TaskActivityContext.Provider
-      value={{ tasks, activeApp, activeTool, activeModel, taskViewActive, focusedId, beginTask, focusTask: setFocusedId }}
+      value={{
+        tasks,
+        activeApp,
+        activeTool,
+        activeModel,
+        taskViewActive,
+        runningCount,
+        waitingCount,
+        focusedId,
+        beginTask,
+        focusTask: setFocusedId
+      }}
     >
       {children}
     </TaskActivityContext.Provider>
