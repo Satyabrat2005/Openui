@@ -408,6 +408,24 @@ describe('send_whatsapp_message', () => {
   })
 })
 
+// ── read_file vs read_pdf vs read_spreadsheet — the "open this file" cluster.
+// read_file is UTF-8 text only; a PDF/xlsx must route to the decoding tool, not
+// return raw/garbled bytes. Lock the disambiguation in the description so the
+// model doesn't reach for read_file on "read report.pdf" / "open budget.xlsx".
+describe('read cluster — read_file steers binary docs elsewhere', () => {
+  it('read_file names read_pdf and read_spreadsheet for non-text documents', () => {
+    const readFileSchema = toolSchemas.find((s) => s.name === 'read_file')!
+    expect(readFileSchema.description).toMatch(/TEXT-ONLY/i)
+    expect(readFileSchema.description).toMatch(/read_pdf/)
+    expect(readFileSchema.description).toMatch(/read_spreadsheet/)
+  })
+
+  it('read_pdf and read_spreadsheet both exist to be routed to', () => {
+    expect(toolSchemas.find((s) => s.name === 'read_pdf')).toBeDefined()
+    expect(toolSchemas.find((s) => s.name === 'read_spreadsheet')).toBeDefined()
+  })
+})
+
 // ── scoreContactCandidates — OCR candidate scoring for the two-phase WhatsApp
 // contact resolution (fail-closed: only a clearly-best, well-separated match
 // auto-resolves; anything else surfaces every plausible candidate instead) ──
@@ -790,6 +808,30 @@ describe('run_python — HITL gating and arg validation', () => {
     const r = await executeTool('run_python', {}, { tier: 'enterprise', bypassHitl: true })
     expect(r).toMatchObject({ ok: false })
     expect((r as { error: string }).error).toMatch(/requires "code"|path/)
+  })
+})
+
+// ── type_text — keyboard input synthesis guardrails ───────────────────────────
+// type_text drives real OS keystrokes (nut-js), so the happy path can't be unit
+// tested — but its fail-closed logic can: it rejects empty text BEFORE loading
+// nut or touching the keyboard, and it is HITL-gated like every input tool.
+describe('type_text — input-synthesis guardrails', () => {
+  it('is state-changing and pauses for approval without bypassHitl', async () => {
+    expect(STATE_CHANGING_TOOLS.has('type_text')).toBe(true)
+    const r = await executeTool('type_text', { text: 'hello' }, { tier: 'free' })
+    expect(r).toMatchObject({ status: 'pending_approval', tool: 'type_text' })
+  })
+
+  it('rejects empty text before any keyboard automation runs', async () => {
+    const r = await executeTool('type_text', { text: '' }, { tier: 'free', bypassHitl: true })
+    expect(r).toMatchObject({ ok: false })
+    expect((r as { error: string }).error).toMatch(/non-empty/)
+  })
+
+  it('treats a missing "text" as empty and refuses (never types undefined)', async () => {
+    const r = await executeTool('type_text', {}, { tier: 'free', bypassHitl: true })
+    expect(r).toMatchObject({ ok: false })
+    expect((r as { error: string }).error).toMatch(/non-empty|required/)
   })
 })
 

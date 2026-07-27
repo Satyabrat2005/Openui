@@ -5604,7 +5604,11 @@ export const toolSchemas: ToolSchema[] = [
       properties: {
         code: { type: 'string', description: 'Inline Python source to run. Omit if using "path".' },
         path: { type: 'string', description: 'Workspace-relative .py file to run, e.g. "train.py". Omit if using "code".' },
-        args: { type: 'object', description: 'Optional array of string CLI args passed to the script.' },
+        args: {
+          type: 'array',
+          description: 'Optional array of string CLI args passed to the script, e.g. ["--epochs", "5"].',
+          items: { type: 'string' }
+        },
         smoke: { type: 'boolean', description: 'Append --smoke (fast/tiny mode) for scripts that support it. Default false.' }
       },
       required: []
@@ -6483,7 +6487,9 @@ export const toolSchemas: ToolSchema[] = [
     name: 'read_file',
     description:
       'Read the contents of a UTF-8 text file (up to 512 KiB) and return it. ' +
-      'Use for source code, config, notes, CSV/JSON and other text documents.',
+      'Use for source code, config, notes, CSV/JSON and other text documents. ' +
+      'This tool is TEXT-ONLY: for a PDF use read_pdf, and for an .xlsx/.csv spreadsheet use ' +
+      'read_spreadsheet — those decode the real document instead of returning raw/garbled bytes.',
     parameters: {
       type: 'object',
       properties: {
