@@ -154,6 +154,9 @@ describe('executeTool — HITL approval gate', () => {
     const denied = await executeTool('computer_use', { goal: 'x' }, { tier: 'free' })
     expect(denied).toMatchObject({ ok: false })
     expect((denied as { error: string }).error).toMatch(/requires a pro subscription/i)
+    // The structured flag lets the agent loop surface the upgrade reason to the
+    // user instead of the failure vanishing into the tool result.
+    expect((denied as { tierRequired?: string }).tierRequired).toBe('pro')
     // At a sufficient tier it reaches the HITL gate and pauses for approval.
     const gated = await executeTool('computer_use', { goal: 'x' }, { tier: 'pro' })
     expect(gated).toMatchObject({ status: 'pending_approval', tool: 'computer_use' })
@@ -390,6 +393,18 @@ describe('send_whatsapp_message', () => {
     const r = await executeTool('send_whatsapp_message', { contact: 'Ashu' }, { tier: 'free', bypassHitl: true })
     expect(r).toMatchObject({ ok: false })
     expect((r as { error: string }).error).toMatch(/message/i)
+  })
+
+  it('description steers a message-bearing request here, never open_whatsapp_chat + typing', () => {
+    const send = toolSchemas.find((s) => s.name === 'send_whatsapp_message')!
+    const open = toolSchemas.find((s) => s.name === 'open_whatsapp_chat')!
+    // send_whatsapp_message must claim ANY request that carries content to deliver.
+    expect(send.description).toMatch(/reply to, or tell someone/i)
+    expect(send.description).toMatch(/only correct tool for sending/i)
+    // open_whatsapp_chat must disclaim messaging and warn that it sends nothing.
+    expect(open.description).toMatch(/nothing to say/i)
+    expect(open.description).toMatch(/you MUST call send_whatsapp_message/i)
+    expect(open.description).toMatch(/sends nothing/i)
   })
 })
 

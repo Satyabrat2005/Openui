@@ -111,6 +111,14 @@ export interface ToolResult {
   output?: string
   error?: string
   /**
+   * Set (alongside ok:false) when the call was refused purely because the tool
+   * is gated to a higher subscription tier than the caller's — see the tier gate
+   * in executeTool. Retrying never clears it, and the model may quietly pivot or
+   * stall, so the agent loop uses this flag to make sure the user is TOLD the
+   * feature needs an upgrade rather than being left with a silent dead end.
+   */
+  tierRequired?: Tier
+  /**
    * When set, the agent loop emits openui:permission:denied so the renderer
    * can show a modal guiding the user to grant the required OS permission.
    */
@@ -5642,11 +5650,14 @@ export const toolSchemas: ToolSchema[] = [
   {
     name: 'open_whatsapp_chat',
     description:
-      'Open a specific WhatsApp conversation by contact or group name, WITHOUT sending anything. ' +
-      'Use this when the user just wants to open, go to, or look at a chat (e.g. "open my WhatsApp ' +
-      'chat with Ashu"). It launches WhatsApp, searches for the name, and opens the top matching ' +
-      'chat via the keyboard — no screen coordinates needed. To actually TYPE AND SEND a message, ' +
-      'use send_whatsapp_message instead. Do NOT invent a "search_contact" tool; this is the one to use.',
+      'Open a specific WhatsApp conversation by contact or group name, WITHOUT sending anything. This is ' +
+      'ONLY for navigating to a chat when there is NOTHING to say — e.g. "open my WhatsApp chat with ' +
+      'Ashu", "show me my chat with Mom". It launches WhatsApp, searches for the name, and opens the top ' +
+      'matching chat via the keyboard — no screen coordinates needed. ' +
+      'CRITICAL: if the user gave you ANY message content to deliver — anything of the shape "message/text/' +
+      'tell/send/reply to X saying/that/about Y" — you MUST call send_whatsapp_message with that text ' +
+      'instead. Do NOT call open_whatsapp_chat and then try to type the message yourself: this tool opens ' +
+      'the chat and STOPS, so doing that sends nothing. Do NOT invent a "search_contact" tool; this is the one to use.',
     parameters: {
       type: 'object',
       properties: {
@@ -5661,13 +5672,16 @@ export const toolSchemas: ToolSchema[] = [
   {
     name: 'send_whatsapp_message',
     description:
-      'Compose and SEND a WhatsApp message to a contact or group. Use this whenever the user wants ' +
-      'to message, text, reply to, or tell someone something on WhatsApp (e.g. "message Mom I\'ll be ' +
-      'late", "send Ashu the meeting time"). It opens the chat and types the message via the keyboard, ' +
-      'then sends it. You may format the text (line breaks, emoji, *bold*/_italic_ using WhatsApp\'s ' +
-      'markdown) — put the exact final text in "message". This ALWAYS asks the user to confirm before ' +
-      'sending, since it messages another person. If the user only wants the chat opened, use ' +
-      'open_whatsapp_chat instead.',
+      'Compose and SEND a WhatsApp message to a contact or group. Use this WHENEVER the user wants to ' +
+      'message, text, reply to, or tell someone something on WhatsApp and has given you the content to ' +
+      'send (e.g. "message Mom I\'ll be late", "send Ashu the meeting time", "tell Ravi I said hi"). This ' +
+      'is the ONLY correct tool for sending — it opens the right chat, types the message via the keyboard, ' +
+      'and sends it in one step. Never try to send by chaining open_whatsapp_chat + typing; that opens the ' +
+      'chat but sends nothing (the exact "opened WhatsApp, nothing happened" failure). You may format the ' +
+      'text (line breaks, emoji, *bold*/_italic_ using WhatsApp\'s markdown) — put the exact final text in ' +
+      '"message". This ALWAYS asks the user to confirm before sending, since it messages another person; a ' +
+      'confirmation prompt or a "which chat did you mean?" picker will appear on screen — that is expected, ' +
+      'wait for it. If the user ONLY wants the chat opened with nothing to say, use open_whatsapp_chat instead.',
     parameters: {
       type: 'object',
       properties: {
@@ -6711,6 +6725,7 @@ export async function executeTool(
   if (requiredTier && TIER_ORDER.indexOf(context.tier) < TIER_ORDER.indexOf(requiredTier)) {
     return {
       ok: false,
+      tierRequired: requiredTier,
       error:
         `"${name}" requires a ${requiredTier} subscription or higher ` +
         `(current tier: ${context.tier}). ` +

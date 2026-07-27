@@ -194,6 +194,19 @@ describe('tool registration', () => {
       }
     }
   })
+
+  it('search/research descriptions steer paper-finding to the API, not a browser', () => {
+    // The "opened a blank browser, nothing happened" failure is the model driving
+    // a Pro-gated vision/browser tool to hunt for papers instead of calling these
+    // free, deterministic API tools. The descriptions must explicitly rule that out.
+    const search = paperResearchToolSchemas.find((s) => s.name === 'search_papers')!
+    const research = paperResearchToolSchemas.find((s) => s.name === 'research_papers')!
+    for (const desc of [search.description, research.description]) {
+      expect(desc).toMatch(/do not open a browser|never open a browser/i)
+      expect(desc).toMatch(/computer_use|browser_vision_act/)
+    }
+    expect(search.description).toMatch(/first and only tool/i)
+  })
 })
 
 describe('input validation (no network)', () => {

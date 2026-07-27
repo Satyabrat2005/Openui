@@ -154,6 +154,7 @@ import {
   handleChat,
   clearHistory,
   registerAgentIPC,
+  raiseWindow,
   isOllamaRunnerCrash,
   DESIGNER_SYSTEM_PROMPT,
   DESIGNER_TOOL_NAMES
@@ -164,9 +165,24 @@ import { Events } from './telemetry/events'
 import { callMcpTool } from './mcp-client'
 import { grantOrigin } from './browser/consent'
 
-// A fake BrowserWindow that records everything emitted to the renderer.
+// A fake BrowserWindow that records everything emitted to the renderer, plus the
+// window-management calls raiseWindow makes so a test can assert the OpenUI window
+// is pulled to the foreground before a HITL prompt (so the modal isn't stranded
+// behind an app a tool just focused, e.g. WhatsApp).
+const winCalls = { focus: 0, show: 0, alwaysOnTop: [] as boolean[] }
 const win = {
   isDestroyed: () => false,
+  isMinimized: () => false,
+  restore: () => {},
+  show: () => {
+    winCalls.show++
+  },
+  focus: () => {
+    winCalls.focus++
+  },
+  setAlwaysOnTop: (flag: boolean) => {
+    winCalls.alwaysOnTop.push(flag)
+  },
   webContents: {
     send: (channel: string, ...args: unknown[]) => h.sends.push({ channel, args })
   }
@@ -203,6 +219,9 @@ const lastTaskStatus = (id: string): string | undefined => {
 beforeEach(() => {
   clearHistory()
   h.sends.length = 0
+  winCalls.focus = 0
+  winCalls.show = 0
+  winCalls.alwaysOnTop.length = 0
   h.state.responses = []
   h.ollamaChat.mockClear()
   h.executeTool.mockClear().mockResolvedValue({ ok: true, output: 'done' })
@@ -740,6 +759,131 @@ describe('handleChat — tool-requested confirmation (needsConfirmation)', () =>
         (c) => (c[2] as { sensitiveApproved?: boolean } | undefined)?.sensitiveApproved
       )
     ).toHaveLength(0)
+  })
+})
+
+// ── Candidate picker (needsConfirmation.kind === 'choice') ────────────────────
+// An ambiguous target (e.g. "which WhatsApp chat did you mean?") comes back as a
+// choice result: the loop must emit a picker request carrying the `choices`, and
+// on a pick, RE-RUN the same tool with the picked value merged in as
+// resolvedContact — that re-run is what actually reaches the send. If this path
+// is broken the user sees "WhatsApp opened, then nothing". These pin it down.
+describe('handleChat — candidate picker (choice confirmation)', () => {
+  beforeEach(() => registerAgentIPC(win))
+
+  function respondChoice(selected: string | null): void {
+    const req = lastArg('openui:hitl:request')
+    const handler = h.ipc.get('openui:hitl:choice-response')
+    expect(handler, 'choice-response IPC handler should be registered').toBeDefined()
+    handler?.(null, { id: req?.id, selected })
+  }
+
+  it('emits a picker with choices and re-runs the tool with the picked contact on select', async () => {
+    h.executeTool
+      .mockResolvedValueOnce({
+        ok: false,
+        error: 'Could not confidently find a single WhatsApp chat for "John".',
+        needsConfirmation: {
+          kind: 'choice',
+          label: 'Which WhatsApp chat did you mean by "John"?',
+          choices: ['John Smith', 'John Doe']
+        }
+      })
+      .mockResolvedValue({ ok: true, output: 'Sent your WhatsApp message to "John Doe".' })
+
+    h.state.responses = ['{"tool":"send_whatsapp_message","args":{"contact":"John","message":"hi"}}', 'Sent it.']
+    const pending = handleChat(win, 'message John hi', 'free')
+
+    expect(await waitFor(() => sent('openui:hitl:request'))).toBe(true)
+    // The request is a picker: it carries the candidate list, not a plain Allow/Deny.
+    expect(lastArg('openui:hitl:request')).toMatchObject({
+      choices: ['John Smith', 'John Doe']
+    })
+    // The window was raised so the picker isn't hidden behind the focused app.
+    expect(winCalls.focus).toBeGreaterThan(0)
+    expect(winCalls.alwaysOnTop).toContain(true)
+
+    respondChoice('John Doe')
+    await pending
+
+    // The pick is fed back as resolvedContact on a re-run of the SAME tool — this
+    // is the step that actually sends, not just opens the chat.
+    const sendCalls = h.executeTool.mock.calls.filter((c) => c[0] === 'send_whatsapp_message')
+    expect(sendCalls.length).toBe(2)
+    expect(sendCalls[1][1]).toMatchObject({ contact: 'John', resolvedContact: 'John Doe' })
+  })
+
+  it('does not re-run the tool when the user cancels the picker', async () => {
+    h.executeTool.mockResolvedValue({
+      ok: false,
+      error: 'ambiguous',
+      needsConfirmation: { kind: 'choice', label: 'Which one?', choices: ['A', 'B'] }
+    })
+
+    h.state.responses = ['{"tool":"send_whatsapp_message","args":{"contact":"X","message":"hi"}}', 'OK.']
+    const pending = handleChat(win, 'message X hi', 'free')
+
+    expect(await waitFor(() => sent('openui:hitl:request'))).toBe(true)
+    respondChoice(null) // cancel
+    await pending
+
+    // Only the initial resolve attempt ran — no re-run carrying resolvedContact.
+    const withResolved = h.executeTool.mock.calls.filter(
+      (c) => (c[1] as { resolvedContact?: string } | undefined)?.resolvedContact
+    )
+    expect(withResolved).toHaveLength(0)
+  })
+})
+
+// ── Tier-gate refusal is surfaced, never a silent dead end ────────────────────
+// A free user hitting a Pro-only tool (computer_use / browser_vision_act) gets an
+// ok:false with tierRequired. The model is told, but it can go quiet — leaving a
+// browser that opened and went nowhere. The loop must make the upgrade reason
+// visible to the user when the turn ends without it.
+describe('handleChat — tier-gated tool surfacing', () => {
+  beforeEach(() => registerAgentIPC(win))
+
+  it('tells the user the feature needs an upgrade when the model ends quietly', async () => {
+    h.executeTool.mockResolvedValueOnce({
+      ok: false,
+      tierRequired: 'pro',
+      error: '"computer_use" requires a pro subscription or higher (current tier: free).'
+    })
+    // Model opens nothing useful afterwards — ends with vague prose that omits the reason.
+    h.state.responses = [
+      '{"tool":"computer_use","args":{"goal":"find a paper"}}',
+      'I had a look for you.'
+    ]
+    const pending = handleChat(win, 'find me a paper on transformers', 'free')
+    await pending
+
+    const doneText = String(lastArg('openui:chat:done')?.text ?? '')
+    expect(doneText).toMatch(/computer_use/)
+    expect(doneText).toMatch(/Pro subscription/i)
+  })
+})
+
+// ── raiseWindow (pure, defensive) ─────────────────────────────────────────────
+describe('raiseWindow', () => {
+  it('shows, focuses, and toggles always-on-top to force a z-order raise', () => {
+    const calls: string[] = []
+    const fake = {
+      isDestroyed: () => false,
+      isMinimized: () => false,
+      show: () => calls.push('show'),
+      focus: () => calls.push('focus'),
+      setAlwaysOnTop: (f: boolean) => calls.push(`aot:${f}`)
+    } as never
+    raiseWindow(fake)
+    expect(calls).toEqual(['show', 'focus', 'aot:true', 'aot:false'])
+  })
+
+  it('is a no-op on a destroyed window and never throws', () => {
+    expect(() => raiseWindow({ isDestroyed: () => true } as never)).not.toThrow()
+  })
+
+  it('never throws on a stripped window missing the optional methods', () => {
+    expect(() => raiseWindow({} as never)).not.toThrow()
   })
 })
 
