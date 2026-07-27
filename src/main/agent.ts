@@ -146,6 +146,45 @@ let hitlSeq = 0
 const HITL_BACKSTOP_TIMEOUT_MS = 150_000
 
 /**
+ * Bring the OpenUI window to the foreground right before showing a HITL prompt.
+ *
+ * Desktop automation focuses the target app first — send_whatsapp_message calls
+ * launchAndFocusWhatsApp during contact resolution, so WhatsApp is the foreground
+ * window by the time an approval or "which chat did you mean?" picker needs to be
+ * shown. emit() only posts an IPC message; it does NOT raise our window, so the
+ * modal would render BEHIND WhatsApp, the user never sees it, and it auto-cancels
+ * after the backstop timeout — the exact "WhatsApp opened, then nothing happened"
+ * report. Raising the window here is what makes the prompt actually visible.
+ *
+ * Best-effort and fully defensive: every method is feature-detected and the whole
+ * thing is wrapped, so a destroyed window (or a stripped test double) can never
+ * throw into the agent loop.
+ */
+export function raiseWindow(win: BrowserWindow): void {
+  try {
+    const w = win as unknown as {
+      isDestroyed?: () => boolean
+      isMinimized?: () => boolean
+      restore?: () => void
+      show?: () => void
+      focus?: () => void
+      setAlwaysOnTop?: (flag: boolean) => void
+    }
+    if (w.isDestroyed?.()) return
+    if (w.isMinimized?.()) w.restore?.()
+    w.show?.()
+    w.focus?.()
+    // On Windows focus() alone won't pull the window above an app we just
+    // activated (WhatsApp); a momentary always-on-top toggle forces the z-order
+    // raise, then we immediately drop it so the window isn't left pinned on top.
+    w.setAlwaysOnTop?.(true)
+    w.setAlwaysOnTop?.(false)
+  } catch {
+    /* focusing is best-effort — never break the turn over it */
+  }
+}
+
+/**
  * Emit a HITL request to the renderer and return a Promise that resolves once
  * the user clicks Allow (true) or Deny (false) in the HitlModal — or false
  * after the backstop timeout.
@@ -169,6 +208,9 @@ function waitForHitlApproval(
       clearTimeout(timer)
       resolve(approved)
     })
+    // Bring our window forward so the modal isn't hidden behind an app the tool
+    // just focused (e.g. WhatsApp) — otherwise the user never sees the prompt.
+    raiseWindow(win)
     emit(win, 'openui:hitl:request', {
       id,
       tool,
@@ -213,6 +255,10 @@ function waitForHitlChoice(
       clearTimeout(timer)
       resolve(selected)
     })
+    // The candidate picker most often appears right after a tool focused another
+    // app (WhatsApp contact resolution) — raise our window so the picker is
+    // actually visible instead of stranded behind it.
+    raiseWindow(win)
     emit(win, 'openui:hitl:request', { id, tool, args, label, choices })
   })
 }
@@ -1486,6 +1532,14 @@ export async function handleChat(win: BrowserWindow, userMessage: string, tier: 
     let repeatedPreconditionFailures = 0
     const MAX_REPEATED_PRECONDITION_FAILURES = 2
 
+    // Remembers a tool that was refused purely for being above the caller's tier
+    // (e.g. a free user's computer_use / browser_vision_act). The model is told
+    // via the tool result, but it can pivot to a working tool or just stop with
+    // vague prose — leaving the user with an unexplained dead end (a browser that
+    // opened and went nowhere). If the turn ends without the upgrade reason having
+    // surfaced, we append it so the user always learns WHY it stopped short.
+    let tierGate: { tool: string; tier: Tier } | null = null
+
     for (let turn = 0; turn < maxTurns; turn++) {
       trackEvent(Events.MODEL_ROUTE_SELECTED, {
         tier: effectiveTier,
@@ -1535,6 +1589,14 @@ export async function handleChat(win: BrowserWindow, userMessage: string, tier: 
                 .map((s) => `“${s.title}”`)
                 .join(', ')}. They may not have been done — please check.`
             : responseText // genuine natural-language answer ⇒ done
+        // If a Pro-only tool was refused this turn and the model never explained
+        // it, say so plainly — otherwise the user is left with a browser/app that
+        // opened and then silently went nowhere.
+        if (tierGate && !/subscription|upgrade|\bPro\b/i.test(finalText)) {
+          const note = tierGate.tier.charAt(0).toUpperCase() + tierGate.tier.slice(1)
+          finalText = `${finalText.trim()}\n\n⚠️ I couldn't finish that: \`${tierGate.tool}\` needs a ${note} subscription, which this account doesn't have. Nothing was completed for that step.`
+          emit(win, 'openui:chat:chunk', `\n\n⚠️ \`${tierGate.tool}\` needs a ${note} subscription — I couldn't complete that step.`)
+        }
         database.messages.addMessage(convId, 'assistant', finalText)
         break
       }
@@ -1696,6 +1758,14 @@ export async function handleChat(win: BrowserWindow, userMessage: string, tier: 
             error: `User denied the action: ${describeToolCall(toolCall.tool, toolCall.args)}. Do not retry; let the user know you cannot proceed without their approval.`
           }
         }
+      }
+
+      // A tier-gated refusal (free user hitting a Pro-only tool) never clears by
+      // retrying. Remember it so that if the turn later ends without the reason
+      // being surfaced, the wrap-up can tell the user the feature needs an upgrade
+      // instead of leaving a silent dead end.
+      if (!result.ok && result.tierRequired) {
+        tierGate = { tool: toolCall.tool, tier: result.tierRequired }
       }
 
       // If a tool detected a missing OS permission, notify the renderer so it

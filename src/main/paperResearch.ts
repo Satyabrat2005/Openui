@@ -735,8 +735,13 @@ export const paperResearchToolSchemas: ToolSchema[] = [
     description:
       'Search academic papers via the arXiv and Semantic Scholar REST APIs (no scraping). Returns ' +
       'title, authors, abstract, publication date, and a PDF URL for each result. Read-only — it ' +
-      'downloads nothing. Use this to discover papers, then download_paper / summarize_paper for the ' +
-      'ones you want. If the user says "find papers on X AND summarize them", use research_papers instead.',
+      'downloads nothing. This is the FIRST and ONLY tool to use for ANY "find / search for / look up a ' +
+      'paper (or research/study/publication) about X" request — call it directly with the topic. Do NOT ' +
+      'open a browser (open_app, browser_navigate, computer_use, browser_vision_act) to search Google ' +
+      'Scholar/arXiv/the web for papers: this API does that for you instantly, works on every tier, and ' +
+      'the vision/browser path is Pro-gated and will just fail on the free tier — opening a blank browser ' +
+      'that goes nowhere. Use this to discover papers, then download_paper / summarize_paper for the ones ' +
+      'you want. If the user says "find papers on X AND summarize them", use research_papers instead.',
     parameters: {
       type: 'object',
       properties: {
@@ -791,7 +796,9 @@ export const paperResearchToolSchemas: ToolSchema[] = [
     description:
       'END-TO-END: find papers on a topic AND summarise them in one call. This is the tool to use when a ' +
       'user says "find papers on X and summarize them" — do NOT hand-chain search_papers + download_paper ' +
-      `+ summarize_paper yourself. It searches (arXiv + Semantic Scholar), downloads up to ${MAX_RESULTS} PDFs, ` +
+      '+ summarize_paper yourself, and never open a browser (open_app / browser_navigate / computer_use / ' +
+      'browser_vision_act) to hunt for papers on the web: this searches real academic APIs directly and ' +
+      `works on every tier. It searches (arXiv + Semantic Scholar), downloads up to ${MAX_RESULTS} PDFs, ` +
       'writes one <slug>.md summary per paper, and an index.md linking them all, into a timestamped folder ' +
       'under "OpenUI Research/papers/". One approval covers the whole batch.',
     parameters: {
