@@ -1,8 +1,18 @@
 # Runs on every pull request into main to make sure the build isn't broken.
-# Lints, type-checks, runs the unit tests, and builds the app shell on Linux
-# (fast, no packaging step). The test step guards the highest-risk logic — the
-# filesystem path-safety gate and the tool-call parser that decides what the LLM
-# may run. Lint is error-gated only; warnings do not fail the build.
+# Type-checks, runs the unit tests, and builds the app shell (electron-vite
+# build — the FAST shell build, NO electron-builder packaging/signing, which
+# stays in release.yml because it is slow and needs secrets not safe to expose
+# to arbitrary PR branches).
+#
+# WHY THE MATRIX: the automation code is heavily platform-specific — PowerShell
+# on Windows, AppleScript on macOS, nut-js native bindings, the Windows-only
+# hnswlib-node drop, and the platform-conditional `define`s in
+# electron.vite.config.ts. release.yml only exercises Windows/macOS on a version
+# tag, so that breakage used to stay invisible until the most expensive possible
+# moment — cutting a release. Running typecheck + test + build on all three OSes
+# per PR surfaces it here instead. fail-fast:false so one OS failing still shows
+# the status of the other two. Lint is OS-independent, so it runs once (Linux)
+# and is error-gated only; warnings do not fail the build.
 name: PR Check
 
 on:
@@ -11,7 +21,11 @@ on:
 
 jobs:
   check:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -19,7 +33,13 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - run: npm run lint
+      # Lint is platform-independent — run it once to avoid 3× redundant work.
+      - name: Lint (Linux only)
+        if: matrix.os == 'ubuntu-latest'
+        run: npm run lint
       - run: npm run typecheck
       - run: npm test
+      # electron-vite build only — packaging/signing/notarization stay in
+      # release.yml (slow, secret-dependent). This proves the three bundles
+      # (main/preload/renderer) compile on each OS.
       - run: npm run build
