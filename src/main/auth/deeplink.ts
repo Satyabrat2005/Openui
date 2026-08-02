@@ -268,7 +268,12 @@ export async function completeAuth(
     setActiveUser(user.id)
 
     mainWindow?.webContents.send('openui:auth-success', profile)
-    identifyUser(profile.id, { email: profile.email ?? '', tier })
+    // Analytics identity is the opaque Supabase user id + tier ONLY. Never the
+    // email: the consent prompt promises "anonymous usage data … we NEVER
+    // collect personal data", and an email attached to every event is neither
+    // anonymous nor consistent with that. The email is still stored LOCALLY
+    // (upsertUser above) — it just never leaves the machine via telemetry.
+    identifyUser(profile.id, { tier })
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
     console.error('[openui] completeAuth failed:', message)

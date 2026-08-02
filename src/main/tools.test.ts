@@ -13,7 +13,17 @@ vi.mock('electron', () => ({
   desktopCapturer: {},
   clipboard: {},
   shell: { openPath: vi.fn(async () => ''), trashItem: vi.fn(async () => undefined) },
-  systemPreferences: {},
+  // permissions.ts guards these behind process.platform === 'darwin'. On the
+  // macOS CI runner that guard is TRUE, so an empty object made
+  // getMediaAccessStatus/isTrustedAccessibilityClient throw a "not a function"
+  // error BEFORE the app-consent gate these tests exercise — diverging from the
+  // ubuntu/windows jobs, where the darwin guard skips them entirely. Report the
+  // granted states so all three OSes run the same consent-gate + capture path.
+  // desktopCapturer stays {} on purpose so getSources() remains the failure point.
+  systemPreferences: {
+    getMediaAccessStatus: () => 'granted',
+    isTrustedAccessibilityClient: () => true
+  },
   dialog: {},
   BrowserWindow: class {}
 }))
