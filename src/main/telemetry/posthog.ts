@@ -5,6 +5,7 @@ import { readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { setSetting } from '../database/repositories/settingsRepo'
 import { ConsentStatus, getConsentStatus, drainPendingEvents } from './consent'
+import { scrubText } from './sentry'
 
 let client: PostHog | null = null
 let deviceId = 'anonymous'
@@ -82,6 +83,26 @@ export function identifyUser(userId: string, traits?: Record<string, string | nu
 export const setTelemetryUser = identifyUser
 
 /**
+ * Scrub every string-valued property through the same PII filter Sentry uses
+ * (usernames-in-paths, secrets, emails) at the single egress choke point,
+ * BEFORE anything leaves the machine. Crash events are the reason: app_crash
+ * carries a stack `frame` and renderer_error carries a `source` filename, both
+ * of which embed the user's home-directory path (and OS username) in a packaged
+ * build — and the consent prompt promises we never collect file paths. Numeric
+ * / boolean values (counts, flags, latencies) pass through untouched.
+ */
+export function scrubProperties(
+  properties?: Record<string, string | number | boolean>
+): Record<string, string | number | boolean> {
+  if (!properties) return {}
+  const out: Record<string, string | number | boolean> = {}
+  for (const [key, value] of Object.entries(properties)) {
+    out[key] = typeof value === 'string' ? scrubText(value) : value
+  }
+  return out
+}
+
+/**
  * Capture a named event with optional primitive properties.
  * No-op when telemetry is disabled (client is null) — zero overhead.
  */
@@ -90,7 +111,7 @@ export function trackEvent(
   properties?: Record<string, string | number | boolean>
 ): void {
   if (!client) return
-  client.capture({ distinctId: deviceId, event, properties: properties ?? {} })
+  client.capture({ distinctId: deviceId, event, properties: scrubProperties(properties) })
 }
 
 /** Reset identity back to anonymous device ID (e.g. on logout). */
