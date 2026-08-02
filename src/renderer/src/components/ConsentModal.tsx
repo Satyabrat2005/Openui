@@ -116,10 +116,14 @@ export default function ConsentModal({ onClose }: Props): JSX.Element {
 
         <Section title="What we NEVER collect" tone="never">
           <Item>Your chat messages or voice recordings</Item>
-          <Item>File contents or file paths</Item>
+          <Item>The contents or paths of your files</Item>
           <Item>Screenshots or personal data</Item>
           <Item>Your API keys</Item>
         </Section>
+
+        <p style={{ margin: '-4px 0 20px', fontSize: 11, color: 'var(--ou-text-meta)', lineHeight: 1.5, fontStyle: 'italic' }}>
+          (Crash reports may include de-identified internal code locations — never your data.)
+        </p>
 
         <p style={{ margin: '4px 0 20px', fontSize: 12, color: 'var(--ou-text-meta)', lineHeight: 1.5 }}>
           You can change this anytime in Settings.
