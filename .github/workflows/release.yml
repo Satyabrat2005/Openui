@@ -103,6 +103,28 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # ── Sync package.json's version to the tag that triggered this build ──────
+      # electron-builder reads the version from package.json to name the
+      # installer (OpenUI-Setup-${version}.exe, ${productName} ${version}.dmg)
+      # AND to write the `version:` field in the electron-updater feeds
+      # (latest.yml / latest-mac.yml). Nothing here syncs that to the pushed tag,
+      # so a tag like v0.0.1-rc1 shipped artifacts still advertising whatever was
+      # committed in package.json (7.1.4) — which confuses users and breaks
+      # electron-updater's version comparison the moment two different tags ship
+      # artifacts both claiming the same number. Strip the leading 'v' from the
+      # tag (GITHUB_REF_NAME, e.g. v0.0.1-rc1 -> 0.0.1-rc1; electron-builder
+      # wants bare semver) and write it into package.json BEFORE any build step.
+      # --allow-same-version keeps this a no-op (not an error) when the tag
+      # already matches the committed version. Runs on both the macOS and Windows
+      # matrix legs; bash is available on both runners.
+      - name: Sync package.json version to release tag
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          echo "Tag '$GITHUB_REF_NAME' -> package.json version '$version'"
+          npm version --no-git-tag-version --allow-same-version "$version"
+          node -e "console.log('package.json version is now', require('./package.json').version)"
+
       # ── Preflight: fail LOUDLY if publishable build secrets are missing ──────
       # SUPABASE_URL / SUPABASE_ANON_KEY are baked into the main bundle at build
       # time (see electron.vite.config.ts). When they are empty, Google sign-in
