@@ -68,9 +68,13 @@
 #
 #   GITHUB_TOKEN is provided automatically by Actions — no setup required.
 #
-#   Optional PostHog telemetry (runtime — not baked into the binary):
-#     POSTHOG_API_KEY    — PostHog project API key (phc_…)
-#     POSTHOG_HOST       — PostHog ingest host (default: https://us.i.posthog.com)
+#   Optional PostHog telemetry. The repo secrets are named VITE_POSTHOG_KEY /
+#   VITE_POSTHOG_HOST (see `gh secret list`); the build reads them under the
+#   POSTHOG_API_KEY / POSTHOG_HOST env names (electron.vite.config.ts bakes those
+#   two keys into the main bundle — there is no VITE_ fallback for them), so the
+#   build steps map secret → env below.
+#     VITE_POSTHOG_KEY   — PostHog project API key (phc_…)
+#     VITE_POSTHOG_HOST  — PostHog ingest host (default: https://us.i.posthog.com)
 #   If unset, telemetry is silently disabled in the shipped build.
 # ─────────────────────────────────────────────────────────────────────────────
 name: Build and Release
@@ -189,8 +193,10 @@ jobs:
           SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
           VITE_STRIPE_PRO_PRICE_ID: ${{ secrets.VITE_STRIPE_PRO_PRICE_ID }}
           VITE_STRIPE_ENTERPRISE_PRICE_ID: ${{ secrets.VITE_STRIPE_ENTERPRISE_PRICE_ID }}
-          POSTHOG_API_KEY: ${{ secrets.POSTHOG_API_KEY }}
-          POSTHOG_HOST: ${{ secrets.POSTHOG_HOST }}
+          # Secrets are stored as VITE_POSTHOG_* but the build reads the
+          # POSTHOG_API_KEY / POSTHOG_HOST env names (electron.vite.config.ts).
+          POSTHOG_API_KEY: ${{ secrets.VITE_POSTHOG_KEY }}
+          POSTHOG_HOST: ${{ secrets.VITE_POSTHOG_HOST }}
           # Code signing (electron-builder reads these directly) + notarization
           # (consumed by scripts/notarize.js's afterSign hook). Both no-op
           # gracefully when unset — see the header comment for what each does.
@@ -236,8 +242,10 @@ jobs:
           SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
           VITE_STRIPE_PRO_PRICE_ID: ${{ secrets.VITE_STRIPE_PRO_PRICE_ID }}
           VITE_STRIPE_ENTERPRISE_PRICE_ID: ${{ secrets.VITE_STRIPE_ENTERPRISE_PRICE_ID }}
-          POSTHOG_API_KEY: ${{ secrets.POSTHOG_API_KEY }}
-          POSTHOG_HOST: ${{ secrets.POSTHOG_HOST }}
+          # Secrets are stored as VITE_POSTHOG_* but the build reads the
+          # POSTHOG_API_KEY / POSTHOG_HOST env names (electron.vite.config.ts).
+          POSTHOG_API_KEY: ${{ secrets.VITE_POSTHOG_KEY }}
+          POSTHOG_HOST: ${{ secrets.VITE_POSTHOG_HOST }}
           # Authenticode signing — no-ops gracefully when unset (unsigned .exe,
           # SmartScreen "unknown publisher" warning).
           WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
