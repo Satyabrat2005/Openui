@@ -33,6 +33,8 @@
  *     are registered in STATE_CHANGING_TOOLS (tools.ts) so they are HITL-gated.
  */
 
+import { mkdir } from 'node:fs/promises'
+import { dirname } from 'node:path'
 import ExcelJS from 'exceljs'
 import { resolveSafePath } from './fs/pathSafety'
 import type { ExecutorContext, ToolResult, ToolSchema } from './tools'
@@ -201,6 +203,9 @@ async function loadWorkbook(path: string): Promise<ExcelJS.Workbook> {
 
 /** Persist a workbook to disk in the format implied by its extension. */
 async function saveWorkbook(wb: ExcelJS.Workbook, path: string): Promise<void> {
+  // Mirror create_pdf: ensure the destination folder exists before writing, so a
+  // fresh subfolder doesn't ENOENT (create_document/create_presentation do the same).
+  await mkdir(dirname(path), { recursive: true })
   if (isCsv(path)) await wb.csv.writeFile(path)
   else await wb.xlsx.writeFile(path)
 }

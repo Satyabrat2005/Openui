@@ -35,7 +35,7 @@
  *     exactly like list_sheets.
  */
 
-import { readFile, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { basename, dirname, extname, join } from 'node:path'
 import PptxGenJS from 'pptxgenjs'
 import { resolveSafePath } from './fs/pathSafety'
@@ -338,6 +338,9 @@ function bulletRuns(bullets: BulletSpec[]): { text: string; options: Record<stri
  * pptxgenjs cannot reopen its own output.
  */
 async function renderDeck(file: string, spec: DeckSpec): Promise<void> {
+  // Mirror create_pdf: ensure the destination folder exists before writing, so a
+  // fresh subfolder doesn't ENOENT. saveSpec's sidecar shares this directory.
+  await mkdir(dirname(file), { recursive: true })
   const pptx = new PptxGenJS()
   pptx.layout = 'LAYOUT_16x9'
   if (spec.title) {

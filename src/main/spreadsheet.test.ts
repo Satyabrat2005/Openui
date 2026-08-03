@@ -160,4 +160,22 @@ describe('spreadsheet tools', () => {
       ['add_formula', 'list_sheets', 'read_spreadsheet', 'update_cells', 'write_spreadsheet'].sort()
     )
   })
+
+  // Regression: write_spreadsheet used to ENOENT when the destination folder did
+  // not exist, while create_pdf created it. saveWorkbook now mkdir -p's first.
+  it('creates missing parent folders before writing (no pre-existing dir)', async () => {
+    const nested = join(dir, 'fresh-sheet-dir', 'sub', 'book.xlsx')
+    const w = await spreadsheetRegistry.write_spreadsheet({
+      path: nested,
+      data: [
+        ['Name', 'Score'],
+        ['Ada', 95]
+      ]
+    })
+    expect(w.ok).toBe(true)
+    const r = await spreadsheetRegistry.read_spreadsheet({ path: nested })
+    expect(r.ok).toBe(true)
+    expect(r.output).toContain('Ada')
+    expect(r.output).toContain('95')
+  })
 })
