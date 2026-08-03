@@ -33,7 +33,7 @@
  *     list_document_structure is read-only and ungated, like list_sheets.
  */
 
-import { readFile, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { basename, dirname, extname, join } from 'node:path'
 import {
   Document,
@@ -262,6 +262,9 @@ async function openDoc(raw: unknown, tool: string): Promise<{ file: string; spec
 
 /** Re-render the whole document from its spec (docx cannot reopen its output). */
 async function renderDoc(file: string, spec: DocSpec): Promise<void> {
+  // Mirror create_pdf: ensure the destination folder exists before writing, so a
+  // fresh subfolder doesn't ENOENT. saveSpec's sidecar shares this directory.
+  await mkdir(dirname(file), { recursive: true })
   const children: (Paragraph | Table)[] = []
 
   for (const b of spec.blocks) {

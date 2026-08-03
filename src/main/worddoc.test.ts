@@ -265,4 +265,16 @@ describe('worddoc tools — round-trip', () => {
     expect(r.ok).toBe(false)
     expect(r.error).toContain('computer_use')
   })
+
+  // Regression: create_document used to ENOENT when the destination folder did
+  // not exist, while create_pdf created it. renderDoc now mkdir -p's first.
+  it('creates missing parent folders before writing (no pre-existing dir)', async () => {
+    const nested = join(dir, 'fresh-docx-dir', 'sub', 'report.docx')
+    const c = await worddocRegistry.create_document({ path: nested, title: 'Nested' })
+    expect(c.ok).toBe(true)
+    const xml = await readDocumentXml(nested)
+    expect(xml).toContain('Nested')
+    const r = await worddocRegistry.list_document_structure({ path: nested })
+    expect(r.ok).toBe(true)
+  })
 })

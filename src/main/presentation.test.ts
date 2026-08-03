@@ -302,4 +302,16 @@ describe('presentation tools — round-trip', () => {
     const chartXml = await findPart(file, /^ppt\/charts\/chart\d+\.xml$/)
     expect(chartXml).toContain('pieChart')
   })
+
+  // Regression: create_presentation used to ENOENT when the destination folder
+  // did not exist, while create_pdf created it. renderDeck now mkdir -p's first.
+  it('creates missing parent folders before writing (no pre-existing dir)', async () => {
+    const nested = join(dir, 'fresh-pptx-dir', 'sub', 'deck.pptx')
+    const c = await presentationRegistry.create_presentation({ path: nested, title: 'Nested Deck' })
+    expect(c.ok).toBe(true)
+    const names = await partNames(nested)
+    expect(names.some((n) => /^ppt\/slides\/slide\d+\.xml$/.test(n))).toBe(true)
+    const r = await presentationRegistry.list_slides({ path: nested })
+    expect(r.ok).toBe(true)
+  })
 })
