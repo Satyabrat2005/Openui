@@ -184,6 +184,8 @@
     "devDependencies": {
         "@electron/notarize": "^2.5.0",
         "@eslint/js": "^9.39.5",
+        "@testing-library/dom": "^10.4.1",
+        "@testing-library/react": "^16.3.2",
         "@types/adm-zip": "^0.5.8",
         "@types/better-sqlite3": "^7.6.13",
         "@types/fluent-ffmpeg": "^2.1.28",
@@ -200,6 +202,7 @@
         "eslint-plugin-react": "^7.37.5",
         "eslint-plugin-react-hooks": "^5.2.0",
         "globals": "^15.15.0",
+        "jsdom": "^25.0.1",
         "jszip": "^3.10.1",
         "png2icons": "^2.0.1",
         "postcss": "^8.4.49",
