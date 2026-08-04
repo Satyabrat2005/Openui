@@ -54,7 +54,19 @@ async function putFile(userId: string, name: string, bytes: Buffer): Promise<{ n
 
 // ── tools ───────────────────────────────────────────────────────────────────
 interface ToolResult { ok?: boolean; summary?: string; files?: unknown[]; data?: unknown; error?: string }
-async function runTool(name: string, args: any, ctx: { userId: string; connections: Record<string, string> }): Promise<ToolResult> {
+interface SheetSpec { name?: string; headers?: string[]; rows?: (string | number)[][] }
+interface ToolArgs {
+  title?: string
+  sheets?: SheetSpec[]
+  paragraphs?: string[]
+  body?: string
+  query?: string
+  max_results?: number
+  name?: string
+  description?: string
+  private?: boolean
+}
+async function runTool(name: string, args: ToolArgs, ctx: { userId: string; connections: Record<string, string> }): Promise<ToolResult> {
   if (name === 'write_spreadsheet') {
     const wb = new ExcelJS.Workbook()
     for (const [i, s] of (args.sheets ?? []).entries()) {
@@ -85,9 +97,9 @@ async function runTool(name: string, args: any, ctx: { userId: string; connectio
       headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json', 'User-Agent': 'openui-web', 'Content-Type': 'application/json' },
       body: JSON.stringify({ name: args.name, description: args.description ?? '', private: args.private !== false })
     })
-    const body = await res.json().catch(() => ({}))
-    if (!res.ok) return { ok: false, error: `github_${res.status}: ${(body as any).message ?? 'error'}` }
-    return { ok: true, summary: `Created repo ${(body as any).full_name}`, data: { html_url: (body as any).html_url } }
+    const body = (await res.json().catch(() => ({}))) as { message?: string; full_name?: string; html_url?: string }
+    if (!res.ok) return { ok: false, error: `github_${res.status}: ${body.message ?? 'error'}` }
+    return { ok: true, summary: `Created repo ${body.full_name}`, data: { html_url: body.html_url } }
   }
   return { ok: false, error: `unknown_tool: ${name}` }
 }
