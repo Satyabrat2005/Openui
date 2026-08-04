@@ -1,0 +1,60 @@
+/* The desktop app nests .ou-rc inside a flex-column app shell (.openui-overlay);
+   the web app renders RunConsole straight into #root, so make #root that column
+   here (index.css only sizes #root to 100%×100%). Copied CSS is untouched. */
+#root { display: flex; flex-direction: column; }
+
+/* Sign-in — NEW surface, styled ONLY with the Run Console tokens (imported from
+   index.css) so it belongs to the same system. No new palette values. */
+.ou-signin {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--ou-bg-app);
+  color: var(--ou-text-base);
+  font-family: var(--ou-font);
+  padding: 24px;
+}
+.ou-signin-card {
+  width: 100%;
+  max-width: 380px;
+  background: var(--ou-bg-card);
+  border: 1px solid var(--ou-border-card);
+  border-radius: 14px;
+  box-shadow: var(--ou-shadow-modal);
+  padding: 32px 28px;
+}
+.ou-signin-brand { display: flex; align-items: center; gap: 8px; margin-bottom: 22px; }
+.ou-signin-mark {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 28px; height: 28px; border-radius: 8px;
+  background: var(--ou-accent); color: var(--ou-accent-on);
+}
+.ou-signin-name { font-weight: 600; font-size: 15px; letter-spacing: .01em; }
+.ou-signin-title { font-size: 22px; font-weight: 600; margin: 0 0 6px; }
+.ou-signin-sub { font-size: 13px; color: var(--ou-text-muted); margin: 0 0 22px; line-height: 1.5; }
+.ou-signin-sub code, .ou-signin-input {
+  font-family: var(--ou-font-mono);
+}
+.ou-signin-label {
+  display: block; font-family: var(--ou-font-mono); font-size: 11px;
+  letter-spacing: .06em; color: var(--ou-text-muted); text-transform: uppercase; margin-bottom: 7px;
+}
+.ou-signin-input {
+  width: 100%; box-sizing: border-box;
+  background: var(--ou-bg-app); border: 1px solid var(--ou-border-card);
+  border-radius: 9px; padding: 10px 12px; color: var(--ou-text-base);
+  font-size: 13px; margin-bottom: 16px;
+}
+.ou-signin-input:focus { outline: 2px solid var(--ou-focus-ring); outline-offset: 1px; }
+.ou-signin-btn {
+  width: 100%; border: none; cursor: pointer;
+  background: var(--ou-accent); color: var(--ou-accent-on);
+  border-radius: 9px; padding: 10px 14px; font-size: 14px; font-weight: 600;
+  font-family: var(--ou-font);
+}
+.ou-signin-btn:hover { background: var(--ou-accent-hover); }
+.ou-signin-foot {
+  text-align: center; font-family: var(--ou-font-mono); font-size: 11px;
+  color: var(--ou-text-muted); margin: 18px 0 0; letter-spacing: .03em;
+}
