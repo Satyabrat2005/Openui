@@ -1,9 +1,11 @@
 // OpenUI Web backend — serves the ported Run Console frontend and the data-layer
 // endpoints it calls (the web replacements for the desktop window.openui.* IPC).
 // Lean but real: token verification, the confirmation gate, real tool execution
-// with signed/served file links, and a live chat stream (Supabase chat-proxy
-// passthrough when configured, a dev echo otherwise so the ledger streams
-// genuine text locally).
+// with signed/served file links, and a live chat stream that is a real Supabase
+// `chat-proxy` passthrough (streamed SSE, same request contract as the desktop
+// app). There is deliberately NO fake-answer fallback: if chat-proxy is not
+// configured or a call fails, /api/chat returns a specific, honest error rather
+// than fabricating a "successful" response.
 
 import express, { type Request, type Response } from 'express'
 import { createClient } from '@supabase/supabase-js'
@@ -129,39 +131,107 @@ app.get('/api/workflows', async (req, res) => {
   res.json({ workflows: [] })
 })
 
-// Chat: real chat-proxy passthrough when configured; dev echo otherwise.
+// Map chat-proxy's structured error codes → a specific, user-facing message.
+// chat-proxy answers every non-2xx as JSON `{ error: <code> }` (only its success
+// path is SSE), so we can read the real code even for a streaming request and
+// surface an accurate message instead of a generic bucket.
+function chatProxyErrorMessage(status: number, code: string | undefined): string {
+  switch (code) {
+    case 'rate_limited':
+      return "You've reached your daily usage limit. Upgrade your plan or try again tomorrow."
+    case 'missing_token':
+    case 'invalid_token':
+      return 'Your session has expired. Please sign in again to continue.'
+    case 'messages_required':
+      return 'The chat request was empty — type a message and try again.'
+    case 'llm_error':
+      return 'The AI provider rejected the request (usually a server-side API key or account-credit problem). Please try again shortly.'
+    case 'internal_error':
+      return 'The chat service hit an internal error. Please try again shortly.'
+    default:
+      return `The chat service returned an error (HTTP ${status}${code ? `: ${code}` : ''}).`
+  }
+}
+
+// Chat: a REAL Supabase chat-proxy passthrough. No echo, no fake success —
+// every failure mode below returns its own specific, honest error.
 app.post('/api/chat', async (req: Request, res: Response) => {
   const u = await verify(req.header('authorization'))
-  if (!u) return res.status(401).json({ error: 'missing_token' })
+  if (!u) {
+    // No/expired session — don't pretend to answer, ask them to sign in.
+    return res.status(401).json({
+      error: 'unauthenticated',
+      message: 'You are not signed in, or your session has expired. Sign in again to chat.'
+    })
+  }
   const auth = req.header('authorization')!
 
-  if (CHAT_PROXY_URL && !DEV_STUB) {
-    const upstream = await fetch(CHAT_PROXY_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: auth, ...(SUPABASE_ANON_KEY ? { apikey: SUPABASE_ANON_KEY } : {}) },
-      body: JSON.stringify(req.body)
+  // Deploy-config guard. A missing chat backend is a DEPLOYMENT bug, not a user
+  // error: make it LOUD in the logs/monitoring, and tell the user plainly that
+  // the deployment is misconfigured rather than fabricating an answer.
+  if (!CHAT_PROXY_URL || !SUPABASE_ANON_KEY || !supabase) {
+    const missing =
+      [!SUPABASE_URL && 'SUPABASE_URL', !SUPABASE_ANON_KEY && 'SUPABASE_ANON_KEY'].filter(Boolean).join(', ') ||
+      'chat backend'
+    console.error(
+      `[chat] MISCONFIGURED DEPLOY: chat-proxy unavailable — missing ${missing}. No real LLM response is possible.`
+    )
+    return res.status(503).json({
+      error: 'not_configured',
+      message: `This deployment is misconfigured: the chat backend is not set up (missing ${missing}). No AI response is possible until an operator configures it.`
     })
-    res.status(upstream.status)
-    res.setHeader('Content-Type', upstream.headers.get('content-type') ?? 'text/event-stream')
-    if (upstream.body) {
-      const reader = upstream.body.getReader()
-      for (;;) { const { done, value } = await reader.read(); if (done) break; res.write(Buffer.from(value)) }
-    }
-    return res.end()
   }
 
-  // DEV ECHO — stream a plausible answer token-by-token so the ledger is live.
-  const msg = req.body?.messages?.[req.body.messages.length - 1]?.content ?? ''
-  const reply = `Here's a response to: "${msg}". (Dev echo — wire SUPABASE_URL + chat-proxy for real LLM output.)`
-  res.setHeader('Content-Type', 'text/event-stream')
+  // Real chat-proxy call — same contract as desktop edgeFunctions.ts
+  // (`apikey` + `Authorization: Bearer <token>`), streamed SSE preserved.
+  let upstream: globalThis.Response
+  try {
+    upstream = await fetch(CHAT_PROXY_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: auth, apikey: SUPABASE_ANON_KEY },
+      body: JSON.stringify(req.body)
+    })
+  } catch (err) {
+    // Never got an HTTP answer: DNS/TLS/network/timeout reaching Supabase. This
+    // is a DISTINCT failure from an auth error — keep it in its own bucket.
+    console.error('[chat] cannot reach chat-proxy:', err)
+    return res.status(502).json({
+      error: 'upstream_unreachable',
+      message: "Couldn't reach the chat service. Check your connection and try again."
+    })
+  }
+
+  // Non-2xx from chat-proxy → surface the ACTUAL status + its structured error
+  // code and a specific message. Server-side failures are logged loudly.
+  if (!upstream.ok) {
+    const body = (await upstream.json().catch(() => ({}))) as { error?: string }
+    const code = typeof body.error === 'string' ? body.error : undefined
+    if (upstream.status >= 500) {
+      console.error(`[chat] chat-proxy ${upstream.status} (${code ?? 'no-code'}) — backend/provider failure`)
+    }
+    return res.status(upstream.status).json({
+      error: code ?? 'chat_proxy_error',
+      status: upstream.status,
+      message: chatProxyErrorMessage(upstream.status, code)
+    })
+  }
+
+  // Success: stream the normalized SSE straight through to the browser.
+  res.status(upstream.status)
+  res.setHeader('Content-Type', upstream.headers.get('content-type') ?? 'text/event-stream')
   res.setHeader('Cache-Control', 'no-cache')
-  const words = reply.split(' ')
-  let i = 0
-  const iv = setInterval(() => {
-    if (i >= words.length) { clearInterval(iv); res.write('data: [DONE]\n\n'); return res.end() }
-    res.write(`data: ${JSON.stringify({ delta: (i ? ' ' : '') + words[i] })}\n\n`)
-    i++
-  }, 45)
+  if (!upstream.body) return res.end()
+  const reader = upstream.body.getReader()
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      res.write(Buffer.from(value))
+    }
+  } catch (err) {
+    console.error('[chat] stream interrupted:', err)
+  }
+  return res.end()
 })
 
 // The one endpoint that runs tools — behind the confirmation gate.
@@ -206,5 +276,9 @@ app.get('/local-files/:userId/:name', (req, res) => {
 app.use(express.static(join(__dirname, '..', 'public-web')))
 
 app.listen(PORT, () => {
-  console.log(`OpenUI Web on ${BASE_URL}  ·  auth: ${DEV_STUB ? 'DEV STUB' : 'Supabase'}  ·  chat: ${CHAT_PROXY_URL && !DEV_STUB ? 'proxy' : 'dev echo'}`)
+  const chatState = CHAT_PROXY_URL && SUPABASE_ANON_KEY && supabase ? 'chat-proxy' : 'NOT CONFIGURED (chat will 503)'
+  console.log(`OpenUI Web on ${BASE_URL}  ·  auth: ${DEV_STUB ? 'DEV STUB' : 'Supabase'}  ·  chat: ${chatState}`)
+  if (chatState.startsWith('NOT')) {
+    console.error('[chat] chat-proxy is not configured — set SUPABASE_URL and SUPABASE_ANON_KEY. /api/chat returns 503 until then.')
+  }
 })
