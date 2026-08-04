@@ -64,16 +64,36 @@ export interface ChatHandlers {
 }
 export async function streamChat(message: string, h: ChatHandlers): Promise<void> {
   let full = ''
+
+  // (1) Reaching OUR server. A throw here means the request never got an HTTP
+  // answer (offline, server down) — a distinct failure from a server error.
+  let res: Response
   try {
-    const res = await fetch('/api/chat', {
+    res = await fetch('/api/chat', {
       method: 'POST',
       headers: authHeaders(),
       body: JSON.stringify({ messages: [{ role: 'user', content: message }], stream: true })
     })
-    if (!res.ok || !res.body) {
-      h.onError(`chat_error_${res.status}`)
-      return
-    }
+  } catch {
+    h.onError("Can't reach the server. Check your connection and try again.")
+    return
+  }
+
+  // (2) Server answered non-2xx. It returns JSON `{ error, message }` with a
+  // specific, honest reason (misconfig / auth / rate-limit / upstream) — surface
+  // that real message, never a generic `chat_error_<status>` bucket.
+  if (!res.ok) {
+    const body = (await res.json().catch(() => null)) as { message?: string; error?: string } | null
+    h.onError(body?.message || body?.error || `Chat failed (HTTP ${res.status}).`)
+    return
+  }
+  if (!res.body) {
+    h.onError('The chat service returned an empty response.')
+    return
+  }
+
+  // (3) Success: read the SSE answer stream.
+  try {
     const reader = res.body.getReader()
     const dec = new TextDecoder()
     let buf = ''
@@ -101,7 +121,7 @@ export async function streamChat(message: string, h: ChatHandlers): Promise<void
     }
     h.onDone(full)
   } catch (err) {
-    h.onError(err instanceof Error ? err.message : String(err))
+    h.onError(err instanceof Error ? `Chat stream interrupted: ${err.message}` : String(err))
   }
 }
 
