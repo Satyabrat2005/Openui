@@ -148,3 +148,44 @@ export async function runTool(
   })
   return res.json()
 }
+
+// ── Model-driven agent loop (Act mode) — replaces the client-side keyword regex ─
+export interface StoredFile { name: string; url: string; bytes: number }
+export interface AgentStep { name: string; ok: boolean; summary: string; files?: StoredFile[] }
+export interface AgentConfirmation { token: string; name: string; destructive: boolean; summary: string; args: Record<string, unknown> }
+export type AgentMessage = { role: 'user' | 'assistant' | 'system'; content: string }
+
+export type AgentResponse =
+  | { kind: 'reply'; reply: string; steps: AgentStep[]; files: StoredFile[] }
+  | { kind: 'needs_confirmation'; confirmation: AgentConfirmation; transcript: AgentMessage[]; name: string; args: Record<string, unknown>; steps: AgentStep[]; files: StoredFile[] }
+  | { kind: 'error'; message: string }
+
+async function agentFetch(path: string, body: unknown): Promise<AgentResponse> {
+  let res: Response
+  try {
+    res = await fetch(path, { method: 'POST', headers: authHeaders(), body: JSON.stringify(body) })
+  } catch {
+    return { kind: 'error', message: "Can't reach the server. Check your connection and try again." }
+  }
+  const data = (await res.json().catch(() => null)) as (AgentResponse & { message?: string; error?: string }) | null
+  if (!res.ok) return { kind: 'error', message: data?.message || data?.error || `Task failed (HTTP ${res.status}).` }
+  if (data?.kind === 'reply' || data?.kind === 'needs_confirmation') return data
+  return { kind: 'error', message: 'The task service returned an unexpected response.' }
+}
+
+/** Start a model-driven task. The server decides which tool (if any) to call. */
+export async function runAgent(message: string, connections?: Record<string, string>): Promise<AgentResponse> {
+  return agentFetch('/api/agent', { message, connections })
+}
+
+/** Resume a paused task after the user approves/denies the gated tool it chose. */
+export async function resumeAgent(payload: {
+  transcript: AgentMessage[]
+  name: string
+  args: Record<string, unknown>
+  confirmationToken: string
+  approved: boolean
+  connections?: Record<string, string>
+}): Promise<AgentResponse> {
+  return agentFetch('/api/agent/resume', payload)
+}

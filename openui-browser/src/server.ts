@@ -1,11 +1,11 @@
 // OpenUI Web backend — serves the ported Run Console frontend and the data-layer
 // endpoints it calls (the web replacements for the desktop window.openui.* IPC).
-// Lean but real: token verification, the confirmation gate, real tool execution
-// with signed/served file links, and a live chat stream that is a real Supabase
-// `chat-proxy` passthrough (streamed SSE, same request contract as the desktop
-// app). There is deliberately NO fake-answer fallback: if chat-proxy is not
-// configured or a call fails, /api/chat returns a specific, honest error rather
-// than fabricating a "successful" response.
+// Real token verification, the confirmation gate, real tool execution with
+// served file links, a live chat stream that is a real Supabase `chat-proxy`
+// passthrough, and — new in this phase — a REAL model-driven tool-calling agent
+// loop that replaces the old keyword regex. There is deliberately NO fake-answer
+// fallback anywhere: a missing/failed chat backend returns a specific, honest
+// error rather than fabricating a response OR silently guessing a tool.
 
 import express, { type Request, type Response } from 'express'
 import { createClient } from '@supabase/supabase-js'
@@ -14,7 +14,11 @@ import { mkdir, writeFile } from 'node:fs/promises'
 import { createReadStream } from 'node:fs'
 import { join, dirname, normalize } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { ConfirmationStore, requiresConfirmation, isDestructive } from './gates.js'
+import { ConfirmationStore, requiresConfirmation, isDestructive, STATE_CHANGING_TOOLS, DESTRUCTIVE_TOOLS } from './gates.js'
+import { buildAgentSystemPrompt, WEB_TOOL_NAMES, MALFORMED_TOOL_CALL_NUDGE } from './agentTools.js'
+import { parseToolCall, looksLikeAttemptedToolCall } from './toolCallParser.js'
+import { generateDocx, generatePdf, generatePptx, searchPapers, downloadPaper, desktopReuseAvailable } from './desktopReuse.js'
+import { githubTools } from './githubTools.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const PORT = Number(process.env.PORT) || 8787
@@ -25,6 +29,10 @@ const CHAT_PROXY_URL =
 const DEV_STUB = process.env.NODE_ENV !== 'production' && (!SUPABASE_URL || process.env.DEV_STUB === 'true')
 const STORAGE_ROOT = join(process.cwd(), '.local-storage')
 const BASE_URL = `http://localhost:${PORT}`
+
+// Agent loop bounds — mirror the desktop's turn/retry ceilings.
+const MAX_AGENT_TURNS = 8
+const MAX_MALFORMED_RETRIES = 2
 
 const supabase = SUPABASE_URL && SUPABASE_ANON_KEY ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null
 const confirmations = new ConfirmationStore()
@@ -46,7 +54,8 @@ async function verify(authHeader?: string): Promise<VUser | null> {
 }
 
 // ── storage sink (local disk; served below) ─────────────────────────────────
-async function putFile(userId: string, name: string, bytes: Buffer): Promise<{ name: string; url: string; bytes: number }> {
+interface StoredFile { name: string; url: string; bytes: number }
+async function putFile(userId: string, name: string, bytes: Buffer): Promise<StoredFile> {
   const leaf = name.replace(/[\\/]+/g, '_')
   const abs = join(STORAGE_ROOT, userId, leaf)
   await mkdir(dirname(abs), { recursive: true })
@@ -55,59 +64,261 @@ async function putFile(userId: string, name: string, bytes: Buffer): Promise<{ n
 }
 
 // ── tools ───────────────────────────────────────────────────────────────────
-interface ToolResult { ok?: boolean; summary?: string; files?: unknown[]; data?: unknown; error?: string }
-interface SheetSpec { name?: string; headers?: string[]; rows?: (string | number)[][] }
-interface ToolArgs {
-  title?: string
-  sheets?: SheetSpec[]
-  paragraphs?: string[]
-  body?: string
-  query?: string
-  max_results?: number
-  name?: string
-  description?: string
-  private?: boolean
-}
+interface ToolResult { ok?: boolean; summary?: string; files?: StoredFile[]; data?: unknown; error?: string }
+type ToolArgs = Record<string, unknown>
+
+/**
+ * The one place a tool actually runs. Every name here is a REAL implementation —
+ * document/PDF/deck/paper generation reuses the desktop app's proven modules
+ * (see desktopReuse.ts); GitHub writes reuse the desktop github.ts contract with
+ * per-request tokens (githubTools.ts). The gate (gates.ts) decides which of these
+ * need confirmation; a boot assertion guarantees nothing is gated-but-unrunnable.
+ */
 async function runTool(name: string, args: ToolArgs, ctx: { userId: string; connections: Record<string, string> }): Promise<ToolResult> {
-  if (name === 'write_spreadsheet') {
-    const wb = new ExcelJS.Workbook()
-    for (const [i, s] of (args.sheets ?? []).entries()) {
-      const ws = wb.addWorksheet(s.name || `Sheet${i + 1}`)
-      if (s.headers?.length) { ws.addRow(s.headers); ws.getRow(1).font = { bold: true } }
-      for (const r of s.rows ?? []) ws.addRow(r)
+  switch (name) {
+    case 'write_spreadsheet': {
+      const wb = new ExcelJS.Workbook()
+      const sheets = Array.isArray(args.sheets) ? (args.sheets as Array<Record<string, unknown>>) : []
+      for (const [i, s] of sheets.entries()) {
+        const ws = wb.addWorksheet(typeof s.name === 'string' && s.name ? s.name : `Sheet${i + 1}`)
+        const headers = Array.isArray(s.headers) ? (s.headers as string[]) : []
+        if (headers.length) { ws.addRow(headers); ws.getRow(1).font = { bold: true } }
+        const rows = Array.isArray(s.rows) ? (s.rows as unknown[][]) : []
+        for (const r of rows) ws.addRow(r as (string | number)[])
+      }
+      const out = await wb.xlsx.writeBuffer()
+      const file = await putFile(ctx.userId, `${(args.title as string) || 'Workbook'}.xlsx`, Buffer.from(out as ArrayBuffer))
+      return { ok: true, summary: `Wrote ${file.name}`, files: [file] }
     }
-    const out = await wb.xlsx.writeBuffer()
-    const file = await putFile(ctx.userId, `${args.title || 'Workbook'}.xlsx`, Buffer.from(out as ArrayBuffer))
-    return { ok: true, summary: `Wrote ${file.name}`, files: [file] }
+    case 'create_document': {
+      const gen = await generateDocx(args)
+      const file = await putFile(ctx.userId, gen.filename, gen.bytes)
+      return { ok: true, summary: `Created ${file.name}`, files: [file] }
+    }
+    case 'create_pdf': {
+      const gen = await generatePdf(args)
+      const file = await putFile(ctx.userId, gen.filename, gen.bytes)
+      return { ok: true, summary: `Created ${file.name}`, files: [file] }
+    }
+    case 'create_presentation': {
+      const gen = await generatePptx(args)
+      const file = await putFile(ctx.userId, gen.filename, gen.bytes)
+      return { ok: true, summary: `Created ${file.name}`, files: [file] }
+    }
+    case 'search_papers': {
+      const res = await searchPapers(args)
+      if (!res.ok) return { ok: false, error: res.error || 'search_papers failed' }
+      const text = res.output || ''
+      return { ok: true, summary: text.split('\n')[0] || 'Search complete', data: { text } }
+    }
+    case 'download_paper': {
+      const gen = await downloadPaper(args)
+      const file = await putFile(ctx.userId, gen.filename, gen.bytes)
+      return { ok: true, summary: `Downloaded ${file.name}`, files: [file] }
+    }
+    case 'create_repo':
+    case 'update_readme':
+    case 'push_files':
+    case 'open_pull_request':
+    case 'merge_pr': {
+      const token = (ctx.connections.github || '').trim()
+      const res = await githubTools[name](args, token)
+      return res.ok ? { ok: true, summary: res.output } : { ok: false, error: res.error }
+    }
+    default:
+      return { ok: false, error: `unknown_tool: ${name}` }
   }
-  if (name === 'create_document') {
-    const md = `# ${args.title || 'Document'}\n\n${(args.paragraphs ?? [args.body ?? '']).join('\n\n')}\n`
-    const file = await putFile(ctx.userId, `${args.title || 'Document'}.md`, Buffer.from(md, 'utf8'))
-    return { ok: true, summary: `Created ${file.name}`, files: [file] }
+}
+
+// Names runTool can actually execute — the source of truth for the boot check.
+const RUN_TOOL_NAMES = new Set<string>([
+  'write_spreadsheet', 'create_document', 'create_pdf', 'create_presentation',
+  'search_papers', 'download_paper',
+  'create_repo', 'update_readme', 'push_files', 'open_pull_request', 'merge_pr'
+])
+
+/**
+ * Fail LOUD at boot if the gate and the implementation disagree. A tool that is
+ * confirmable (state-changing/destructive) but not runnable is the exact bug this
+ * phase fixed — never let it regress silently. Also warns if the agent is shown a
+ * schema for a tool runTool can't execute (a dead-end the model could pick).
+ */
+function assertGateImplementationParity(): void {
+  const gated = new Set<string>([...STATE_CHANGING_TOOLS, ...DESTRUCTIVE_TOOLS])
+  const missing = [...gated].filter((t) => !RUN_TOOL_NAMES.has(t))
+  if (missing.length) {
+    throw new Error(
+      `[gate] ${missing.join(', ')} are gated in gates.ts but have no implementation in runTool. ` +
+        `A tool must never be confirmable without being runnable — implement it or remove it from the gate.`
+    )
   }
-  if (name === 'search_papers') {
-    const url = `http://export.arxiv.org/api/query?search_query=${encodeURIComponent(args.query || '')}&max_results=${Math.min(args.max_results || 4, 10)}`
-    const xml = await (await fetch(url)).text()
-    const titles = [...xml.matchAll(/<entry>[\s\S]*?<title>([\s\S]*?)<\/title>/g)].map((m) => m[1].trim().replace(/\s+/g, ' '))
-    return { ok: true, summary: `Found ${titles.length} paper(s)`, data: { papers: titles } }
+  const advertisedButUnrunnable = [...WEB_TOOL_NAMES].filter((t) => !RUN_TOOL_NAMES.has(t))
+  if (advertisedButUnrunnable.length) {
+    throw new Error(`[agent] tool schema(s) advertised to the model but not runnable: ${advertisedButUnrunnable.join(', ')}`)
   }
-  if (name === 'create_repo') {
-    const token = ctx.connections.github?.trim()
-    if (!token) return { ok: false, error: 'github_not_connected' }
-    const res = await fetch('https://api.github.com/user/repos', {
+}
+
+// ── chat-proxy full-text call (for the agent loop) ───────────────────────────
+class ChatProxyError extends Error {
+  constructor(public status: number, public code: string, message: string) {
+    super(message)
+  }
+}
+
+/**
+ * Call the SAME chat-proxy the streaming /api/chat uses, but accumulate the SSE
+ * deltas into the full assistant text the loop needs to parse a tool call from.
+ * Honest failures only — never returns a fabricated string.
+ */
+async function callChatProxyFull(messages: Array<{ role: string; content: string }>, auth: string): Promise<string> {
+  if (!CHAT_PROXY_URL || !SUPABASE_ANON_KEY) {
+    throw new ChatProxyError(503, 'not_configured', 'The chat backend is not configured (missing SUPABASE_URL / SUPABASE_ANON_KEY).')
+  }
+  let upstream: globalThis.Response
+  try {
+    upstream = await fetch(CHAT_PROXY_URL, {
       method: 'POST',
-      headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json', 'User-Agent': 'openui-web', 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: args.name, description: args.description ?? '', private: args.private !== false })
+      headers: { 'Content-Type': 'application/json', Authorization: auth, apikey: SUPABASE_ANON_KEY },
+      body: JSON.stringify({ messages, stream: true })
     })
-    const body = (await res.json().catch(() => ({}))) as { message?: string; full_name?: string; html_url?: string }
-    if (!res.ok) return { ok: false, error: `github_${res.status}: ${body.message ?? 'error'}` }
-    return { ok: true, summary: `Created repo ${body.full_name}`, data: { html_url: body.html_url } }
+  } catch (err) {
+    console.error('[agent] cannot reach chat-proxy:', err)
+    throw new ChatProxyError(502, 'upstream_unreachable', "Couldn't reach the chat service.")
   }
-  return { ok: false, error: `unknown_tool: ${name}` }
+  if (!upstream.ok) {
+    const body = (await upstream.json().catch(() => ({}))) as { error?: string }
+    const code = typeof body.error === 'string' ? body.error : 'chat_proxy_error'
+    throw new ChatProxyError(upstream.status, code, chatProxyErrorMessage(upstream.status, code))
+  }
+  if (!upstream.body) return ''
+  const reader = upstream.body.getReader()
+  const dec = new TextDecoder()
+  let buf = ''
+  let full = ''
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buf += dec.decode(value, { stream: true })
+    const lines = buf.split('\n')
+    buf = lines.pop() ?? ''
+    for (const line of lines) {
+      const t = line.trim()
+      if (!t.startsWith('data:')) continue
+      const data = t.slice(5).trim()
+      if (!data || data === '[DONE]') continue
+      try {
+        const j = JSON.parse(data) as { delta?: string }
+        if (typeof j.delta === 'string') full += j.delta
+      } catch {
+        /* keepalive / non-json line */
+      }
+    }
+  }
+  return full
+}
+
+function formatToolResult(tool: string, result: ToolResult): string {
+  if (result.ok) {
+    const detail = result.summary ?? (result.files?.length ? result.files.map((f) => f.name).join(', ') : undefined)
+    const data = result.data && typeof (result.data as { text?: string }).text === 'string' ? `\n${(result.data as { text: string }).text}` : ''
+    return `TOOL RESULT [${tool}] success: ${detail ?? '(no output)'}${data}`
+  }
+  return `TOOL RESULT [${tool}] error: ${result.error ?? 'unknown error'}`
+}
+
+// ── the agent loop ───────────────────────────────────────────────────────────
+interface AgentStep { name: string; ok: boolean; summary: string; files?: StoredFile[] }
+type AgentOutcome =
+  | { kind: 'reply'; text: string; steps: AgentStep[] }
+  | {
+      kind: 'needs_confirmation'
+      confirmation: { token: string; name: string; destructive: boolean; summary: string; args: ToolArgs }
+      transcript: Array<{ role: string; content: string }>
+      steps: AgentStep[]
+    }
+
+function stepFrom(name: string, result: ToolResult): AgentStep {
+  return { name, ok: result.ok !== false, summary: result.ok !== false ? result.summary ?? `Ran ${name}` : result.error ?? `Failed ${name}`, files: result.files }
+}
+
+/**
+ * Drive the model → tool-call → result loop. Non-gated tools run inline and their
+ * result is fed back for the next turn; a gated tool STOPS the loop and returns a
+ * confirmation the client approves through the existing gate. A model reply that
+ * is not a tool call ends the loop as a natural-language answer — and a reply that
+ * is JSON-but-not-a-tool-call is nudged (visibly, not silently dropped) before we
+ * give up and surface it as text.
+ */
+async function runAgentLoop(
+  messages: Array<{ role: string; content: string }>,
+  auth: string,
+  ctx: { userId: string; connections: Record<string, string> },
+  steps: AgentStep[] = []
+): Promise<AgentOutcome> {
+  let malformedRetries = 0
+  for (let turn = 0; turn < MAX_AGENT_TURNS; turn++) {
+    const modelText = await callChatProxyFull(messages, auth)
+    messages.push({ role: 'assistant', content: modelText })
+
+    const toolCall = parseToolCall(modelText, WEB_TOOL_NAMES)
+    if (!toolCall) {
+      if (looksLikeAttemptedToolCall(modelText) && malformedRetries < MAX_MALFORMED_RETRIES) {
+        malformedRetries++
+        messages.push({ role: 'user', content: MALFORMED_TOOL_CALL_NUDGE })
+        continue
+      }
+      // Genuine natural-language answer, OR a malformed reply we could not coax
+      // into a valid call — either way, surface the text to the user, never drop it.
+      return { kind: 'reply', text: modelText.trim(), steps }
+    }
+
+    if (requiresConfirmation(toolCall.tool)) {
+      const token = confirmations.issue(ctx.userId, toolCall.tool, toolCall.args)
+      return {
+        kind: 'needs_confirmation',
+        confirmation: {
+          token,
+          name: toolCall.tool,
+          destructive: isDestructive(toolCall.tool),
+          summary: `Run "${toolCall.tool}"? This performs a ${isDestructive(toolCall.tool) ? 'destructive/irreversible' : 'state-changing'} action.`,
+          args: toolCall.args
+        },
+        transcript: messages,
+        steps
+      }
+    }
+
+    // Non-gated tool: execute and feed the real result back for the next turn.
+    let result: ToolResult
+    try {
+      result = await runTool(toolCall.tool, toolCall.args, ctx)
+    } catch (err) {
+      result = { ok: false, error: err instanceof Error ? err.message : String(err) }
+    }
+    steps.push(stepFrom(toolCall.tool, result))
+    messages.push({ role: 'user', content: formatToolResult(toolCall.tool, result) })
+  }
+  return { kind: 'reply', text: 'I reached the step limit before finishing. Here is what I completed above.', steps }
+}
+
+function outcomeToResponse(outcome: AgentOutcome): Record<string, unknown> {
+  const files = outcome.steps.flatMap((s) => s.files ?? [])
+  if (outcome.kind === 'needs_confirmation') {
+    return {
+      kind: 'needs_confirmation',
+      confirmation: outcome.confirmation,
+      transcript: outcome.transcript,
+      name: outcome.confirmation.name,
+      args: outcome.confirmation.args,
+      steps: outcome.steps,
+      files
+    }
+  }
+  return { kind: 'reply', reply: outcome.text, steps: outcome.steps, files }
 }
 
 // ── app ───────────────────────────────────────────────────────────────────
-const app = express()
+export const app = express()
 app.use(express.json({ limit: '10mb' }))
 
 app.get('/health', (_req, res) => res.json({ ok: true, devStub: DEV_STUB }))
@@ -121,7 +332,6 @@ app.get('/api/me', async (req, res) => {
 app.get('/api/connections', async (req, res) => {
   const u = await verify(req.header('authorization'))
   if (!u) return res.status(401).json({ connections: [] })
-  // Server-known connections; the client optimistically adds a GitHub PAT locally.
   res.json({ connections: [{ id: 'github', name: 'GitHub', kind: 'github', state: 'disconnected' }] })
 })
 
@@ -131,10 +341,6 @@ app.get('/api/workflows', async (req, res) => {
   res.json({ workflows: [] })
 })
 
-// Map chat-proxy's structured error codes → a specific, user-facing message.
-// chat-proxy answers every non-2xx as JSON `{ error: <code> }` (only its success
-// path is SSE), so we can read the real code even for a streaming request and
-// surface an accurate message instead of a generic bucket.
 function chatProxyErrorMessage(status: number, code: string | undefined): string {
   switch (code) {
     case 'rate_limited':
@@ -153,12 +359,10 @@ function chatProxyErrorMessage(status: number, code: string | undefined): string
   }
 }
 
-// Chat: a REAL Supabase chat-proxy passthrough. No echo, no fake success —
-// every failure mode below returns its own specific, honest error.
+// Chat: a REAL Supabase chat-proxy passthrough (Ask mode). No echo, no fake success.
 app.post('/api/chat', async (req: Request, res: Response) => {
   const u = await verify(req.header('authorization'))
   if (!u) {
-    // No/expired session — don't pretend to answer, ask them to sign in.
     return res.status(401).json({
       error: 'unauthenticated',
       message: 'You are not signed in, or your session has expired. Sign in again to chat.'
@@ -166,24 +370,16 @@ app.post('/api/chat', async (req: Request, res: Response) => {
   }
   const auth = req.header('authorization')!
 
-  // Deploy-config guard. A missing chat backend is a DEPLOYMENT bug, not a user
-  // error: make it LOUD in the logs/monitoring, and tell the user plainly that
-  // the deployment is misconfigured rather than fabricating an answer.
   if (!CHAT_PROXY_URL || !SUPABASE_ANON_KEY || !supabase) {
     const missing =
-      [!SUPABASE_URL && 'SUPABASE_URL', !SUPABASE_ANON_KEY && 'SUPABASE_ANON_KEY'].filter(Boolean).join(', ') ||
-      'chat backend'
-    console.error(
-      `[chat] MISCONFIGURED DEPLOY: chat-proxy unavailable — missing ${missing}. No real LLM response is possible.`
-    )
+      [!SUPABASE_URL && 'SUPABASE_URL', !SUPABASE_ANON_KEY && 'SUPABASE_ANON_KEY'].filter(Boolean).join(', ') || 'chat backend'
+    console.error(`[chat] MISCONFIGURED DEPLOY: chat-proxy unavailable — missing ${missing}. No real LLM response is possible.`)
     return res.status(503).json({
       error: 'not_configured',
       message: `This deployment is misconfigured: the chat backend is not set up (missing ${missing}). No AI response is possible until an operator configures it.`
     })
   }
 
-  // Real chat-proxy call — same contract as desktop edgeFunctions.ts
-  // (`apikey` + `Authorization: Bearer <token>`), streamed SSE preserved.
   let upstream: globalThis.Response
   try {
     upstream = await fetch(CHAT_PROXY_URL, {
@@ -192,31 +388,17 @@ app.post('/api/chat', async (req: Request, res: Response) => {
       body: JSON.stringify(req.body)
     })
   } catch (err) {
-    // Never got an HTTP answer: DNS/TLS/network/timeout reaching Supabase. This
-    // is a DISTINCT failure from an auth error — keep it in its own bucket.
     console.error('[chat] cannot reach chat-proxy:', err)
-    return res.status(502).json({
-      error: 'upstream_unreachable',
-      message: "Couldn't reach the chat service. Check your connection and try again."
-    })
+    return res.status(502).json({ error: 'upstream_unreachable', message: "Couldn't reach the chat service. Check your connection and try again." })
   }
 
-  // Non-2xx from chat-proxy → surface the ACTUAL status + its structured error
-  // code and a specific message. Server-side failures are logged loudly.
   if (!upstream.ok) {
     const body = (await upstream.json().catch(() => ({}))) as { error?: string }
     const code = typeof body.error === 'string' ? body.error : undefined
-    if (upstream.status >= 500) {
-      console.error(`[chat] chat-proxy ${upstream.status} (${code ?? 'no-code'}) — backend/provider failure`)
-    }
-    return res.status(upstream.status).json({
-      error: code ?? 'chat_proxy_error',
-      status: upstream.status,
-      message: chatProxyErrorMessage(upstream.status, code)
-    })
+    if (upstream.status >= 500) console.error(`[chat] chat-proxy ${upstream.status} (${code ?? 'no-code'}) — backend/provider failure`)
+    return res.status(upstream.status).json({ error: code ?? 'chat_proxy_error', status: upstream.status, message: chatProxyErrorMessage(upstream.status, code) })
   }
 
-  // Success: stream the normalized SSE straight through to the browser.
   res.status(upstream.status)
   res.setHeader('Content-Type', upstream.headers.get('content-type') ?? 'text/event-stream')
   res.setHeader('Cache-Control', 'no-cache')
@@ -234,7 +416,81 @@ app.post('/api/chat', async (req: Request, res: Response) => {
   return res.end()
 })
 
-// The one endpoint that runs tools — behind the confirmation gate.
+// ── the model-driven agent loop (Act mode) — replaces the client-side regex ──
+// The gate is UNCHANGED; this endpoint changes WHAT decides to call it. A gated
+// tool comes back as needsConfirmation (+ the transcript to resume with); the
+// client approves through the same inline callout the regex path used.
+app.post('/api/agent', async (req, res) => {
+  const u = await verify(req.header('authorization'))
+  if (!u) return res.status(401).json({ error: 'unauthenticated', message: 'Sign in again to run a task.' })
+  const auth = req.header('authorization')!
+
+  const { message, messages, connections = {} } = req.body ?? {}
+  const history: Array<{ role: string; content: string }> = Array.isArray(messages)
+    ? messages.filter((m) => m && typeof m.content === 'string').map((m) => ({ role: m.role === 'assistant' ? 'assistant' : 'user', content: m.content }))
+    : typeof message === 'string' && message.trim()
+      ? [{ role: 'user', content: message.trim() }]
+      : []
+  if (history.length === 0) return res.status(400).json({ error: 'message_required', message: 'Provide a "message" or "messages".' })
+
+  const convo = [{ role: 'system', content: buildAgentSystemPrompt() }, ...history]
+  try {
+    const outcome = await runAgentLoop(convo, auth, { userId: u.id, connections })
+    res.json(outcomeToResponse(outcome))
+  } catch (err) {
+    if (err instanceof ChatProxyError) return res.status(err.status).json({ error: err.code, message: err.message })
+    console.error('[agent] loop error:', err)
+    res.status(500).json({ error: 'agent_error', message: err instanceof Error ? err.message : String(err) })
+  }
+})
+
+// Resume after the user approves (or denies) a gated tool the loop selected.
+app.post('/api/agent/resume', async (req, res) => {
+  const u = await verify(req.header('authorization'))
+  if (!u) return res.status(401).json({ error: 'unauthenticated', message: 'Sign in again to continue the task.' })
+  const auth = req.header('authorization')!
+
+  const { transcript, name, args = {}, confirmationToken, connections = {}, approved } = req.body ?? {}
+  if (typeof name !== 'string') return res.status(400).json({ error: 'name required' })
+  if (!Array.isArray(transcript)) return res.status(400).json({ error: 'transcript required' })
+  const convo: Array<{ role: string; content: string }> = transcript
+    .filter((m: unknown) => m && typeof (m as { content?: unknown }).content === 'string')
+    .map((m: { role?: string; content: string }) => ({ role: m.role === 'assistant' ? 'assistant' : m.role === 'system' ? 'system' : 'user', content: m.content }))
+  const ctx = { userId: u.id, connections }
+
+  let firstStep: AgentStep
+  if (approved) {
+    if (!confirmations.consume(confirmationToken, u.id, name, args)) {
+      return res.status(400).json({ error: 'invalid_or_expired_confirmation' })
+    }
+    let result: ToolResult
+    try {
+      result = await runTool(name, args, ctx)
+    } catch (err) {
+      result = { ok: false, error: err instanceof Error ? err.message : String(err) }
+    }
+    firstStep = stepFrom(name, result)
+    convo.push({ role: 'user', content: formatToolResult(name, result) })
+  } else {
+    firstStep = { name, ok: false, summary: 'Denied — nothing ran.' }
+    convo.push({
+      role: 'user',
+      content: `TOOL RESULT [${name}] error: User denied this action. Do not retry it; tell the user you could not proceed without their approval.`
+    })
+  }
+
+  try {
+    const outcome = await runAgentLoop(convo, auth, ctx, [firstStep])
+    res.json(outcomeToResponse(outcome))
+  } catch (err) {
+    if (err instanceof ChatProxyError) return res.status(err.status).json({ error: err.code, message: err.message })
+    console.error('[agent] resume error:', err)
+    res.status(500).json({ error: 'agent_error', message: err instanceof Error ? err.message : String(err) })
+  }
+})
+
+// The one endpoint that runs a SINGLE tool directly — still behind the gate.
+// (Kept for direct tool invocation and as the primitive the agent loop mirrors.)
 app.post('/api/tool', async (req, res) => {
   const u = await verify(req.header('authorization'))
   if (!u) return res.status(401).json({ error: 'missing_token' })
@@ -275,10 +531,22 @@ app.get('/local-files/:userId/:name', (req, res) => {
 // Serve the built frontend (production). In dev, use the Vite dev server (:5173).
 app.use(express.static(join(__dirname, '..', 'public-web')))
 
-app.listen(PORT, () => {
-  const chatState = CHAT_PROXY_URL && SUPABASE_ANON_KEY && supabase ? 'chat-proxy' : 'NOT CONFIGURED (chat will 503)'
-  console.log(`OpenUI Web on ${BASE_URL}  ·  auth: ${DEV_STUB ? 'DEV STUB' : 'Supabase'}  ·  chat: ${chatState}`)
-  if (chatState.startsWith('NOT')) {
-    console.error('[chat] chat-proxy is not configured — set SUPABASE_URL and SUPABASE_ANON_KEY. /api/chat returns 503 until then.')
-  }
-})
+// Boot the server only when run directly (tests import `app` and listen on :0).
+const norm = (p: string): string => normalize(p).toLowerCase()
+const isMain = process.argv[1] ? norm(fileURLToPath(import.meta.url)) === norm(process.argv[1]) : false
+if (isMain) {
+  assertGateImplementationParity()
+  desktopReuseAvailable().then((ok) => {
+    if (!ok) console.error(`[reuse] desktop modules not found — document/paper tools will error. Set OPENUI_DESKTOP_MAIN to the desktop src/main path.`)
+  })
+  app.listen(PORT, () => {
+    const chatState = CHAT_PROXY_URL && SUPABASE_ANON_KEY ? 'chat-proxy' : 'NOT CONFIGURED (chat/agent will 503)'
+    console.log(`OpenUI Web on ${BASE_URL}  ·  auth: ${DEV_STUB ? 'DEV STUB' : 'Supabase'}  ·  chat: ${chatState}`)
+    if (chatState.startsWith('NOT')) {
+      console.error('[chat] chat-proxy is not configured — set SUPABASE_URL and SUPABASE_ANON_KEY. /api/chat and /api/agent return 503 until then.')
+    }
+  })
+}
+
+// Exported for tests (real HTTP via app.listen(0)).
+export { runTool, runAgentLoop, assertGateImplementationParity, RUN_TOOL_NAMES }

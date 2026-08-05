@@ -10,7 +10,9 @@
     "dev:web": "vite --config web/vite.config.ts web",
     "build:web": "vite --config web/vite.config.ts build web",
     "start": "tsx src/server.ts",
-    "typecheck:web": "tsc -p web/tsconfig.json"
+    "typecheck:web": "tsc -p web/tsconfig.json",
+    "typecheck:api": "tsc -p tsconfig.server.json",
+    "test": "tsx --test src/*.test.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.0",
