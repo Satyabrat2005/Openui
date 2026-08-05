@@ -60,19 +60,6 @@ function toolConnections(): Record<string, string> {
   return g ? { github: g } : {}
 }
 
-/** Act-mode intent → a real web tool call. Gated tools (write_spreadsheet,
- *  create_repo) route through the confirmation gate → inline approval. */
-function matchTool(text: string): { name: string; args: unknown } | null {
-  const t = text.toLowerCase()
-  if (/\b(spreadsheet|xlsx|excel|workbook)\b/.test(t))
-    return { name: 'write_spreadsheet', args: { title: 'Report', sheets: [{ name: 'Data', headers: ['Metric', 'Value'], rows: [['Users', 1200], ['Signups', 340]] }] } }
-  if (/\b(repo|repository|github)\b/.test(t))
-    return { name: 'create_repo', args: { name: 'openui-web-demo', description: text, private: true } }
-  if (/\b(doc|document|word|report|memo)\b/.test(t)) return { name: 'create_document', args: { title: 'Document', paragraphs: [text] } }
-  if (/\b(paper|papers|arxiv|research)\b/.test(t)) return { name: 'search_papers', args: { query: text, max_results: 4 } }
-  return null
-}
-
 interface RunConsoleProps {
   initialMessage?: string | null
   historyOpen?: boolean
@@ -82,7 +69,7 @@ interface RunConsoleProps {
 export default function RunConsole({ initialMessage, historyOpen = false, onHistoryChange }: RunConsoleProps): JSX.Element {
   const {
     tasks, beginTask, focusedId, focusTask, runningCount, waitingCount,
-    sendChat, requestTool, pendingApproval, approvePending, denyPending, clearRuns
+    sendChat, runAgent, pendingApproval, approvePending, denyPending, clearRuns
   } = useTaskActivity()
   const { user } = useAuth()
 
@@ -154,18 +141,14 @@ export default function RunConsole({ initialMessage, historyOpen = false, onHist
   const startRun = useCallback(() => {
     const text = input.trim()
     if (!text) return
-    if (mode === 'do') {
-      const tool = matchTool(text)
-      if (tool) {
-        void requestTool(tool.name, tool.args, toolConnections())
-        setInput('')
-        return
-      }
-    }
     beginTask(text, 'chat')
-    void sendChat(text)
+    // Act mode → the model-driven agent loop decides which tool(s) to run (the
+    // server reasons over the tool schemas; there is no client-side keyword
+    // matching). Answer mode → a plain streamed chat answer.
+    if (mode === 'do') void runAgent(text, toolConnections())
+    else void sendChat(text)
     setInput('')
-  }, [input, mode, beginTask, sendChat, requestTool])
+  }, [input, mode, beginTask, sendChat, runAgent])
 
   const newRun = useCallback(() => {
     clearRuns()
