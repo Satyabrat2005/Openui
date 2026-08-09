@@ -1,4 +1,5 @@
 import { Ollama } from 'ollama'
+import { spawn } from 'node:child_process'
 import { BrowserWindow, ipcMain } from 'electron'
 import { toolSchemas, executeTool, describeToolCall, DESTRUCTIVE_TOOLS, type ToolSchema, type ToolResult, type PendingApprovalResult, type Tier } from './tools'
 import { SPAWN_SUBAGENTS_TOOL, runParallelSubagents, parseSubTaskSpecs } from './subagents'
@@ -6,7 +7,7 @@ import { codingToolSchemas, executeCodingTool, describeCodingToolCall } from './
 import { VerifyGate } from './verifyGate'
 import { detectProjectType, getProjectProfile } from './projectProfiles'
 import { looksLikeMissingPrecondition } from './preconditionClassifier'
-import { getWorkspaceDir, setActiveProject } from './sandbox'
+import { getWorkspaceDir, setActiveProject, getActiveProject, listSandboxFiles } from './sandbox'
 import { ensureCodebaseIndexed } from './codebaseIndex'
 import { buildCodebaseMap } from './codebaseMap'
 import { deriveProjectSlug } from './projectName'
@@ -714,7 +715,21 @@ function preferredCodeModel(): string {
  * requests like "create a folder on my Desktop".
  */
 const BUILD_RE =
-  /\b(build|scaffold|bootstrap|create|make|generate|code|develop)\b[^.!?]{0,60}\b(react|next(?:\.?js)?|vue|svelte|angular|node(?:\.?js)?|express|vite|website|web\s?site|web\s?app|webapp|web\s?page|webpage|landing\s?page|front\s?end|frontend|back\s?end|backend|app|application|project|game|api|cli|dashboard|component|script|program)\b/i
+  /\b(?:builds?|building|scaffold(?:s|ed|ing)?|bootstrap(?:s|ped|ping)?|creat(?:e|es|ed|ing)|mak(?:e|es|ing)|made|generat(?:e|es|ed|ing)|cod(?:e|es|ed|ing)|develop(?:s|ed|ing)?|continue|continuing|resume|finish(?:es|ing)?)\b[^.!?]{0,60}\b(react|next(?:\.?js)?|vue|svelte|angular|node(?:\.?js)?|express|vite|website|web\s?site|web\s?app|webapp|web\s?page|webpage|landing\s?page|front\s?end|frontend|back\s?end|backend|app|application|project|game|api|cli|dashboard|component|script|program)\b/i
+
+/** Exported for tests: does this message route to the sandboxed builder session? */
+export function looksLikeBuildRequest(text: string): boolean {
+  return BUILD_RE.test(text)
+}
+
+/**
+ * A follow-up that should land in the project we are already building rather
+ * than a fresh folder. Without this, "keep building the site" derives a new slug
+ * from the new wording, points the sandbox at an empty directory, and the model
+ * starts the whole project over — which is exactly what the step-limit message
+ * tells the user NOT to expect.
+ */
+const CONTINUE_BUILD_RE = /\b(keep|continue|carry\s+on|resume|finish|pick\s+up|go\s+on)\b/i
 
 /**
  * Pull a trailing "...open/edit/continue it in/with/using <tool>" editor name
@@ -732,8 +747,13 @@ function extractEditorHandoff(text: string): string | null {
   return m ? m[1].trim() : null
 }
 
-/** Per-request step budget for a builder session — matches the autonomous cap. */
-const MAX_BUILDER_TURNS = 20
+/**
+ * Per-request step budget for a builder session. One tool call per turn means a
+ * real multi-page site — a dozen files, plus install, build, and a fix-and-retry
+ * round — does not fit in 20; hitting the cap mid-scaffold left the user with a
+ * half-written project and a bare "limit reached" line.
+ */
+const MAX_BUILDER_TURNS = 40
 
 /** How many times we'll re-prompt a reply that parsed as JSON but wasn't a real tool call. */
 const MAX_MALFORMED_TOOL_CALL_RETRIES = 3
@@ -747,6 +767,125 @@ const MALFORMED_TOOL_CALL_NUDGE =
 const ZERO_TOOL_NUDGE =
   "You replied as if you were done, but you haven't called a single tool yet — nothing has been " +
   'written. Call write_file now to create the first real file.'
+
+/** Identical write_file calls tolerated before the session gives up on the request. */
+const MAX_REPEATED_CALLS = 3
+/** Tool failures in a row before we stop letting the model guess at a recovery. */
+const MAX_CONSECUTIVE_FAILURES = 3
+
+/** Point the model at a recovery that works after it has failed the same way repeatedly. */
+function stuckOnFailuresNudge(tool: string): string {
+  const specific =
+    tool === 'edit_file'
+      ? 'Your "old_string" is not matching the file byte-for-byte. Stop guessing at it: read_file the whole file, ' +
+        'then call write_file once with the complete updated contents.'
+      : 'Change your approach rather than repeating that call — read the file or list the workspace first.'
+  return `${MAX_CONSECUTIVE_FAILURES} tool calls in a row have now failed, so the last one is not going to start working. ${specific}`
+}
+
+/**
+ * Answer a redundant write with the state of play and the concrete next step.
+ *
+ * A local 7B model treats "TOOL RESULT [write_file] success" as reinforcement,
+ * so when it has nothing better to do it re-writes the file it just wrote —
+ * observed in a real run as 38 identical writes of index.html that consumed the
+ * entire step budget and produced a half-built project. Naming what already
+ * exists and what verification still owes gives it somewhere else to go.
+ */
+function repeatedWriteNudge(call: ToolCall, files: string[], profile: { verifiers: readonly string[] }): string {
+  const path = typeof (call.args as { path?: unknown })?.path === 'string' ? (call.args as { path: string }).path : 'that file'
+  return (
+    `TOOL RESULT [write_file] skipped: "${path}" already has exactly those contents — writing it again changes nothing.\n` +
+    `The workspace now contains: ${files.length ? files.join(', ') : '(nothing yet)'}.\n` +
+    'Do NOT write that file again. Move to the next unfinished step: write a file that does not exist yet, ' +
+    `verify the project with ${profile.verifiers.join(' / ')}, or — if it is genuinely finished — reply in plain ` +
+    'natural language summarising what you built. Use edit_file, never write_file, to change a file that already exists.'
+  )
+}
+
+// ── Builder context budget ───────────────────────────────────────────────────
+
+/** Rough chars-per-token for the BPE tokenizer — deliberately conservative. */
+const CHARS_PER_TOKEN = 4
+/** Tokens held back from the window so the model has room to emit a whole file. */
+const RESERVED_REPLY_TOKENS = 2048
+/** Most recent messages kept verbatim — the model needs these to pick its next step. */
+const BUILDER_KEEP_RECENT = 6
+/** How much of a compacted message survives. */
+const COMPACTED_CHARS = 240
+
+/**
+ * Chars of conversation history that fit alongside `systemPrompt` in `numCtx`.
+ */
+function builderHistoryBudget(systemPrompt: string, numCtx: number): number {
+  const total = numCtx * CHARS_PER_TOKEN
+  return Math.max(2000, total - systemPrompt.length - RESERVED_REPLY_TOKENS * CHARS_PER_TOKEN)
+}
+
+/** Shrink one superseded turn to a reference the model can act on. */
+function shrinkBuilderMessage(m: Message): Message {
+  if (m.content.length <= COMPACTED_CHARS) return m
+  if (m.role === 'assistant') {
+    const json = extractFirstJsonObject(m.content)
+    let parsed: { tool?: unknown; args?: { path?: unknown } } | null = null
+    try {
+      parsed = json ? JSON.parse(json) : null
+    } catch {
+      parsed = null
+    }
+    if (parsed && typeof parsed.tool === 'string') {
+      const path = typeof parsed.args?.path === 'string' ? ` on "${parsed.args.path}"` : ''
+      return {
+        ...m,
+        content: `[earlier step] called ${parsed.tool}${path} — arguments dropped from this transcript to save context. Call read_file before any write_file or edit_file on that path, so you edit what is actually there.`
+      }
+    }
+  }
+  return { ...m, content: `${m.content.slice(0, COMPACTED_CHARS)}… [trimmed from transcript]` }
+}
+
+/**
+ * Keep a builder conversation inside the model's context window.
+ *
+ * Every write_file call carries a whole source file, and its TOOL RESULT echoes
+ * more, so an unmanaged builder history outgrows num_ctx after a handful of
+ * files. Ollama does not fail in that case — it silently drops the MIDDLE of the
+ * prompt, which is precisely where the tool-calling instructions sit. The model
+ * then stops emitting tool calls and answers in prose (often declining the task
+ * outright), and the loop's zero-tool retries burn out against a prompt that can
+ * no longer describe the tools. That failure is indistinguishable, from the
+ * outside, from the agent refusing to build.
+ *
+ * So: keep the original request and the most recent exchanges verbatim, replace
+ * older bodies with references to files that still exist on disk, and drop the
+ * oldest of those if that is still not enough. Pure and exported for testing.
+ */
+export function compactBuilderHistory(messages: Message[], budgetChars: number): Message[] {
+  const size = (ms: Message[]): number => ms.reduce((n, m) => n + m.content.length, 0)
+  if (size(messages) <= budgetChars) return messages
+
+  const head = messages[0]
+  const tailStart = Math.max(1, messages.length - BUILDER_KEEP_RECENT)
+  const middle = messages.slice(1, tailStart).map(shrinkBuilderMessage)
+  const tail = messages.slice(tailStart)
+
+  // Drop compacted middles oldest-first until it fits. The head (the user's
+  // actual request) and the recent tail are never dropped — losing either
+  // costs more than the context it frees.
+  while (middle.length > 0 && size([head, ...middle, ...tail]) > budgetChars) {
+    middle.shift()
+  }
+
+  const result = [head, ...middle, ...tail]
+  // Pathological case: the request itself plus the recent tail overflows. Trim
+  // the request rather than let Ollama silently cut the tool instructions.
+  if (size(result) > budgetChars && head.content.length > COMPACTED_CHARS) {
+    const marker = '… [request truncated to fit the context window]'
+    const room = Math.max(COMPACTED_CHARS, budgetChars - size([...middle, ...tail]) - marker.length)
+    result[0] = { ...head, content: `${head.content.slice(0, room)}${marker}` }
+  }
+  return result
+}
 
 /**
  * System prompt for interactive builder sessions. Mirrors the autonomous coding
@@ -800,27 +939,27 @@ async function runBuilderSession(win: BrowserWindow, tier: Tier, userMessage: st
   // nudges a server that was never going to answer, burns its retry budget, and
   // gives up with a misleading "name the tech stack you want used" message that
   // hides the real (infrastructure, not prompt) cause from the user.
-  if (!shouldRouteToCloud() && !(await isOllamaRunning())) {
+  if (!shouldRouteToCloud() && !(await ensureOllamaRunning(win))) {
     const host = process.env.OLLAMA_HOST ?? 'http://127.0.0.1:11434'
     return (
-      `I can't reach the local AI engine (Ollama) at ${host}, so I can't build this. ` +
-      `Start it with "ollama serve" (or open the Ollama app) and make sure ` +
+      `I can't reach the local AI engine (Ollama) at ${host}, and starting it here didn't work, ` +
+      `so I can't build this. Start it with "ollama serve" (or open the Ollama app) and make sure ` +
       `${await localCodeModel()} is installed, then try again.`
     )
   }
 
-  const messages: Message[] = [{ role: 'user', content: userMessage }]
   const codingNames = knownCodingToolNames()
 
   // Give this build its own folder under ~/OpenUI Projects (so successive builds
   // don't overwrite each other) and arm the editor to open on the first write.
   // Only the interactive session arms it; the unattended runner in autonomous.ts
   // must never steal focus.
-  const projectSlug = deriveProjectSlug(userMessage)
+  const resuming = CONTINUE_BUILD_RE.test(userMessage) ? getActiveProject() : null
+  const projectSlug = resuming ?? deriveProjectSlug(userMessage)
   setActiveProject(projectSlug)
   emit(win, 'openui:task:update', {
     id: 'project-folder',
-    label: `Project folder: ${projectSlug}`,
+    label: `${resuming ? 'Continuing project' : 'Project folder'}: ${projectSlug}`,
     status: 'done',
     detail: getWorkspaceDir()
   } satisfies TaskUpdate)
@@ -836,6 +975,20 @@ async function runBuilderSession(win: BrowserWindow, tier: Tier, userMessage: st
   const verifyGate = new VerifyGate(profile)
   const systemPrompt = `${BUILDER_SYSTEM_PROMPT}\n\n${profile.promptAddendum}`
 
+  // On a resume the workspace is already populated, and the prompt's "scaffold
+  // NEW files with write_file" step would otherwise have the model rewrite files
+  // it cannot see — write_file replaces whole contents, so that silently
+  // destroys the previous run's work.
+  const existing = resuming ? await listSandboxFiles() : []
+  const messages: Message[] = [
+    {
+      role: 'user',
+      content: existing.length
+        ? `${userMessage}\n\nThese files already exist in the workspace — continue from them, use edit_file (not write_file) to change any of them, and read_file first if you need their contents:\n${existing.map((f) => `- ${f}`).join('\n')}`
+        : userMessage
+    }
+  ]
+
   // Zero tool calls ever made is never a legitimate finish for a build session —
   // BUILD_RE only routes here on an explicit build request, unlike the shared
   // VerifyGate contract (also used read-only by autonomous.ts), which treats an
@@ -844,7 +997,15 @@ async function runBuilderSession(win: BrowserWindow, tier: Tier, userMessage: st
   let malformedReplies = 0
   let zeroToolRetries = 0
 
+  const historyBudget = builderHistoryBudget(systemPrompt, resolveNumCtx(true))
+  const repeatedCalls = new Map<string, number>()
+  let consecutiveFailures = 0
+  let stalled = false
+
   for (let turn = 0; turn < MAX_BUILDER_TURNS; turn++) {
+    const compacted = compactBuilderHistory(messages, historyBudget)
+    if (compacted !== messages) messages.splice(0, messages.length, ...compacted)
+
     const gate = new StreamGate((delta) => emit(win, 'openui:chat:chunk', delta))
     // coding: true — this session writes real source files, same as the
     // unattended autonomous loop (autonomous.ts), so it needs the code-tuned
@@ -910,6 +1071,28 @@ async function runBuilderSession(win: BrowserWindow, tier: Tier, userMessage: st
       return responseText.trim()
     }
 
+    // A write the workspace already contains is a no-op that the plain "success"
+    // result rewards, so a small model will happily emit it forever. Answer it
+    // with the state of play instead of running it, and give up on the request
+    // rather than spending the whole step budget on the same file.
+    const signature = `${toolCall.tool} ${JSON.stringify(toolCall.args ?? {})}`
+    const repeats = (repeatedCalls.get(signature) ?? 0) + 1
+    repeatedCalls.set(signature, repeats)
+    if (repeats > 1 && toolCall.tool === 'write_file') {
+      if (repeats > MAX_REPEATED_CALLS) {
+        stalled = true
+        break
+      }
+      emit(win, 'openui:task:update', {
+        id: `b${++taskSeq}`,
+        label: 'Already written',
+        status: 'done',
+        detail: 'Asked to write a file it had already written identically — skipped and nudged forward.'
+      } satisfies TaskUpdate)
+      messages.push({ role: 'user', content: repeatedWriteNudge(toolCall, await listSandboxFiles(), profile) })
+      continue
+    }
+
     toolCallCount++
     const taskId = `b${++taskSeq}`
     const label = describeCodingToolCall(toolCall.tool, toolCall.args)
@@ -926,9 +1109,27 @@ async function runBuilderSession(win: BrowserWindow, tier: Tier, userMessage: st
 
     verifyGate.observe(toolCall.tool, toolCall.args, result.ok, result.output ?? '')
     messages.push({ role: 'user', content: formatToolResult(toolCall, result) })
+
+    // A failure the model answers by re-issuing the same kind of call is not a
+    // retry, it is a stall — most often edit_file whose old_string never matches
+    // the file byte-for-byte, which no amount of re-reading fixes. Say so, and
+    // name the way out, rather than letting it spend the budget rediscovering it.
+    consecutiveFailures = result.ok ? 0 : consecutiveFailures + 1
+    if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+      consecutiveFailures = 0
+      messages.push({ role: 'user', content: stuckOnFailuresNudge(toolCall.tool) })
+    }
   }
 
-  return 'Reached the build-step limit for this request. Tell me if you want me to keep going.'
+  const written = await listSandboxFiles()
+  const wrote = written.length ? `It wrote: ${written.join(', ')}.` : 'It did not manage to write anything.'
+  const reason = stalled
+    ? 'The model stopped making progress — it kept re-writing a file it had already written.'
+    : `I ran out of build steps for this request after ${MAX_BUILDER_TURNS} of them.`
+  return (
+    `${reason} ${wrote} The project is partly built rather than finished, and it is in:\n\n${getWorkspaceDir()}\n\n` +
+    'Ask me to keep building it and I will carry on from those files.'
+  )
 }
 
 /**
@@ -1096,6 +1297,81 @@ async function isOllamaRunning(): Promise<boolean> {
   }
 }
 
+/** How long we wait for a just-spawned `ollama serve` to answer /api/tags. */
+const OLLAMA_BOOT_TIMEOUT_MS = 20_000
+const OLLAMA_BOOT_POLL_MS = 500
+
+/** Set once we've tried to spawn the server, so a hard failure isn't retried every turn. */
+let ollamaSpawnAttempted = false
+
+/**
+ * Absolute fallbacks for the `ollama` binary, used when it isn't on PATH. A
+ * GUI-launched app inherits a minimal PATH on macOS, and on Windows the app can
+ * start before the installer's PATH entry reaches this process's environment —
+ * in both cases the binary is present at a known location even though bare
+ * `ollama` won't resolve.
+ */
+function ollamaBinaryCandidates(): string[] {
+  const home = process.env.HOME ?? process.env.USERPROFILE ?? ''
+  if (process.platform === 'win32') {
+    const localAppData = process.env.LOCALAPPDATA ?? `${home}\\AppData\\Local`
+    return ['ollama', `${localAppData}\\Programs\\Ollama\\ollama.exe`, 'C:\\Program Files\\Ollama\\ollama.exe']
+  }
+  if (process.platform === 'darwin') {
+    return ['ollama', '/opt/homebrew/bin/ollama', '/usr/local/bin/ollama', '/Applications/Ollama.app/Contents/Resources/ollama']
+  }
+  return ['ollama', '/usr/local/bin/ollama', '/usr/bin/ollama']
+}
+
+/**
+ * Make the local engine reachable, starting it if it isn't. Ollama being
+ * installed but not *running* is the single most common reason a build or an
+ * automation turn does nothing at all: every model call then falls through to
+ * the "start it with ollama serve" string, which reads to the user as the agent
+ * refusing rather than as a missing dependency. Since the binary is already on
+ * the machine, launch it ourselves — detached, so it outlives this process the
+ * same way the Ollama tray app would — and only report failure if it still
+ * doesn't answer. Returns true when the server is reachable.
+ */
+async function ensureOllamaRunning(win: BrowserWindow | null): Promise<boolean> {
+  if (await isOllamaRunning()) return true
+  // A custom OLLAMA_HOST points at a server we don't own (remote, container,
+  // different port) — spawning a local one would not make that host reachable.
+  if (process.env.OLLAMA_HOST && !/127\.0\.0\.1|localhost/.test(process.env.OLLAMA_HOST)) return false
+  if (ollamaSpawnAttempted) return false
+  ollamaSpawnAttempted = true
+
+  if (win) emit(win, 'openui:chat:warning', { message: 'Local AI engine is not running — starting Ollama…' })
+
+  let spawned = false
+  for (const bin of ollamaBinaryCandidates()) {
+    try {
+      const child = spawn(bin, ['serve'], { detached: true, stdio: 'ignore', windowsHide: true })
+      child.on('error', () => {
+        /* candidate didn't resolve — the readiness poll below decides */
+      })
+      child.unref()
+      spawned = true
+      break
+    } catch {
+      /* try the next candidate */
+    }
+  }
+  if (!spawned) return false
+
+  const deadline = Date.now() + OLLAMA_BOOT_TIMEOUT_MS
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, OLLAMA_BOOT_POLL_MS))
+    if (await isOllamaRunning()) {
+      // A later turn may find it stopped again (crash, user quit); allow one
+      // fresh spawn attempt then rather than latching the failure forever.
+      ollamaSpawnAttempted = false
+      return true
+    }
+  }
+  return false
+}
+
 /**
  * True when `err` is a local Ollama GPU-runner crash rather than an ordinary API
  * error. When the CUDA runner dies mid-request — most commonly the
@@ -1118,6 +1394,27 @@ export function isOllamaRunnerCrash(err: unknown): boolean {
     msg.includes('status 500') ||
     msg.includes('internal server error')
   )
+}
+
+/**
+ * Local context window, in tokens. Ollama defaults num_ctx to 4096, which
+ * silently truncates the middle of our prompt — exactly where the tool
+ * instructions live — so replies come back as prose instead of tool calls.
+ *
+ * Coding turns get a bigger window than chat turns because their history
+ * carries whole source files: the builder's system prompt alone is ~3k tokens,
+ * so at 8192 a couple of written files already push the conversation past the
+ * edge. qwen2.5-coder:7b is trained for 32k, and 16k of KV cache still fits
+ * beside the weights on an 8 GB card. OLLAMA_NUM_CTX overrides both for
+ * machines with less (or more) headroom.
+ */
+const CHAT_NUM_CTX = 8192
+const CODING_NUM_CTX = 16384
+
+function resolveNumCtx(coding: boolean): number {
+  const override = Number(process.env.OLLAMA_NUM_CTX)
+  if (Number.isFinite(override) && override > 0) return override
+  return coding ? CODING_NUM_CTX : CHAT_NUM_CTX
 }
 
 /** One streaming Ollama generation. `extraOptions` lets the CPU fallback force `num_gpu: 0`. */
@@ -1162,15 +1459,12 @@ async function callOllama(
   messages: Message[],
   systemPrompt: string,
   onDelta: (delta: string) => void,
-  model: string
+  model: string,
+  coding = false
 ): Promise<string> {
   const ollama = new Ollama({ host: process.env.OLLAMA_HOST ?? 'http://127.0.0.1:11434' })
 
-  // These models are trained for 8192 tokens. Ollama defaults num_ctx to 4096,
-  // which silently truncates our system prompt + tool instructions (~6.5k tokens)
-  // and makes the model reply with nonsense / skip tool calls. Request the full
-  // trained window (overridable via OLLAMA_NUM_CTX for lower-RAM machines).
-  const numCtx = Number(process.env.OLLAMA_NUM_CTX ?? 8192)
+  const numCtx = resolveNumCtx(coding)
 
   // Pre-flight guard: Ollama truncates the *middle* of the prompt (where our tool
   // instructions live) without failing, so a heads-up here is the only warning we
@@ -1283,15 +1577,16 @@ export async function callModel(
   // everything else uses the general model.
   const localModel = opts.coding ? await localCodeModel() : await localGeneralModel()
 
-  if (await isOllamaRunning()) {
-    return callOllama(win, messages, systemPrompt, onDelta, localModel)
+  if (await ensureOllamaRunning(win)) {
+    return callOllama(win, messages, systemPrompt, onDelta, localModel, opts.coding === true)
   }
 
-  // The Ollama server isn't reachable. Give an actionable message rather than a
-  // raw connection error — it is the one dependency the app needs running.
+  // The Ollama server isn't reachable and we couldn't start it. Give an
+  // actionable message rather than a raw connection error — it is the one
+  // dependency the app needs running.
   const host = process.env.OLLAMA_HOST ?? 'http://127.0.0.1:11434'
   const msg =
-    `I can't reach the local AI engine (Ollama) at ${host}. ` +
+    `I can't reach the local AI engine (Ollama) at ${host}, and starting it here didn't work. ` +
     `Start it with "ollama serve" and make sure the model is installed ` +
     `("ollama pull ${localModel}"), then try again.`
   onDelta(msg)

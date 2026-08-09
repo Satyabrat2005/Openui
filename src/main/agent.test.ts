@@ -84,10 +84,27 @@ vi.mock('./subagents', () => ({
   parseSubTaskSpecs: vi.fn(() => [])
 }))
 vi.mock('./codingTools', () => ({
-  codingToolSchemas: [],
+  codingToolSchemas: [
+    {
+      name: 'write_file',
+      description: 'Write a file',
+      parameters: { type: 'object', properties: { path: { type: 'string', description: 'path' } }, required: ['path'] }
+    }
+  ],
   executeCodingTool: vi.fn(async () => ({ ok: true, output: 'done' })),
-  describeCodingToolCall: (tool: string) => `Coding ${tool}`
+  describeCodingToolCall: (tool: string) => `Coding ${tool}`,
+  mutatesWorkspace: (name: string) => name === 'write_file'
 }))
+// The builder session touches the real project workspace; keep it off disk.
+vi.mock('./sandbox', () => ({
+  getWorkspaceDir: () => '/tmp/openui-test-workspace',
+  setActiveProject: vi.fn(),
+  getActiveProject: () => null,
+  listSandboxFiles: vi.fn(async () => ['index.html'])
+}))
+vi.mock('./codebaseIndex', () => ({ ensureCodebaseIndexed: vi.fn(async () => ({ ok: true })) }))
+vi.mock('./codebaseMap', () => ({ buildCodebaseMap: vi.fn(async () => ({ files: 0, symbols: 0 })) }))
+vi.mock('./editor', () => ({ armEditorAutoOpen: vi.fn() }))
 vi.mock('./ollamaLock', () => ({ withOllamaLock: (fn: () => unknown) => fn() }))
 vi.mock('./runLog', () => ({
   startRun: vi.fn(() => ({ end: vi.fn(), toolCall: vi.fn(), step: vi.fn() }))
@@ -156,13 +173,17 @@ import {
   registerAgentIPC,
   raiseWindow,
   isOllamaRunnerCrash,
+  compactBuilderHistory,
+  looksLikeBuildRequest,
   DESIGNER_SYSTEM_PROMPT,
-  DESIGNER_TOOL_NAMES
+  DESIGNER_TOOL_NAMES,
+  type Message
 } from './agent'
 import { figmaBuildToolSchemas } from './figmaBuild'
 import { trackEvent } from './telemetry/posthog'
 import { Events } from './telemetry/events'
 import { callMcpTool } from './mcp-client'
+import { executeCodingTool } from './codingTools'
 import { grantOrigin } from './browser/consent'
 
 // A fake BrowserWindow that records everything emitted to the renderer, plus the
@@ -1028,5 +1049,124 @@ describe('designer system prompt', () => {
 
   it('tells the model what to do when the builder plugin is not running', () => {
     expect(DESIGNER_SYSTEM_PROMPT).toContain('setup_figma_builder')
+  })
+})
+
+// ── Builder context budget ───────────────────────────────────────────────────
+// Regression: a builder session accumulated every written file in its message
+// history and never trimmed it. Past num_ctx, Ollama silently drops the MIDDLE
+// of the prompt — where the tool instructions live — so the model stopped
+// emitting tool calls and answered in prose instead, which reached the user as
+// the agent declining to build rather than as a context overflow.
+describe('compactBuilderHistory', () => {
+  const msg = (role: 'user' | 'assistant', content: string): Message => ({ role, content })
+  const size = (ms: Message[]): number => ms.reduce((n, m) => n + m.content.length, 0)
+
+  it('leaves a history that already fits untouched', () => {
+    const history = [msg('user', 'build a site'), msg('assistant', 'ok')]
+    expect(compactBuilderHistory(history, 10_000)).toBe(history)
+  })
+
+  it('brings an oversized history back under budget', () => {
+    const history: Message[] = [msg('user', 'build a marketing site')]
+    for (let i = 0; i < 20; i++) {
+      history.push(msg('assistant', JSON.stringify({ tool: 'write_file', args: { path: `page${i}.html`, content: 'x'.repeat(4000) } })))
+      history.push(msg('user', `TOOL RESULT [write_file] success: ${'y'.repeat(2000)}`))
+    }
+    const budget = 20_000
+    expect(size(history)).toBeGreaterThan(budget)
+    expect(size(compactBuilderHistory(history, budget))).toBeLessThanOrEqual(budget)
+  })
+
+  it('keeps the original request and the most recent exchanges verbatim', () => {
+    const request = 'build a marketing site with a pricing page'
+    const history: Message[] = [msg('user', request)]
+    for (let i = 0; i < 20; i++) {
+      history.push(msg('assistant', JSON.stringify({ tool: 'write_file', args: { path: `p${i}.html`, content: 'x'.repeat(4000) } })))
+      history.push(msg('user', `TOOL RESULT [write_file] success: wrote p${i}.html`))
+    }
+    const out = compactBuilderHistory(history, 20_000)
+    expect(out[0].content).toBe(request)
+    expect(out.at(-1)?.content).toBe(history.at(-1)?.content)
+  })
+
+  it('replaces a dropped file body with a pointer to the file on disk', () => {
+    const history: Message[] = [msg('user', 'build a site')]
+    for (let i = 0; i < 20; i++) {
+      history.push(msg('assistant', JSON.stringify({ tool: 'write_file', args: { path: `p${i}.html`, content: 'x'.repeat(4000) } })))
+      history.push(msg('user', `TOOL RESULT [write_file] success: wrote p${i}.html`))
+    }
+    const out = compactBuilderHistory(history, 40_000)
+    const compacted = out.filter((m) => m.content.startsWith('[earlier step]'))
+    expect(compacted.length).toBeGreaterThan(0)
+    // The model must be told the contents are recoverable, or it will rewrite
+    // the file blind — and write_file replaces the whole thing.
+    expect(compacted[0].content).toContain('read_file')
+    expect(compacted[0].content).toContain('write_file')
+  })
+
+  it('truncates even a single oversized request rather than overflowing', () => {
+    const history = [msg('user', 'z'.repeat(50_000))]
+    const out = compactBuilderHistory(history, 5000)
+    expect(size(out)).toBeLessThanOrEqual(5000)
+    expect(out[0].content).toContain('truncated')
+  })
+})
+
+// ── Build-request routing ────────────────────────────────────────────────────
+// Only these messages reach the sandboxed builder loop; everything else falls
+// through to OS automation, where there are no file-writing tools at all.
+describe('looksLikeBuildRequest', () => {
+  it('matches plain build requests', () => {
+    expect(looksLikeBuildRequest('build me a react app')).toBe(true)
+    expect(looksLikeBuildRequest('make one website with this specification')).toBe(true)
+    expect(looksLikeBuildRequest('create a landing page')).toBe(true)
+  })
+
+  it('matches continuation phrasing', () => {
+    // Regression: the trigger only accepted the bare verb, so the follow-up the
+    // step-limit message itself suggests ("keep building the website") missed
+    // the builder and was answered by the OS-automation loop, which cannot
+    // write a single file.
+    expect(looksLikeBuildRequest('keep building the website')).toBe(true)
+    expect(looksLikeBuildRequest('continue the project')).toBe(true)
+    expect(looksLikeBuildRequest('finish the app')).toBe(true)
+  })
+
+  it('still ignores plain OS requests', () => {
+    expect(looksLikeBuildRequest('create a folder on my Desktop')).toBe(false)
+    expect(looksLikeBuildRequest('send a whatsapp message to mum')).toBe(false)
+  })
+})
+
+// ── Builder loop: no-progress guards ─────────────────────────────────────────
+// Regression, observed in a real local run: the model answered "TOOL RESULT
+// [write_file] success" by writing the same file again, 38 times, until the
+// step budget ran out and the user got a half-built project.
+describe('runBuilderSession — repeated identical writes', () => {
+  const writeCall = JSON.stringify({ tool: 'write_file', args: { path: 'index.html', content: '<h1>hi</h1>' } })
+
+  it('executes an identical write once, however many times the model asks', async () => {
+    clearHistory()
+    vi.mocked(executeCodingTool).mockClear()
+    h.state.responses = [writeCall, writeCall, writeCall, writeCall, writeCall, writeCall]
+
+    await handleChat(win, 'build a website', 'free')
+
+    expect(vi.mocked(executeCodingTool)).toHaveBeenCalledTimes(1)
+  })
+
+  it('gives up with the files it has rather than spending every step on one file', async () => {
+    clearHistory()
+    vi.mocked(executeCodingTool).mockClear()
+    h.state.responses = Array.from({ length: 40 }, () => writeCall)
+
+    await handleChat(win, 'build a website', 'free')
+
+    const final = String((h.sends.filter((s) => s.channel === 'openui:chat:done').at(-1)?.args[0] as { text: string }).text)
+    expect(final).toMatch(/stopped making progress/i)
+    expect(final).toContain('index.html')
+    // The whole point: it bailed early instead of burning the budget.
+    expect(h.state.responses.length).toBeGreaterThan(30)
   })
 })
