@@ -1411,6 +1411,44 @@ function ollamaBinaryCandidates(): string[] {
  * same way the Ollama tray app would — and only report failure if it still
  * doesn't answer. Returns true when the server is reachable.
  */
+/**
+ * Start one candidate `ollama serve`, resolving true only if the process really
+ * launched.
+ *
+ * This has to await the outcome. `spawn` reports a missing binary through an
+ * asynchronous 'error' event, never a synchronous throw, so the obvious
+ * `try { spawn(bin) } catch { next }` loop always "succeeds" on the FIRST
+ * candidate — which makes every absolute-path fallback below it dead code, in
+ * exactly the situation they exist for: a GUI-launched app whose PATH does not
+ * include the Ollama install. Node emits 'spawn' on real success, so racing the
+ * two events is the only way to tell the cases apart.
+ *
+ * Exported for tests.
+ */
+export function trySpawnOllama(bin: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    let settled = false
+    const settle = (ok: boolean): void => {
+      if (!settled) {
+        settled = true
+        resolve(ok)
+      }
+    }
+    try {
+      const child = spawn(bin, ['serve'], { detached: true, stdio: 'ignore', windowsHide: true })
+      child.once('error', () => settle(false))
+      child.once('spawn', () => {
+        // Detach only a process that actually exists, so a failed candidate
+        // can't outlive us as a zombie.
+        child.unref()
+        settle(true)
+      })
+    } catch {
+      settle(false)
+    }
+  })
+}
+
 async function ensureOllamaRunning(win: BrowserWindow | null): Promise<boolean> {
   if (await isOllamaRunning()) return true
   // A custom OLLAMA_HOST points at a server we don't own (remote, container,
@@ -1423,16 +1461,9 @@ async function ensureOllamaRunning(win: BrowserWindow | null): Promise<boolean> 
 
   let spawned = false
   for (const bin of ollamaBinaryCandidates()) {
-    try {
-      const child = spawn(bin, ['serve'], { detached: true, stdio: 'ignore', windowsHide: true })
-      child.on('error', () => {
-        /* candidate didn't resolve — the readiness poll below decides */
-      })
-      child.unref()
+    if (await trySpawnOllama(bin)) {
       spawned = true
       break
-    } catch {
-      /* try the next candidate */
     }
   }
   if (!spawned) return false
@@ -1489,10 +1520,46 @@ export function isOllamaRunnerCrash(err: unknown): boolean {
 const CHAT_NUM_CTX = 8192
 const CODING_NUM_CTX = 16384
 
-function resolveNumCtx(coding: boolean): number {
+/**
+ * Ceiling on the auto-sized window. Past this the KV cache stops fitting beside
+ * the weights on the 8 GB target card and Ollama spills to CPU, which costs more
+ * than the truncation it is avoiding.
+ */
+const MAX_NUM_CTX = 32768
+
+/** Room for the reply and a couple of tool results on top of the prompt. */
+const NUM_CTX_HEADROOM_TOKENS = 2048
+
+/**
+ * Size the context window to the prompt we are about to send.
+ *
+ * A fixed constant here goes stale silently every time a tool is added, and the
+ * failure is invisible: Ollama truncates the MIDDLE of an over-long prompt
+ * rather than erroring, and the middle is where the tool instructions live — so
+ * the model does not degrade, it stops automating altogether.
+ *
+ * That is not hypothetical. Measured on the general agent: the system prompt is
+ * ~13.3k tokens (133 tool schemas are 72% of it) against the old fixed chat
+ * window of 8192. Every automation turn was truncated before the user typed a
+ * second word, which is why local Gmail/Calendar/GitHub requests came back as
+ * a wrong tool or invented prose. PR #157 fixed exactly this for the builder by
+ * raising its constant; the general path kept the bug.
+ *
+ * Exported for tests.
+ */
+export function resolveNumCtx(coding: boolean, promptChars = 0): number {
   const override = Number(process.env.OLLAMA_NUM_CTX)
   if (Number.isFinite(override) && override > 0) return override
-  return coding ? CODING_NUM_CTX : CHAT_NUM_CTX
+
+  const floor = coding ? CODING_NUM_CTX : CHAT_NUM_CTX
+  const needed = Math.ceil(promptChars / 4) + NUM_CTX_HEADROOM_TOKENS
+  if (needed <= floor) return floor
+
+  // Round up to the next power of two: Ollama sizes the KV cache from this
+  // number, and a stable ladder of values keeps it reusable between turns
+  // instead of reallocating on every slightly-different prompt.
+  const rounded = 2 ** Math.ceil(Math.log2(needed))
+  return Math.min(rounded, MAX_NUM_CTX)
 }
 
 /** One streaming Ollama generation. `extraOptions` lets the CPU fallback force `num_gpu: 0`. */
@@ -1542,13 +1609,15 @@ async function callOllama(
 ): Promise<string> {
   const ollama = new Ollama({ host: process.env.OLLAMA_HOST ?? 'http://127.0.0.1:11434' })
 
-  const numCtx = resolveNumCtx(coding)
+  // ~4 chars/token is a rough but conservative estimate for the BPE tokenizer.
+  const promptChars = systemPrompt.length + messages.reduce((n, m) => n + m.content.length, 0)
+  const numCtx = resolveNumCtx(coding, promptChars)
 
   // Pre-flight guard: Ollama truncates the *middle* of the prompt (where our tool
   // instructions live) without failing, so a heads-up here is the only warning we
   // get before the model starts replying with nonsense / skipping automation.
-  // ~4 chars/token is a rough but conservative estimate for the BPE tokenizer.
-  const promptChars = systemPrompt.length + messages.reduce((n, m) => n + m.content.length, 0)
+  // With the auto-sized window above this should now only fire once a very long
+  // conversation pushes past MAX_NUM_CTX.
   const estTokens = Math.ceil(promptChars / 4)
   if (estTokens > numCtx) {
     const msg = `[agent] ⚠ Prompt ~${estTokens} tokens exceeds num_ctx ${numCtx}. Ollama will truncate the middle of the prompt (tool instructions), so replies may be incoherent or skip automation. Raise OLLAMA_NUM_CTX or start a new conversation.`
