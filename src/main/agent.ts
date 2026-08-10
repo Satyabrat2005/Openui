@@ -732,6 +732,80 @@ export function looksLikeBuildRequest(text: string): boolean {
 const CONTINUE_BUILD_RE = /\b(keep|continue|carry\s+on|resume|finish|pick\s+up|go\s+on)\b/i
 
 /**
+ * An incremental edit aimed at the project we just built — "add a contact
+ * section", "make the header sticky", "change the colours".
+ *
+ * CONTINUE_BUILD_RE only catches the explicit "keep building" phrasing the
+ * step-limit message suggests. Real follow-ups rarely look like that, and they
+ * carry neither a build verb nor a software noun, so BUILD_RE misses them too:
+ * the turn falls through to the general chat loop, which has no sandbox context
+ * at all, and the model asks which file to edit about a project it wrote thirty
+ * seconds earlier.
+ *
+ * Deliberately narrow, because a false positive routes an OS request into the
+ * sandbox: it fires only on a leading edit verb, and never when the message
+ * names a surface that is definitionally not the project (mail, chat apps, the
+ * calendar). "add a contact section" is a project edit; "add a calendar event"
+ * is not.
+ */
+const EDIT_VERB_RE =
+  /^\s*(?:and\s+|also\s+|now\s+|then\s+)?(?:can\s+you\s+|could\s+you\s+|please\s+)?(?:add|remove|delete|drop|rename|change|update|edit|fix|adjust|tweak|restyle|style|move|replace|insert|include|refactor|improve|polish|centre|center|make)\b/i
+
+/** Surfaces that are never the sandbox project. */
+const OTHER_SURFACE_RE =
+  /\b(e-?mails?|gmail|inbox|whats\s?app|slack|telegram|calendar|meeting|appointment|reminder|invite|sms|text\s+message)\b/i
+
+/** Politeness and connectives that sit in front of the real instruction. */
+const LEAD_IN_RE = /^\s*(?:and|also|now|then|please|can\s+you|could\s+you|would\s+you)\s+/i
+
+/** Exported for tests: does this read as an incremental edit to a built project? */
+export function looksLikeBuildFollowUp(text: string): boolean {
+  if (!EDIT_VERB_RE.test(text)) return false
+
+  // Only the OBJECT of the edit decides the surface, not the whole sentence:
+  // "add a calendar event" targets the calendar, while "add a contact form with
+  // name and email" is still the project — the mail word there is a field
+  // label. Testing the full string would fail the second case closed, which is
+  // safe but wrong often enough to be annoying.
+  let rest = text
+  // Loop: "now can you add ..." stacks two lead-ins.
+  for (;;) {
+    const stripped = rest.replace(LEAD_IN_RE, '')
+    if (stripped === rest) break
+    rest = stripped
+  }
+  const object = rest.trim().split(/\s+/).slice(0, 4).join(' ')
+  return !OTHER_SURFACE_RE.test(object)
+}
+
+/**
+ * How long after a builder turn an incremental follow-up still lands in that
+ * project. Long enough for a real editing session, short enough that "update my
+ * notes" hours later isn't swallowed by the sandbox.
+ */
+const BUILD_FOLLOWUP_WINDOW_MS = 30 * 60_000
+
+/** When the last builder session ran, for the follow-up window above. */
+let lastBuilderTurnAt = 0
+
+/** Exported for tests: reset the follow-up window between cases. */
+export function resetBuilderFollowUpWindowForTests(): void {
+  lastBuilderTurnAt = 0
+}
+
+/**
+ * True when this turn is an edit to the build session already in flight. Needs
+ * all three: a project to resume, a recent builder turn, and edit-shaped text.
+ */
+function isBuildFollowUp(text: string): boolean {
+  return (
+    getActiveProject() !== null &&
+    Date.now() - lastBuilderTurnAt < BUILD_FOLLOWUP_WINDOW_MS &&
+    looksLikeBuildFollowUp(text)
+  )
+}
+
+/**
  * Pull a trailing "...open/edit/continue it in/with/using <tool>" editor name
  * out of a build request, e.g. "build a snake game and open it in Antigravity"
  * → "Antigravity". Deliberately requires a hand-off verb (open/edit/continue),
@@ -954,7 +1028,11 @@ async function runBuilderSession(win: BrowserWindow, tier: Tier, userMessage: st
   // don't overwrite each other) and arm the editor to open on the first write.
   // Only the interactive session arms it; the unattended runner in autonomous.ts
   // must never steal focus.
-  const resuming = CONTINUE_BUILD_RE.test(userMessage) ? getActiveProject() : null
+  lastBuilderTurnAt = Date.now()
+  const resuming =
+    CONTINUE_BUILD_RE.test(userMessage) || looksLikeBuildFollowUp(userMessage)
+      ? getActiveProject()
+      : null
   const projectSlug = resuming ?? deriveProjectSlug(userMessage)
   setActiveProject(projectSlug)
   emit(win, 'openui:task:update', {
@@ -1333,6 +1411,44 @@ function ollamaBinaryCandidates(): string[] {
  * same way the Ollama tray app would — and only report failure if it still
  * doesn't answer. Returns true when the server is reachable.
  */
+/**
+ * Start one candidate `ollama serve`, resolving true only if the process really
+ * launched.
+ *
+ * This has to await the outcome. `spawn` reports a missing binary through an
+ * asynchronous 'error' event, never a synchronous throw, so the obvious
+ * `try { spawn(bin) } catch { next }` loop always "succeeds" on the FIRST
+ * candidate — which makes every absolute-path fallback below it dead code, in
+ * exactly the situation they exist for: a GUI-launched app whose PATH does not
+ * include the Ollama install. Node emits 'spawn' on real success, so racing the
+ * two events is the only way to tell the cases apart.
+ *
+ * Exported for tests.
+ */
+export function trySpawnOllama(bin: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    let settled = false
+    const settle = (ok: boolean): void => {
+      if (!settled) {
+        settled = true
+        resolve(ok)
+      }
+    }
+    try {
+      const child = spawn(bin, ['serve'], { detached: true, stdio: 'ignore', windowsHide: true })
+      child.once('error', () => settle(false))
+      child.once('spawn', () => {
+        // Detach only a process that actually exists, so a failed candidate
+        // can't outlive us as a zombie.
+        child.unref()
+        settle(true)
+      })
+    } catch {
+      settle(false)
+    }
+  })
+}
+
 async function ensureOllamaRunning(win: BrowserWindow | null): Promise<boolean> {
   if (await isOllamaRunning()) return true
   // A custom OLLAMA_HOST points at a server we don't own (remote, container,
@@ -1345,16 +1461,9 @@ async function ensureOllamaRunning(win: BrowserWindow | null): Promise<boolean> 
 
   let spawned = false
   for (const bin of ollamaBinaryCandidates()) {
-    try {
-      const child = spawn(bin, ['serve'], { detached: true, stdio: 'ignore', windowsHide: true })
-      child.on('error', () => {
-        /* candidate didn't resolve — the readiness poll below decides */
-      })
-      child.unref()
+    if (await trySpawnOllama(bin)) {
       spawned = true
       break
-    } catch {
-      /* try the next candidate */
     }
   }
   if (!spawned) return false
@@ -1411,10 +1520,46 @@ export function isOllamaRunnerCrash(err: unknown): boolean {
 const CHAT_NUM_CTX = 8192
 const CODING_NUM_CTX = 16384
 
-function resolveNumCtx(coding: boolean): number {
+/**
+ * Ceiling on the auto-sized window. Past this the KV cache stops fitting beside
+ * the weights on the 8 GB target card and Ollama spills to CPU, which costs more
+ * than the truncation it is avoiding.
+ */
+const MAX_NUM_CTX = 32768
+
+/** Room for the reply and a couple of tool results on top of the prompt. */
+const NUM_CTX_HEADROOM_TOKENS = 2048
+
+/**
+ * Size the context window to the prompt we are about to send.
+ *
+ * A fixed constant here goes stale silently every time a tool is added, and the
+ * failure is invisible: Ollama truncates the MIDDLE of an over-long prompt
+ * rather than erroring, and the middle is where the tool instructions live — so
+ * the model does not degrade, it stops automating altogether.
+ *
+ * That is not hypothetical. Measured on the general agent: the system prompt is
+ * ~13.3k tokens (133 tool schemas are 72% of it) against the old fixed chat
+ * window of 8192. Every automation turn was truncated before the user typed a
+ * second word, which is why local Gmail/Calendar/GitHub requests came back as
+ * a wrong tool or invented prose. PR #157 fixed exactly this for the builder by
+ * raising its constant; the general path kept the bug.
+ *
+ * Exported for tests.
+ */
+export function resolveNumCtx(coding: boolean, promptChars = 0): number {
   const override = Number(process.env.OLLAMA_NUM_CTX)
   if (Number.isFinite(override) && override > 0) return override
-  return coding ? CODING_NUM_CTX : CHAT_NUM_CTX
+
+  const floor = coding ? CODING_NUM_CTX : CHAT_NUM_CTX
+  const needed = Math.ceil(promptChars / 4) + NUM_CTX_HEADROOM_TOKENS
+  if (needed <= floor) return floor
+
+  // Round up to the next power of two: Ollama sizes the KV cache from this
+  // number, and a stable ladder of values keeps it reusable between turns
+  // instead of reallocating on every slightly-different prompt.
+  const rounded = 2 ** Math.ceil(Math.log2(needed))
+  return Math.min(rounded, MAX_NUM_CTX)
 }
 
 /** One streaming Ollama generation. `extraOptions` lets the CPU fallback force `num_gpu: 0`. */
@@ -1464,13 +1609,15 @@ async function callOllama(
 ): Promise<string> {
   const ollama = new Ollama({ host: process.env.OLLAMA_HOST ?? 'http://127.0.0.1:11434' })
 
-  const numCtx = resolveNumCtx(coding)
+  // ~4 chars/token is a rough but conservative estimate for the BPE tokenizer.
+  const promptChars = systemPrompt.length + messages.reduce((n, m) => n + m.content.length, 0)
+  const numCtx = resolveNumCtx(coding, promptChars)
 
   // Pre-flight guard: Ollama truncates the *middle* of the prompt (where our tool
   // instructions live) without failing, so a heads-up here is the only warning we
   // get before the model starts replying with nonsense / skipping automation.
-  // ~4 chars/token is a rough but conservative estimate for the BPE tokenizer.
-  const promptChars = systemPrompt.length + messages.reduce((n, m) => n + m.content.length, 0)
+  // With the auto-sized window above this should now only fire once a very long
+  // conversation pushes past MAX_NUM_CTX.
   const estTokens = Math.ceil(promptChars / 4)
   if (estTokens > numCtx) {
     const msg = `[agent] ⚠ Prompt ~${estTokens} tokens exceeds num_ctx ${numCtx}. Ollama will truncate the middle of the prompt (tool instructions), so replies may be incoherent or skip automation. Raise OLLAMA_NUM_CTX or start a new conversation.`
@@ -1660,7 +1807,13 @@ export async function handleChat(win: BrowserWindow, userMessage: string, tier: 
   const isPractice = !isPrReview && !isDesigner && PRACTICE_RE.test(userMessage)
   // Builder: scaffold a real project in the sandbox. Never re-planned or routed
   // through the OS tools — it runs its own coding loop below.
-  const isBuild = !isPrReview && !isDesigner && !isPractice && BUILD_RE.test(userMessage)
+  // isBuildFollowUp keeps an in-flight build session together: without it an
+  // incremental edit lands in the general loop with no sandbox context.
+  const isBuild =
+    !isPrReview &&
+    !isDesigner &&
+    !isPractice &&
+    (BUILD_RE.test(userMessage) || isBuildFollowUp(userMessage))
   // PR review / designer want pro-tier models. SECURITY: clamp the final tier to
   // the signed-in user's verified entitlement so the untrusted renderer (or these
   // forced-pro modes) can't route to models the user hasn't paid for. No-op when

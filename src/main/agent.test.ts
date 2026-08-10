@@ -175,6 +175,10 @@ import {
   isOllamaRunnerCrash,
   compactBuilderHistory,
   looksLikeBuildRequest,
+  looksLikeBuildFollowUp,
+  resolveNumCtx,
+  buildDefaultSystemPrompt,
+  trySpawnOllama,
   DESIGNER_SYSTEM_PROMPT,
   DESIGNER_TOOL_NAMES,
   type Message
@@ -1136,6 +1140,128 @@ describe('looksLikeBuildRequest', () => {
   it('still ignores plain OS requests', () => {
     expect(looksLikeBuildRequest('create a folder on my Desktop')).toBe(false)
     expect(looksLikeBuildRequest('send a whatsapp message to mum')).toBe(false)
+  })
+})
+
+// Regression: ensureOllamaRunning kept a list of absolute fallback paths for
+// the case its own comment describes — a GUI-launched app whose PATH lacks the
+// Ollama install — but spawn() reports a missing binary via an async 'error'
+// event, never a sync throw. The old try/catch loop therefore always broke on
+// candidate #1 and the fallbacks never ran. Verified against real spawn():
+// threwSync=false, ENOENT arrived on the error event.
+describe('trySpawnOllama', () => {
+  it('resolves false for a binary that does not exist', async () => {
+    await expect(trySpawnOllama('definitely-not-a-real-binary-xyz')).resolves.toBe(false)
+  })
+
+  it('resolves true for a binary that does exist', async () => {
+    // node is on PATH wherever these tests run. `node serve` exits immediately
+    // with an error, but it SPAWNS — which is exactly what we're detecting.
+    await expect(trySpawnOllama('node')).resolves.toBe(true)
+  })
+
+  it('lets a later candidate win after an earlier one is missing', async () => {
+    const candidates = ['definitely-not-a-real-binary-xyz', 'node']
+    let started: string | null = null
+    for (const bin of candidates) {
+      if (await trySpawnOllama(bin)) {
+        started = bin
+        break
+      }
+    }
+    expect(started).toBe('node')
+  })
+})
+
+// Regression, observed driving the real app against local Ollama: a plain
+// "check my latest email" turn logged
+//   "Prompt ~14030 tokens exceeds num_ctx 8192 ... will truncate the middle"
+// and the model then called read_clipboard and invented a report. A follow-up
+// "draft an email to ..." went hunting for outlook.exe instead of using
+// create_email_draft. Both are the same cause PR #157 fixed for the builder
+// only: the tool instructions live in the middle of the prompt, and the middle
+// is exactly what Ollama drops.
+describe('resolveNumCtx — the window must fit the prompt', () => {
+  it('keeps the small floors when the prompt is small', () => {
+    expect(resolveNumCtx(false, 0)).toBe(8192)
+    expect(resolveNumCtx(true, 0)).toBe(16384)
+  })
+
+  it('grows past the floor once the prompt needs it', () => {
+    // 53k chars ~ 13.3k tokens: the real general-agent system prompt.
+    expect(resolveNumCtx(false, 53_189)).toBeGreaterThan(13_298)
+  })
+
+  it('never returns a window smaller than the prompt it was sized for', () => {
+    for (const chars of [10_000, 53_189, 80_000, 120_000]) {
+      expect(resolveNumCtx(false, chars)).toBeGreaterThanOrEqual(Math.ceil(chars / 4))
+    }
+  })
+
+  it('is capped so the KV cache still fits beside the weights', () => {
+    expect(resolveNumCtx(false, 10_000_000)).toBe(32768)
+  })
+
+  it('still honours an explicit OLLAMA_NUM_CTX override', () => {
+    const prev = process.env.OLLAMA_NUM_CTX
+    process.env.OLLAMA_NUM_CTX = '4096'
+    try {
+      expect(resolveNumCtx(false, 53_189)).toBe(4096)
+    } finally {
+      if (prev === undefined) delete process.env.OLLAMA_NUM_CTX
+      else process.env.OLLAMA_NUM_CTX = prev
+    }
+  })
+
+  // The guard that actually protects future work: if the tool surface grows
+  // past what the window can hold, this fails in CI instead of silently
+  // truncating tool instructions at runtime on every user's machine.
+  it('the real general-agent system prompt fits in the window it gets', () => {
+    const prompt = buildDefaultSystemPrompt()
+    const estTokens = Math.ceil(prompt.length / 4)
+    const window = resolveNumCtx(false, prompt.length)
+    expect(window).toBeLessThanOrEqual(32768)
+    expect(estTokens).toBeLessThan(window)
+  })
+})
+
+// Regression, observed driving the real app: right after a successful build,
+// "add a contact section" matched neither BUILD_RE (no build verb, no software
+// noun) nor CONTINUE_BUILD_RE, so it never reached the builder. The general
+// chat loop has no sandbox context, and the reply was "which file do you want
+// me to edit?" about a project the app had written seconds earlier.
+describe('looksLikeBuildFollowUp', () => {
+  it('matches incremental edits to the project just built', () => {
+    expect(looksLikeBuildFollowUp('add a contact section')).toBe(true)
+    expect(looksLikeBuildFollowUp('make the header sticky')).toBe(true)
+    expect(looksLikeBuildFollowUp('change the colours to dark mode')).toBe(true)
+    expect(looksLikeBuildFollowUp('now add a footer')).toBe(true)
+    expect(looksLikeBuildFollowUp('can you fix the nav spacing')).toBe(true)
+  })
+
+  it('never captures a request aimed at another surface', () => {
+    // These start with an edit verb too, so only the surface noun tells them
+    // apart. Routing one of these into the sandbox would be a real bug.
+    expect(looksLikeBuildFollowUp('add a calendar event for Friday')).toBe(false)
+    expect(looksLikeBuildFollowUp('add a meeting with Sam tomorrow')).toBe(false)
+    expect(looksLikeBuildFollowUp('update my email signature')).toBe(false)
+    expect(looksLikeBuildFollowUp('change my slack status')).toBe(false)
+    expect(looksLikeBuildFollowUp('remove the reminder for the dentist')).toBe(false)
+  })
+
+  it('ignores text that is not an edit instruction', () => {
+    expect(looksLikeBuildFollowUp('what did you just build?')).toBe(false)
+    expect(looksLikeBuildFollowUp('thanks, that looks great')).toBe(false)
+    expect(looksLikeBuildFollowUp('open my browser')).toBe(false)
+  })
+
+  it('judges the object of the edit, not the whole sentence', () => {
+    // A mail word later in the sentence is a field label, not the target.
+    expect(looksLikeBuildFollowUp('add a contact form with name and email')).toBe(true)
+    // ...but as the object it really does mean the other surface, and politeness
+    // in front of it must not push it out of the window we inspect.
+    expect(looksLikeBuildFollowUp('can you add a calendar event for Friday')).toBe(false)
+    expect(looksLikeBuildFollowUp('now can you add a meeting with Sam')).toBe(false)
   })
 })
 
