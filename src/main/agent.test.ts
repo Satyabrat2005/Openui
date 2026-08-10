@@ -175,6 +175,7 @@ import {
   isOllamaRunnerCrash,
   compactBuilderHistory,
   looksLikeBuildRequest,
+  looksLikeBuildFollowUp,
   DESIGNER_SYSTEM_PROMPT,
   DESIGNER_TOOL_NAMES,
   type Message
@@ -1136,6 +1137,46 @@ describe('looksLikeBuildRequest', () => {
   it('still ignores plain OS requests', () => {
     expect(looksLikeBuildRequest('create a folder on my Desktop')).toBe(false)
     expect(looksLikeBuildRequest('send a whatsapp message to mum')).toBe(false)
+  })
+})
+
+// Regression, observed driving the real app: right after a successful build,
+// "add a contact section" matched neither BUILD_RE (no build verb, no software
+// noun) nor CONTINUE_BUILD_RE, so it never reached the builder. The general
+// chat loop has no sandbox context, and the reply was "which file do you want
+// me to edit?" about a project the app had written seconds earlier.
+describe('looksLikeBuildFollowUp', () => {
+  it('matches incremental edits to the project just built', () => {
+    expect(looksLikeBuildFollowUp('add a contact section')).toBe(true)
+    expect(looksLikeBuildFollowUp('make the header sticky')).toBe(true)
+    expect(looksLikeBuildFollowUp('change the colours to dark mode')).toBe(true)
+    expect(looksLikeBuildFollowUp('now add a footer')).toBe(true)
+    expect(looksLikeBuildFollowUp('can you fix the nav spacing')).toBe(true)
+  })
+
+  it('never captures a request aimed at another surface', () => {
+    // These start with an edit verb too, so only the surface noun tells them
+    // apart. Routing one of these into the sandbox would be a real bug.
+    expect(looksLikeBuildFollowUp('add a calendar event for Friday')).toBe(false)
+    expect(looksLikeBuildFollowUp('add a meeting with Sam tomorrow')).toBe(false)
+    expect(looksLikeBuildFollowUp('update my email signature')).toBe(false)
+    expect(looksLikeBuildFollowUp('change my slack status')).toBe(false)
+    expect(looksLikeBuildFollowUp('remove the reminder for the dentist')).toBe(false)
+  })
+
+  it('ignores text that is not an edit instruction', () => {
+    expect(looksLikeBuildFollowUp('what did you just build?')).toBe(false)
+    expect(looksLikeBuildFollowUp('thanks, that looks great')).toBe(false)
+    expect(looksLikeBuildFollowUp('open my browser')).toBe(false)
+  })
+
+  it('judges the object of the edit, not the whole sentence', () => {
+    // A mail word later in the sentence is a field label, not the target.
+    expect(looksLikeBuildFollowUp('add a contact form with name and email')).toBe(true)
+    // ...but as the object it really does mean the other surface, and politeness
+    // in front of it must not push it out of the window we inspect.
+    expect(looksLikeBuildFollowUp('can you add a calendar event for Friday')).toBe(false)
+    expect(looksLikeBuildFollowUp('now can you add a meeting with Sam')).toBe(false)
   })
 })
 

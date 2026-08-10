@@ -732,6 +732,80 @@ export function looksLikeBuildRequest(text: string): boolean {
 const CONTINUE_BUILD_RE = /\b(keep|continue|carry\s+on|resume|finish|pick\s+up|go\s+on)\b/i
 
 /**
+ * An incremental edit aimed at the project we just built — "add a contact
+ * section", "make the header sticky", "change the colours".
+ *
+ * CONTINUE_BUILD_RE only catches the explicit "keep building" phrasing the
+ * step-limit message suggests. Real follow-ups rarely look like that, and they
+ * carry neither a build verb nor a software noun, so BUILD_RE misses them too:
+ * the turn falls through to the general chat loop, which has no sandbox context
+ * at all, and the model asks which file to edit about a project it wrote thirty
+ * seconds earlier.
+ *
+ * Deliberately narrow, because a false positive routes an OS request into the
+ * sandbox: it fires only on a leading edit verb, and never when the message
+ * names a surface that is definitionally not the project (mail, chat apps, the
+ * calendar). "add a contact section" is a project edit; "add a calendar event"
+ * is not.
+ */
+const EDIT_VERB_RE =
+  /^\s*(?:and\s+|also\s+|now\s+|then\s+)?(?:can\s+you\s+|could\s+you\s+|please\s+)?(?:add|remove|delete|drop|rename|change|update|edit|fix|adjust|tweak|restyle|style|move|replace|insert|include|refactor|improve|polish|centre|center|make)\b/i
+
+/** Surfaces that are never the sandbox project. */
+const OTHER_SURFACE_RE =
+  /\b(e-?mails?|gmail|inbox|whats\s?app|slack|telegram|calendar|meeting|appointment|reminder|invite|sms|text\s+message)\b/i
+
+/** Politeness and connectives that sit in front of the real instruction. */
+const LEAD_IN_RE = /^\s*(?:and|also|now|then|please|can\s+you|could\s+you|would\s+you)\s+/i
+
+/** Exported for tests: does this read as an incremental edit to a built project? */
+export function looksLikeBuildFollowUp(text: string): boolean {
+  if (!EDIT_VERB_RE.test(text)) return false
+
+  // Only the OBJECT of the edit decides the surface, not the whole sentence:
+  // "add a calendar event" targets the calendar, while "add a contact form with
+  // name and email" is still the project — the mail word there is a field
+  // label. Testing the full string would fail the second case closed, which is
+  // safe but wrong often enough to be annoying.
+  let rest = text
+  // Loop: "now can you add ..." stacks two lead-ins.
+  for (;;) {
+    const stripped = rest.replace(LEAD_IN_RE, '')
+    if (stripped === rest) break
+    rest = stripped
+  }
+  const object = rest.trim().split(/\s+/).slice(0, 4).join(' ')
+  return !OTHER_SURFACE_RE.test(object)
+}
+
+/**
+ * How long after a builder turn an incremental follow-up still lands in that
+ * project. Long enough for a real editing session, short enough that "update my
+ * notes" hours later isn't swallowed by the sandbox.
+ */
+const BUILD_FOLLOWUP_WINDOW_MS = 30 * 60_000
+
+/** When the last builder session ran, for the follow-up window above. */
+let lastBuilderTurnAt = 0
+
+/** Exported for tests: reset the follow-up window between cases. */
+export function resetBuilderFollowUpWindowForTests(): void {
+  lastBuilderTurnAt = 0
+}
+
+/**
+ * True when this turn is an edit to the build session already in flight. Needs
+ * all three: a project to resume, a recent builder turn, and edit-shaped text.
+ */
+function isBuildFollowUp(text: string): boolean {
+  return (
+    getActiveProject() !== null &&
+    Date.now() - lastBuilderTurnAt < BUILD_FOLLOWUP_WINDOW_MS &&
+    looksLikeBuildFollowUp(text)
+  )
+}
+
+/**
  * Pull a trailing "...open/edit/continue it in/with/using <tool>" editor name
  * out of a build request, e.g. "build a snake game and open it in Antigravity"
  * → "Antigravity". Deliberately requires a hand-off verb (open/edit/continue),
@@ -954,7 +1028,11 @@ async function runBuilderSession(win: BrowserWindow, tier: Tier, userMessage: st
   // don't overwrite each other) and arm the editor to open on the first write.
   // Only the interactive session arms it; the unattended runner in autonomous.ts
   // must never steal focus.
-  const resuming = CONTINUE_BUILD_RE.test(userMessage) ? getActiveProject() : null
+  lastBuilderTurnAt = Date.now()
+  const resuming =
+    CONTINUE_BUILD_RE.test(userMessage) || looksLikeBuildFollowUp(userMessage)
+      ? getActiveProject()
+      : null
   const projectSlug = resuming ?? deriveProjectSlug(userMessage)
   setActiveProject(projectSlug)
   emit(win, 'openui:task:update', {
@@ -1660,7 +1738,13 @@ export async function handleChat(win: BrowserWindow, userMessage: string, tier: 
   const isPractice = !isPrReview && !isDesigner && PRACTICE_RE.test(userMessage)
   // Builder: scaffold a real project in the sandbox. Never re-planned or routed
   // through the OS tools — it runs its own coding loop below.
-  const isBuild = !isPrReview && !isDesigner && !isPractice && BUILD_RE.test(userMessage)
+  // isBuildFollowUp keeps an in-flight build session together: without it an
+  // incremental edit lands in the general loop with no sandbox context.
+  const isBuild =
+    !isPrReview &&
+    !isDesigner &&
+    !isPractice &&
+    (BUILD_RE.test(userMessage) || isBuildFollowUp(userMessage))
   // PR review / designer want pro-tier models. SECURITY: clamp the final tier to
   // the signed-in user's verified entitlement so the untrusted renderer (or these
   // forced-pro modes) can't route to models the user hasn't paid for. No-op when
