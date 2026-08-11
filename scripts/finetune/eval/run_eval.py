@@ -327,6 +327,14 @@ def main():
     ap.add_argument("--host", default=DEFAULT_HOST)
     ap.add_argument("--evalset", default=os.path.join(HERE, "evalset.json"))
     ap.add_argument("--prompt-file", default=os.path.join(HERE, "system_prompt.txt"))
+    ap.add_argument(
+        "--prompt-dir",
+        default=None,
+        help="Directory of PER-CASE system prompts named <case_id>.txt. Needed once the "
+             "app builds a different prompt per request (tool-group selection): a single "
+             "replayed prompt would score the shrink against a surface the app no longer "
+             "sends. Falls back to --prompt-file for any case with no file.",
+    )
     ap.add_argument("--out", default=None)
     ap.add_argument("--coding", action="store_true", help="use the CODING num_ctx floor")
     ap.add_argument("--limit", type=int, default=0)
@@ -348,9 +356,45 @@ def main():
         sys.exit(2)
     system = open(args.prompt_file, encoding="utf-8").read()
 
+    # Per-case prompts, when the app builds a different tool surface per request.
+    # Each is still CAPTURED from the running app (see ollama-capture-proxy.cjs
+    # --stub), never reconstructed here — same fidelity rule as the single-prompt
+    # path, just one per case.
+    per_case = {}
+    if args.prompt_dir:
+        if not os.path.isdir(args.prompt_dir):
+            print("ERROR: --prompt-dir %s is not a directory" % args.prompt_dir, file=sys.stderr)
+            sys.exit(2)
+        for case in cases:
+            p = os.path.join(args.prompt_dir, "%s.txt" % case["id"])
+            if os.path.exists(p):
+                per_case[case["id"]] = open(p, encoding="utf-8").read()
+        missing = [c["id"] for c in cases
+                   if c["expect"]["kind"] != "builder" and c["id"] not in per_case]
+        if missing:
+            print("WARNING: no captured prompt for %d case(s), falling back to --prompt-file: %s"
+                  % (len(missing), ", ".join(missing)), file=sys.stderr)
+
+    def prompt_for(case):
+        return per_case.get(case["id"], system)
+
+    # `known` gates the parser's pass-2 recovery of a call embedded in prose, and
+    # it mirrors the app's knownToolNames(), which is the FULL registry — not the
+    # subset a given prompt happens to list. So take the UNION across every
+    # prompt in play. Deriving it per-case from the trimmed prompt would make the
+    # harness reject a call the real app would happily execute.
     known = set(re.findall(r"^- ([a-z_0-9]+)\(", system, re.M))
-    print("system prompt: %d chars (~%d tokens), %d tools parsed"
-          % (len(system), len(system) // 4, len(known)))
+    for text in per_case.values():
+        known |= set(re.findall(r"^- ([a-z_0-9]+)\(", text, re.M))
+
+    if per_case:
+        sizes = sorted(len(v) for v in per_case.values())
+        print("per-case prompts: %d captured, %d–%d chars (~%d–%d tokens); "
+              "%d distinct tools across them"
+              % (len(per_case), sizes[0], sizes[-1], sizes[0] // 4, sizes[-1] // 4, len(known)))
+    else:
+        print("system prompt: %d chars (~%d tokens), %d tools parsed"
+              % (len(system), len(system) // 4, len(known)))
 
     results = []
     counts = {}
@@ -364,9 +408,10 @@ def main():
                   % (i, len(cases), case["id"], "n/a_router"))
             continue
 
-        num_ctx = resolve_num_ctx(args.coding, len(system) + len(case["prompt"]))
+        case_system = prompt_for(case)
+        num_ctx = resolve_num_ctx(args.coding, len(case_system) + len(case["prompt"]))
         try:
-            reply, dt, payload = ollama_chat(args.host, args.model, system,
+            reply, dt, payload = ollama_chat(args.host, args.model, case_system,
                                              case["prompt"], num_ctx)
         except Exception as err:
             results.append({**case, "verdict": "error", "flags": [str(err)[:200]],
@@ -381,6 +426,7 @@ def main():
             **case, "verdict": verdict, "flags": flags, "how": how,
             "call": call, "reply": reply[:1200], "latency_s": round(dt, 2),
             "num_ctx": num_ctx,
+            "system_chars": len(case_system),
             "eval_count": payload.get("prompt_eval_count"),
         })
         print("[%2d/%d] %-9s %-20s %5.1fs %s"
@@ -392,8 +438,16 @@ def main():
         "label": args.label,
         "model": args.model,
         "when": time.strftime("%Y-%m-%dT%H:%M:%S"),
-        "system_prompt_chars": len(system),
-        "system_prompt_est_tokens": len(system) // 4,
+        "system_prompt_chars": (
+            sorted(len(v) for v in per_case.values()) and
+            [min(len(v) for v in per_case.values()), max(len(v) for v in per_case.values())]
+        ) or len(system),
+        "system_prompt_est_tokens": (
+            [min(len(v) for v in per_case.values()) // 4,
+             max(len(v) for v in per_case.values()) // 4] if per_case else len(system) // 4
+        ),
+        "per_case_prompts": len(per_case),
+        "prompt_mode": "per-case (grouped)" if per_case else "single (full surface)",
         "tools_in_prompt": len(known),
         "cases_total": len(cases),
         "cases_scored": len(scored),

@@ -57,8 +57,13 @@ const ENGINES: Array<{
     tag: 'RECOMMENDED',
     tagKind: 'ok',
     desc: 'Runs on your machine through Ollama. Private by default, works offline, no usage cost.',
-    metaA: 'llama-3.3-70b',
-    metaB: 'ready · 0 setup'
+    // Deliberately NOT a model name. This said "llama-3.3-70b", a model the app
+    // has never run (the defaults are qwen3.5 / qwen2.5-coder) — and naming any
+    // specific tag here goes stale the moment the default changes, in a card the
+    // user reads before a single turn has happened. "0 setup" was wrong too: a
+    // local engine needs Ollama installed and a multi-gigabyte model pulled.
+    metaA: 'Ollama + a local model',
+    metaB: 'one-time download'
   },
   {
     value: 'byok',

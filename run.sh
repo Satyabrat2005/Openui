@@ -24,41 +24,56 @@ if [ ! -d "node_modules" ]; then
     fi
 fi
 
-# Ollama is OPTIONAL — chat/planning/agent runs are cloud-first (Anthropic/
-# OpenAI via the chat-proxy). Ollama is only used for local RAG embeddings
-# and the self-improvement job, so its absence should warn, not block launch.
+# -----------------------------------------------------------------------------
+# This block used to claim Ollama was OPTIONAL and that runs were "cloud-first",
+# then pull llama3:8b. All three statements were wrong and contradicted the
+# README: the cloud tier ships OFF (OPENUI_ENABLE_CLOUD unset), so chat, planning
+# and the coding agent are Ollama-only; the app has never used llama3:8b (the
+# defaults are qwen3.5 and qwen2.5-coder:7b); and with no local model nothing
+# works at all, which is fatal rather than a warning about "RAG features".
+# The app now downloads a missing model itself with progress in the UI
+# (main/ollamaPull.ts), so this script no longer pulls anything.
+# -----------------------------------------------------------------------------
 if ! command -v ollama >/dev/null 2>&1; then
-    echo "[INFO] Ollama not found in PATH — local knowledge-base embeddings and the"
-    echo "       self-improvement job will be unavailable. Chat still works via the"
-    echo "       cloud. To enable them, install from https://ollama.com/download"
-    echo "       then run: ollama pull llama3:8b"
-else
-    echo "Checking local Ollama server..."
-    if ! curl -sf -m 3 http://localhost:11434/api/tags >/dev/null 2>&1; then
-        echo "Ollama is not running. Starting \"ollama serve\" in the background..."
-        nohup ollama serve >/tmp/openui-ollama-serve.log 2>&1 &
-        ready=0
-        for _ in $(seq 1 10); do
-            sleep 2
-            if curl -sf -m 2 http://localhost:11434/api/tags >/dev/null 2>&1; then
-                ready=1
-                break
-            fi
-        done
-        if [ "$ready" -eq 0 ]; then
-            echo "[WARNING] Ollama did not respond in time — RAG/self-improvement features"
-            echo "          will be unavailable this session; chat is unaffected."
-        fi
-    fi
+    echo "[ERROR] Ollama was not found in PATH, and OpenUI needs it for every chat,"
+    echo "        plan and coding turn. The optional cloud tier ships DISABLED, so"
+    echo "        there is no fallback."
+    echo
+    echo "        Install it from https://ollama.com/download and run this again."
+    exit 1
+fi
 
-    if curl -sf -m 2 http://localhost:11434/api/tags >/dev/null 2>&1; then
-        # Best-effort: ensure the default embeddings model is pulled. Non-fatal
-        # if this fails — it only affects RAG/self-improvement.
-        echo "Ensuring the local model is available (ollama pull llama3:8b)..."
-        if ! ollama pull llama3:8b; then
-            echo "[WARNING] Could not pull llama3:8b — RAG/self-improvement features may be unavailable."
+echo "Checking local Ollama server..."
+if ! curl -sf -m 3 http://localhost:11434/api/tags >/dev/null 2>&1; then
+    echo "Ollama is not running. Starting \"ollama serve\" in the background..."
+    nohup ollama serve >/tmp/openui-ollama-serve.log 2>&1 &
+    ready=0
+    for _ in $(seq 1 10); do
+        sleep 2
+        if curl -sf -m 2 http://localhost:11434/api/tags >/dev/null 2>&1; then
+            ready=1
+            break
         fi
+    done
+    if [ "$ready" -eq 0 ]; then
+        echo "[WARNING] Ollama did not respond in time. OpenUI will try to start it"
+        echo "          again itself; if chat reports the engine is unreachable, run"
+        echo "          \"ollama serve\" in a terminal and retry."
     fi
+fi
+
+# Report what is installed, so a first-run user knows a download is coming.
+# OpenUI pulls a missing model itself and shows real progress in the app, so
+# there is deliberately no "ollama pull" here.
+if curl -sf -m 2 http://localhost:11434/api/tags >/dev/null 2>&1; then
+    echo
+    echo "Local models currently installed:"
+    ollama list
+    echo
+    echo "OpenUI expects qwen3.5 (general) and qwen2.5-coder:7b (coding)."
+    echo "If neither is present, OpenUI downloads what it needs on the first turn"
+    echo "and shows progress in the app. That is a few GB, one time only."
+    echo
 fi
 
 # Launch OpenUI in development mode (electron-vite watch + Electron window).

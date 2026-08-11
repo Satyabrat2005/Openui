@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, fireEvent, cleanup, within } from '@testing-library/react'
+import { render, screen, fireEvent, cleanup, within, act } from '@testing-library/react'
 import type { TaskCard, TouchedResource, HitlRequestPayload, PlanRequestPayload } from '../env'
 
 // RunConsole owns the highest-stakes glue of the redesign: queue bucketing in the
@@ -74,7 +74,13 @@ beforeEach(() => {
     captureScreenThumbnail: vi.fn(() => Promise.resolve({ ok: false })),
     chat: vi.fn(() => Promise.resolve()),
     clearHistory: vi.fn(),
-    resumeConversation: vi.fn()
+    resumeConversation: vi.fn(),
+    // Event subscriptions return their own unsubscribe function, so the mock has
+    // to as well or React's cleanup throws. onChatModel feeds the model chip
+    // (which no longer hardcodes a model name); onModelPull feeds the first-run
+    // download progress bar.
+    onChatModel: vi.fn(() => vi.fn()),
+    onModelPull: vi.fn(() => vi.fn())
   }
   // Force the wide layout so the inspector is open by default (TOUCHED test).
   Object.defineProperty(window, 'innerWidth', { value: 1400, configurable: true })
@@ -234,5 +240,110 @@ describe('RunConsole — TOUCHED audit list in the inspector', () => {
     const inspector = document.querySelector('.ou-rc-inspector') as HTMLElement
     expect(within(inspector).getByText('Nothing touched yet.')).toBeTruthy()
     expect(inspector.querySelectorAll('.ou-rc-touched').length).toBe(0)
+  })
+})
+
+/**
+ * The model chip and the first-run download bar.
+ *
+ * The chip used to render the literal string "llama-3.3-70b" while the app has
+ * only ever run qwen models — a plain untruth in the UI, and the thing
+ * LocalAIStatus.tsx deliberately avoids. The download bar is new: a user with
+ * Ollama but no model pulled previously got a raw 404 and no indication that a
+ * multi-gigabyte download was needed.
+ */
+describe('RunConsole — model chip honesty', () => {
+  /** Grab the callback RunConsole handed to a subscription, and fire it. */
+  // The subscription callback is invoked from outside React, so it must be
+  // wrapped in act() or the resulting setState never flushes to the DOM.
+  function fire<T>(name: string, payload: T): void {
+    const api = (window as unknown as { openui: Record<string, ReturnType<typeof vi.fn>> }).openui
+    const cb = api[name].mock.calls[0][0] as (p: T) => void
+    act(() => cb(payload))
+  }
+
+  it('never shows a fabricated model name before a turn has run', () => {
+    render(<RunConsole />)
+    const chip = document.querySelector('.ou-rc-model') as HTMLElement
+    expect(chip.textContent).not.toMatch(/llama/i)
+    expect(chip.textContent).toBe('Local AI')
+  })
+
+  it('shows the real model once the backend reports it', () => {
+    render(<RunConsole />)
+    fire('onChatModel', { model: 'qwen2.5-coder:7b', tier: 'free' })
+    const chip = document.querySelector('.ou-rc-model') as HTMLElement
+    expect(chip.textContent).toBe('Qwen 2.5 Coder 7B')
+  })
+})
+
+describe('RunConsole — first-run model download', () => {
+  // The subscription callback is invoked from outside React, so it must be
+  // wrapped in act() or the resulting setState never flushes to the DOM.
+  function fire<T>(name: string, payload: T): void {
+    const api = (window as unknown as { openui: Record<string, ReturnType<typeof vi.fn>> }).openui
+    const cb = api[name].mock.calls[0][0] as (p: T) => void
+    act(() => cb(payload))
+  }
+
+  it('shows no download bar when nothing is downloading', () => {
+    render(<RunConsole />)
+    expect(document.querySelector('[data-testid="model-pull"]')).toBeNull()
+  })
+
+  it('renders real percentage and byte progress', () => {
+    render(<RunConsole />)
+    fire('onModelPull', {
+      model: 'qwen2.5-coder:7b',
+      status: 'pulling abc123',
+      percent: 42,
+      completed: 2_000_000_000,
+      total: 4_700_000_000,
+      layer: 'abc123456789',
+      done: false
+    })
+    const bar = document.querySelector('[data-testid="model-pull"]') as HTMLElement
+    expect(bar).toBeTruthy()
+    expect(bar.textContent).toContain('Downloading Qwen 2.5 Coder 7B')
+    expect(bar.textContent).toContain('42%')
+    expect(bar.textContent).toContain('1.9 GB')
+    expect(bar.textContent).toContain('4.4 GB')
+    const fill = bar.querySelector('.ou-rc-pullbar-fill') as HTMLElement
+    expect(fill.style.width).toBe('42%')
+  })
+
+  // A 0%-width bar is what made this look frozen. Phases with no byte counts
+  // must show their status text and an indeterminate fill instead.
+  it('shows the phase text, not a 0% bar, when there are no byte counts', () => {
+    render(<RunConsole />)
+    fire('onModelPull', {
+      model: 'qwen3.5:latest',
+      status: 'pulling manifest',
+      percent: null,
+      completed: null,
+      total: null,
+      layer: null,
+      done: false
+    })
+    const bar = document.querySelector('[data-testid="model-pull"]') as HTMLElement
+    expect(bar.textContent).toContain('pulling manifest')
+    expect(bar.textContent).not.toContain('0%')
+    expect(bar.querySelector('.ou-rc-pullbar-fill-idle')).toBeTruthy()
+  })
+
+  it('surfaces a download failure instead of silently clearing', () => {
+    render(<RunConsole />)
+    fire('onModelPull', {
+      model: 'bad:7b',
+      status: 'error',
+      percent: null,
+      completed: null,
+      total: null,
+      layer: null,
+      done: false,
+      error: 'file does not exist'
+    })
+    const bar = document.querySelector('[data-testid="model-pull"]') as HTMLElement
+    expect(bar.textContent).toContain('file does not exist')
   })
 })

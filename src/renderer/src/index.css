@@ -4441,6 +4441,58 @@ body {
 /* ── Content ─────────────────────────────────────────────────────────────── */
 .ou-rc-content { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .ou-rc-composer-wrap { padding: 22px 26px 0; }
+
+/* First-run model download. Sits above the composer because it BLOCKS the first
+   turn — a multi-gigabyte pull with no visible progress was being reported as the
+   app hanging. Uses tokens only (no raw hex), per the design-token migration. */
+.ou-rc-pullbar {
+  margin-bottom: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--ou-border-control);
+  border-radius: var(--ou-r-card);
+  background: var(--ou-bg-raised);
+}
+.ou-rc-pullbar-top {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+.ou-rc-pullbar-label { font-size: 13px; font-weight: 600; }
+.ou-rc-pullbar-meta {
+  font-size: 12px;
+  color: var(--ou-text-dim);
+  font-variant-numeric: tabular-nums;
+}
+.ou-rc-pullbar-track {
+  height: 4px;
+  border-radius: var(--ou-r-pill);
+  background: var(--ou-border-control);
+  overflow: hidden;
+}
+.ou-rc-pullbar-fill {
+  height: 100%;
+  border-radius: var(--ou-r-pill);
+  background: var(--ou-accent);
+  transition: width 200ms linear;
+}
+/* Phases Ollama reports without byte counts ("pulling manifest", "verifying
+   sha256 digest"). A 0%-width bar reads as frozen, so show motion instead. */
+.ou-rc-pullbar-fill-idle {
+  width: 30%;
+  animation: ou-rc-pullbar-slide 1.4s ease-in-out infinite;
+}
+@keyframes ou-rc-pullbar-slide {
+  0% { margin-left: 0; }
+  50% { margin-left: 70%; }
+  100% { margin-left: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ou-rc-pullbar-fill-idle { animation: none; width: 100%; opacity: 0.35; }
+  .ou-rc-pullbar-fill { transition: none; }
+}
+.ou-rc-pullbar-sub { margin-top: 7px; font-size: 11px; color: var(--ou-text-dim); }
 .ou-rc-composer {
   border-radius: var(--ou-r-composer);
   border: 1px solid var(--ou-border-control);

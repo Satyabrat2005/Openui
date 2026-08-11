@@ -95,6 +95,17 @@ type TierUpgradePayload = {
   effectiveTier: Tier
   currentTier: Tier
 }
+/** Progress while a missing local model downloads (see main/ollamaPull.ts). */
+type ModelPullProgress = {
+  model: string
+  status: string
+  percent: number | null
+  completed: number | null
+  total: number | null
+  layer: string | null
+  done: boolean
+  error?: string
+}
 type UsageUpdatePayload = {
   tier: Tier
   limit: number | null
@@ -220,6 +231,14 @@ const api = {
     const fn = wrap<TaskTouchedPayload>(cb)
     ipcRenderer.on('openui:task:touched', fn)
     return (): void => { ipcRenderer.removeListener('openui:task:touched', fn) }
+  },
+
+  // Progress while a missing local model downloads. Without this a first-run user
+  // sees a silent multi-gigabyte wait that is indistinguishable from a hang.
+  onModelPull: (cb: (p: ModelPullProgress) => void): (() => void) => {
+    const fn = wrap<ModelPullProgress>(cb)
+    ipcRenderer.on('openui:model:pull', fn)
+    return (): void => { ipcRenderer.removeListener('openui:model:pull', fn) }
   },
 
   // The model the backend is ACTUALLY using this turn (agent.ts pushes it so the

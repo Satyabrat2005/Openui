@@ -54,6 +54,29 @@
 #   CSC_KEY_PASSWORD if the WIN_-prefixed pair is unset); no notarization step
 #   applies on Windows.
 #
+#   ⚠ IMPORTANT — THE .pfx ROUTE ABOVE IS NO LONGER OBTAINABLE FOR A NEW CERT.
+#   Since 1 June 2023 the CA/Browser Forum baseline requirements mandate that
+#   code-signing private keys live on FIPS 140-2 Level 2 / Common Criteria EAL4+
+#   hardware, and CAs stopped issuing downloadable .pfx files (DigiCert: April
+#   2023). A newly purchased OV/EV certificate arrives on a hardware token or in
+#   a cloud HSM, so there is no file to base64 into WIN_CSC_LINK — and a USB
+#   token cannot be plugged into a GitHub-hosted runner at all. From 15 Feb 2026
+#   these certificates are also 1-year only, so this is a recurring cost.
+#   WIN_CSC_LINK therefore only works with a pre-2023 .pfx you already hold.
+#
+#   For a new setup use ONE of:
+#     • Azure Trusted Signing (now "Azure Artifact Signing") — ~$9.99/month
+#       Basic, Microsoft-run, signs in CI with no hardware. Open to individual
+#       developers and to organisations incorporated under 3 years. This is the
+#       recommended route for this project. electron-builder needs a custom
+#       `sign` hook invoking the Trusted Signing client rather than WIN_CSC_LINK.
+#     • A cloud-HSM certificate (DigiCert KeyLocker / SSL.com eSigner / Certum)
+#       — roughly $250–600/year, signed via the vendor's CI tool.
+#   Either way SmartScreen reputation still builds over download volume for OV;
+#   only EV grants immediate SmartScreen trust.
+#   Scope note: macOS needs only the Apple Developer Program ($99/year) and the
+#   five secrets above — the .p12 export path there is unchanged and still works.
+#
 # OPTIONAL GitHub Secrets (Settings → Secrets and variables → Actions):
 #   These let the packaged build ship with the Stripe price IDs inlined. They
 #   are NOT secret (public SKU-like values) but are kept in Actions secrets for
