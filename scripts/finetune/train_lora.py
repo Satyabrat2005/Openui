@@ -1,11 +1,30 @@
 #!/usr/bin/env python3
-"""train_lora.py — LoRA fine-tuning sidecar for OpenUI (Task 4).
+"""train_lora.py — DEPRECATED. Use train_qlora.py instead.
 
-Invoked by src/main/finetune/pipeline.ts with a JSONL dataset of the user's own
-quality-scored trajectories ({"messages": [{"role", "content"}, ...]} per line).
-Trains a small LoRA adapter on the given HuggingFace base model and writes it
-with save_pretrained() to --out, where the pipeline builds it into a versioned
-Ollama model (FROM <base> / ADAPTER ./adapter).
+WHY THIS IS DEPRECATED (measured, not assumed): this script loads the base model
+in bf16 (`torch_dtype=torch.bfloat16`, line ~100). For its own default 7B base
+that is roughly 15 GB of weights, against the 8 GB VRAM this project targets — so
+it could never complete a real run here, and the failure came only AFTER
+downloading the full base model. train_qlora.py loads in 4-bit nf4, takes the
+same --base/--data/--out arguments, and is the script that actually produced a
+trained adapter.
+
+Nothing in the app calls this file any more (src/main/finetune/pipeline.ts now
+invokes train_qlora.py). It refuses to run unless you pass --allow-bf16, which is
+only sensible on a card with ~15 GB+ free.
+
+Kept rather than deleted because bf16 LoRA is the right choice on large-VRAM
+hardware, and because this repository is not under version control here, so a
+deletion would be unrecoverable.
+
+Original purpose: trains a small LoRA adapter from a JSONL dataset of the user's
+own quality-scored trajectories ({"messages": [{"role", "content"}, ...]} per
+line) and writes it with save_pretrained() to --out.
+
+NOTE on serving: an adapter directory is NOT loadable by Ollama — `ADAPTER
+./adapter` is rejected ("no Modelfile or safetensors files found", reproduced on
+Ollama 0.31.2). It must be converted to a single GGUF file first; the pipeline
+does that with llama.cpp's convert_lora_to_gguf.py.
 
 Honest scope: this adapts a small LOCAL model to one user's workflows. It is a
 personalisation mechanism, not an attempt to compete with frontier cloud models.
@@ -63,7 +82,30 @@ def main():
     parser.add_argument("--rank", type=int, default=8)
     parser.add_argument("--max-seq-len", type=int, default=2048)
     parser.add_argument("--smoke", action="store_true", help="tiny run to validate the pipeline")
+    parser.add_argument(
+        "--allow-bf16",
+        action="store_true",
+        help="acknowledge the bf16 memory cost and run anyway (needs ~15 GB VRAM for a 7B base)",
+    )
     args = parser.parse_args()
+
+    # DEPRECATED — see the module docstring. Refuse by default rather than
+    # downloading ~15 GB of weights and then OOM-ing, which is what happened
+    # every time this was run against the 8 GB target.
+    if not args.allow_bf16 and not args.smoke:
+        eprint(
+            "train_lora.py is DEPRECATED and refuses to run by default.\n"
+            "\n"
+            "It loads the base model in bf16 (~15 GB for a 7B base), so on the 8 GB card\n"
+            "this project targets it cannot do anything but OOM. Nothing in the app calls\n"
+            "it any more: src/main/finetune/pipeline.ts now invokes train_qlora.py, which\n"
+            "loads in 4-bit nf4 and accepts the same --base/--data/--out arguments.\n"
+            "\n"
+            "  Use:  python train_qlora.py --base <hf-id> --data <jsonl> --out <dir>\n"
+            "\n"
+            "If you really do have the VRAM for bf16 and want this script, pass --allow-bf16.\n"
+        )
+        sys.exit(2)
 
     rows = load_dataset_rows(args.data)
     if len(rows) < 8:

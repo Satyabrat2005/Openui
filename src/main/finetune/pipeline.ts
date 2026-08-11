@@ -33,7 +33,7 @@
  * missing Python deps fail the run with a clear message — never a crash.
  */
 import { spawn } from 'node:child_process'
-import { mkdirSync, writeFileSync } from 'node:fs'
+import { mkdirSync, writeFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { app } from 'electron'
 import { database } from '../database'
@@ -156,6 +156,57 @@ function runProc(
   })
 }
 
+/**
+ * Where llama.cpp's LoRA→GGUF converter lives, if the user has it.
+ *
+ * Ollama needs a GGUF adapter; peft writes safetensors. llama.cpp's
+ * convert_lora_to_gguf.py is the standard bridge, and it is a separate checkout
+ * we cannot vendor. Set `finetune_llamacpp_dir` (or LLAMACPP_DIR) to the clone.
+ */
+function llamaCppConverter(): string | null {
+  const root = process.env.LLAMACPP_DIR ?? getSettingStr('finetune_llamacpp_dir')
+  if (!root) return null
+  const p = join(root, 'convert_lora_to_gguf.py')
+  return existsSync(p) ? p : null
+}
+
+/**
+ * Convert a peft adapter directory into a single GGUF file Ollama will accept.
+ *
+ * Returns the path on success. The failure message names the real cause, because
+ * the raw Ollama error for the old directory form ("no Modelfile or safetensors
+ * files found") points at exactly the file that IS present and sends you looking
+ * in the wrong place.
+ */
+async function convertAdapterToGguf(
+  adapterDir: string,
+  cwd: string
+): Promise<{ ok: true; path: string } | { ok: false; error: string }> {
+  const converter = llamaCppConverter()
+  if (!converter) return { ok: false, error: GGUF_SETUP_HINT }
+
+  const out = join(cwd, 'adapter.gguf')
+  const res = await runProc(
+    IS_WIN ? 'python' : 'python3',
+    [converter, adapterDir, '--outfile', out, '--outtype', 'f16'],
+    cwd,
+    OLLAMA_CREATE_TIMEOUT_MS
+  )
+  if (!res.ok) {
+    return { ok: false, error: `LoRA→GGUF conversion failed: ${res.output.slice(-400)}` }
+  }
+  if (!existsSync(out)) {
+    return { ok: false, error: 'LoRA→GGUF conversion reported success but wrote no adapter.gguf' }
+  }
+  return { ok: true, path: out }
+}
+
+/** Exported for tests and for the skip reason, so both say the same thing. */
+export const GGUF_SETUP_HINT =
+  'local fine-tuning needs llama.cpp to convert the trained adapter to GGUF (Ollama ' +
+  'rejects a safetensors adapter directory). Clone https://github.com/ggerganov/llama.cpp ' +
+  'and set the "finetune_llamacpp_dir" setting (or LLAMACPP_DIR) to it.'
+
 /** Cheap pre-checks. Returns null when a pass should run, else the skip reason. */
 export async function fineTuneSkipReason(): Promise<string | null> {
   if (!isImprovementEnabled()) return 'AI Improvement is disabled'
@@ -179,6 +230,13 @@ export async function fineTuneSkipReason(): Promise<string | null> {
   }
 
   if (!(await isOllamaReachable())) return 'Ollama is not running'
+
+  // Checked BEFORE training, not after. Training is a two-hour budget on this
+  // hardware, and without the converter the pass is guaranteed to fail at the
+  // very last step (`ollama create`) with all of that work discarded. Failing
+  // here costs one existsSync and tells the user what to install.
+  if (!llamaCppConverter()) return GGUF_SETUP_HINT
+
   return null
 }
 
@@ -249,8 +307,13 @@ export async function runFineTunePass(): Promise<void> {
     writeFileSync(holdoutFile, holdout.map((r) => JSON.stringify(r)).join('\n') + '\n', 'utf8')
     runLog.event('dataset', { train: train.length, holdout: holdout.length })
 
-    // 1. Train the adapter (Python sidecar; transformers + peft).
-    const script = join(app.getAppPath(), 'scripts', 'finetune', 'train_lora.py')
+    // 1. Train the adapter (Python sidecar; transformers + peft + bitsandbytes).
+    //
+    // train_qlora.py, NOT train_lora.py. The old script loads the base in bf16 —
+    // ~15 GB for its own default 7B base — so on the 8 GB card this pipeline
+    // targets it could only ever OOM. train_qlora.py loads in 4-bit nf4 and is
+    // the script that actually completed a run. Same --base/--data/--out CLI.
+    const script = join(app.getAppPath(), 'scripts', 'finetune', 'train_qlora.py')
     const hfBase = getSettingStr('finetune_hf_base') ?? DEFAULT_HF_BASE
     const adapterDir = join(dir, 'adapter')
     runLog.event('train_start', { hfBase })
@@ -267,7 +330,26 @@ export async function runFineTunePass(): Promise<void> {
     runLog.event('train_done')
 
     // 2. Build a versioned Ollama model from base + adapter.
-    writeFileSync(join(dir, 'Modelfile'), `FROM ${BASE_OLLAMA_MODEL}\nADAPTER ./adapter\n`, 'utf8')
+    //
+    // The adapter must be a GGUF FILE. This used to write `ADAPTER ./adapter`
+    // pointing at the peft save_pretrained() directory, which Ollama rejects —
+    // reproduced on 0.31.2 with a real trained adapter: "Error: no Modelfile or
+    // safetensors files found", despite adapter_model.safetensors being present.
+    // So every pass that got this far threw away hours of training at the last
+    // step. convertAdapterToGguf() is also pre-flighted in fineTuneSkipReason(),
+    // so we normally never start a doomed run at all; this is the backstop.
+    const gguf = await convertAdapterToGguf(adapterDir, dir)
+    if (!gguf.ok) {
+      fail(gguf.error)
+      return
+    }
+    runLog.event('adapter_converted', { gguf: gguf.path })
+
+    writeFileSync(
+      join(dir, 'Modelfile'),
+      `FROM ${BASE_OLLAMA_MODEL}\nADAPTER ${gguf.path}\n`,
+      'utf8'
+    )
     const createRes = await runProc(
       'ollama',
       ['create', tag, '-f', 'Modelfile'],

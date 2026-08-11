@@ -1,5 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { TaskCard, TouchedResource, Workflow, HitlRequestPayload, PlanRequestPayload } from '../env'
+import type {
+  TaskCard,
+  TouchedResource,
+  Workflow,
+  HitlRequestPayload,
+  PlanRequestPayload,
+  ModelPullProgress
+} from '../env'
 import type { AppKind } from '../lib/appKind'
 import { useTaskActivity } from '../context/TaskActivityContext'
 import { useAuth } from '../context/AuthContext'
@@ -9,6 +16,8 @@ import SettingsModal from './SettingsModal'
 import ConversationList from './ConversationList'
 import WorkflowsUI from './WorkflowsUI'
 import { useUpdater } from '../hooks/useUpdater'
+import { labelForModel } from '../lib/modelLabel'
+import { formatBytes } from '../lib/formatBytes'
 
 /**
  * RunConsole — the three-column working surface (README § D). Replaces the old
@@ -140,6 +149,28 @@ export default function RunConsole({
   const [conns, setConns] = useState<ConnectableApp[]>(getConnections())
   useEffect(() => subscribeConnections(() => setConns(getConnections())), [])
   const connected = useMemo(() => connectedScope(conns), [conns])
+
+  // The REAL model the backend reported for the most recent turn, or null before
+  // any turn has run. This chip used to read "llama-3.3-70b" as a hardcoded
+  // string while the app actually runs qwen models — a plain lie in the UI, and
+  // exactly what LocalAIStatus.tsx deliberately avoids. Same contract here: only
+  // ever display a model the backend told us it is running.
+  const [activeModel, setActiveModel] = useState<string | null>(null)
+  useEffect(() => window.openui.onChatModel(({ model }) => setActiveModel(model)), [])
+
+  // First-run model download. Before this existed, a user with Ollama but no
+  // model pulled got a raw 404 in the transcript and had to work out on their own
+  // that a multi-gigabyte terminal download was required. Keep the last progress
+  // record until it completes, then clear it so the banner doesn't linger.
+  const [pull, setPull] = useState<ModelPullProgress | null>(null)
+  useEffect(
+    () =>
+      window.openui.onModelPull((p) => {
+        setPull(p)
+        if (p.done) window.setTimeout(() => setPull(null), 2500)
+      }),
+    []
+  )
 
   // Scheduled runs have no live TaskCard — they come from saved workflows.
   const [workflows, setWorkflows] = useState<Workflow[]>([])
@@ -320,6 +351,42 @@ export default function RunConsole({
       {/* ── Content (composer + ledger) ─────────────────────────────────── */}
       <div className="ou-rc-content">
         <div className="ou-rc-composer-wrap">
+          {pull && (
+            <div
+              className="ou-rc-pullbar"
+              role="status"
+              aria-live="polite"
+              data-testid="model-pull"
+            >
+              <div className="ou-rc-pullbar-top">
+                <span className="ou-rc-pullbar-label">
+                  {pull.done
+                    ? `${labelForModel(pull.model)} ready`
+                    : `Downloading ${labelForModel(pull.model)}`}
+                </span>
+                <span className="ou-rc-pullbar-meta">
+                  {/* Phases with no byte counts show their status text rather than
+                      a 0% bar, which reads as a stall. */}
+                  {pull.percent !== null
+                    ? `${pull.percent}%${pull.total !== null ? ` · ${formatBytes(pull.completed)} / ${formatBytes(pull.total)}` : ''}`
+                    : pull.status}
+                </span>
+              </div>
+              <div className="ou-rc-pullbar-track">
+                <div
+                  className={`ou-rc-pullbar-fill${pull.percent === null ? ' ou-rc-pullbar-fill-idle' : ''}`}
+                  style={pull.percent !== null ? { width: `${pull.percent}%` } : undefined}
+                />
+              </div>
+              <div className="ou-rc-pullbar-sub">
+                {pull.error
+                  ? pull.error
+                  : pull.done
+                    ? 'One-time download complete.'
+                    : `${pull.status}${pull.layer ? ` · layer ${pull.layer}` : ''} — one-time download, you can leave this open.`}
+              </div>
+            </div>
+          )}
           <div className="ou-rc-composer">
             <div className="ou-rc-composer-row1">
               <span className="ou-rc-check" aria-hidden="true">
@@ -350,7 +417,9 @@ export default function RunConsole({
               ))}
               <button type="button" className="ou-rc-pill-add" onClick={() => setShowConnect(true)}>+ scope</button>
               <div className="ou-rc-cantouch-right">
-                <span className="ou-rc-model">llama-3.3-70b</span>
+                <span className="ou-rc-model" title={activeModel ?? 'No turn has run yet'}>
+                  {activeModel ? labelForModel(activeModel) : 'Local AI'}
+                </span>
                 <div className="ou-rc-cantouch-div" />
                 <button type="button" className="ou-rc-startrun" onClick={startRun} disabled={!input.trim()}>
                   Start run <span className="ou-rc-kbd ou-rc-kbd-on">⌘↵</span>

@@ -201,6 +201,21 @@ export interface ChatModelPayload {
   model: string
   tier: Tier
 }
+/**
+ * Progress while a missing local model downloads (main/ollamaPull.ts).
+ * `percent` is null for phases Ollama reports without byte counts ("pulling
+ * manifest", "verifying sha256 digest") — render the status text, not a 0% bar.
+ */
+export interface ModelPullProgress {
+  model: string
+  status: string
+  percent: number | null
+  completed: number | null
+  total: number | null
+  layer: string | null
+  done: boolean
+  error?: string
+}
 /** One sub-agent as announced when a parallel group spawns. */
 export interface SubagentInfo {
   subId: string
@@ -378,6 +393,7 @@ export interface OpenUIApi {
   onTaskTouched: (cb: (payload: TaskTouchedPayload) => void) => () => void
   /** Real model the backend is using this turn (never a model it isn't running). */
   onChatModel: (cb: (info: ChatModelPayload) => void) => () => void
+  onModelPull: (cb: (p: ModelPullProgress) => void) => () => void
 
   // Parallel sub-agents — real concurrent execution surfaced to the timeline.
   onSubagentGroup: (cb: (g: SubagentGroupPayload) => void) => () => void

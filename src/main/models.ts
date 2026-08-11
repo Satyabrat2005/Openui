@@ -142,6 +142,33 @@ export async function resolveOllamaModel(preferred: string): Promise<string> {
 }
 
 /**
+ * Is this exact model tag installed right now?
+ *
+ * `resolveOllamaModel` already substitutes an installed model when it can, so a
+ * false here means the genuine no-models-at-all case: nothing was pulled, and the
+ * preference was handed back untouched. That is the state a fresh install lands
+ * in, and without detecting it the first turn dies on a raw Ollama 404.
+ *
+ * Uses the same 30 s-cached pool as everything else, so this costs nothing on the
+ * common path.
+ */
+export async function isModelInstalled(model: string): Promise<boolean> {
+  const installed = await getAvailableModels()
+  return installed.some((m) => m.provider === 'ollama' && m.id === model)
+}
+
+/**
+ * Drop the 30 s pool cache.
+ *
+ * Needed right after a successful `ollama pull`: without it the newly downloaded
+ * model stays invisible for up to 30 s, so the very turn that triggered the pull
+ * would still resolve to "not installed" and try to pull it again.
+ */
+export function invalidateModelPoolCache(): void {
+  poolCache = null
+}
+
+/**
  * The general-purpose local model. OLLAMA_MODEL states a *preference*, not a
  * guarantee — it is resolved against the installed set like any other, because a
  * configured-but-never-pulled tag is precisely what used to kill every turn.

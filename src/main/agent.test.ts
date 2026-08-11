@@ -147,6 +147,10 @@ vi.mock('./models', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./models')>()),
   resolveGeneralModel: async () => 'qwen3.5:latest',
   resolveOllamaModel: async (preferred: string) => preferred,
+  // The model-availability probe hits Ollama's /api/tags. These tests mock the
+  // transport down to chat() only, so report "installed" and let the loop tests
+  // stay about the loop. The pull path itself is covered in ollamaPull.test.ts.
+  isModelInstalled: async () => true,
   shouldRouteToCloud: () => h.route.toCloud,
   resolveCloudModel: () => 'claude-sonnet-5',
   streamAnthropic: h.streamAnthropic
@@ -176,6 +180,9 @@ import {
   compactBuilderHistory,
   looksLikeBuildRequest,
   looksLikeBuildFollowUp,
+  looksLikeBuildContinuation,
+  looksLikePrReview,
+  looksLikeDesignerRequest,
   resolveNumCtx,
   buildDefaultSystemPrompt,
   trySpawnOllama,
@@ -467,7 +474,10 @@ describe('handleChat — premature "done" on a planned run', () => {
       '{"tool":"complete_step","args":{"step_id":"s1"}}',
       'Everything is finished — I did all three steps for you!'
     ]
-    const pending = handleChat(win, 'set up my workspace and build the site', 'free')
+    // Deliberately NOT a build request: this test is about the planned OS run,
+    // and "…build the site" now (correctly) routes to the sandboxed builder
+    // instead, which never reaches the plan-approval path under test.
+    const pending = handleChat(win, 'set up my workspace for the day', 'free')
     await tick()
     await tick()
     approvePlan()
@@ -1141,6 +1151,16 @@ describe('looksLikeBuildRequest', () => {
     expect(looksLikeBuildRequest('create a folder on my Desktop')).toBe(false)
     expect(looksLikeBuildRequest('send a whatsapp message to mum')).toBe(false)
   })
+
+  // Regression, found by driving the real app: the noun list had "web page" and
+  // "landing page" but not bare "page"/"html", so the most literal build request
+  // imaginable went to general chat instead of the builder.
+  it('matches a plain html/page build request', () => {
+    expect(looksLikeBuildRequest('build an html page')).toBe(true)
+    expect(looksLikeBuildRequest('build a tiny html page that says hello')).toBe(true)
+    expect(looksLikeBuildRequest('make me a page with a contact form')).toBe(true)
+    expect(looksLikeBuildRequest('build a static site')).toBe(true)
+  })
 })
 
 // Regression: ensureOllamaRunning kept a list of absolute fallback paths for
@@ -1213,10 +1233,13 @@ describe('resolveNumCtx — the window must fit the prompt', () => {
     }
   })
 
-  // The guard that actually protects future work: if the tool surface grows
-  // past what the window can hold, this fails in CI instead of silently
-  // truncating tool instructions at runtime on every user's machine.
-  it('the real general-agent system prompt fits in the window it gets', () => {
+  // NOTE: this file mocks './tools' down to a single stub schema, so a size
+  // guard written HERE cannot see the real 133-tool surface — it passes no
+  // matter how far the surface grows, which is exactly the regression it was
+  // meant to catch. The real guard therefore lives in promptSize.test.ts, which
+  // imports the genuine registry. All this can honestly assert is the wiring:
+  // whatever prompt is built, the window is sized to hold it.
+  it('sizes the window to whatever prompt was built', () => {
     const prompt = buildDefaultSystemPrompt()
     const estTokens = Math.ceil(prompt.length / 4)
     const window = resolveNumCtx(false, prompt.length)
@@ -1253,6 +1276,96 @@ describe('looksLikeBuildFollowUp', () => {
     expect(looksLikeBuildFollowUp('what did you just build?')).toBe(false)
     expect(looksLikeBuildFollowUp('thanks, that looks great')).toBe(false)
     expect(looksLikeBuildFollowUp('open my browser')).toBe(false)
+  })
+
+  // Regression, found by driving the eval set through the real app with a build
+  // session still warm. Both of these start with an edit verb ("make", "delete")
+  // and name no other surface, so they were routed into the sandbox as project
+  // edits: the first writes to the sandbox instead of the user's Documents, and
+  // the second points a delete at a Windows system path.
+  it('never captures a request aimed at a real filesystem location', () => {
+    expect(looksLikeBuildFollowUp('make a folder called invoices in my Documents')).toBe(false)
+    expect(looksLikeBuildFollowUp('delete everything in C:\\Windows\\System32')).toBe(false)
+    expect(looksLikeBuildFollowUp('move the report to my Downloads folder')).toBe(false)
+    expect(looksLikeBuildFollowUp('delete ~/notes/old.txt')).toBe(false)
+    expect(looksLikeBuildFollowUp('remove /etc/hosts')).toBe(false)
+  })
+
+  it('still treats an unqualified edit as a project edit', () => {
+    // The path guard must not swallow ordinary follow-ups that merely mention a
+    // file INSIDE the project.
+    expect(looksLikeBuildFollowUp('add a footer to index.html')).toBe(true)
+    expect(looksLikeBuildFollowUp('rename the hero section')).toBe(true)
+  })
+})
+
+/**
+ * The gap the step-limit message walked users straight into: it suggests "keep
+ * building", and that phrasing reached NEITHER router. BUILD_RE wants a build
+ * verb plus a software noun and its list has "website" but not bare "site";
+ * EDIT_VERB_RE wants a LEADING edit verb and "keep" is not one. Confirmed live
+ * before the fix — the turn landed in general chat with no sandbox context.
+ */
+describe('looksLikeBuildContinuation', () => {
+  it('matches an explicit instruction to carry on', () => {
+    expect(looksLikeBuildContinuation('keep building the site')).toBe(true)
+    expect(looksLikeBuildContinuation('carry on')).toBe(true)
+    expect(looksLikeBuildContinuation('continue')).toBe(true)
+    expect(looksLikeBuildContinuation('finish it')).toBe(true)
+    expect(looksLikeBuildContinuation('go on')).toBe(true)
+    expect(looksLikeBuildContinuation('pick up where you left off')).toBe(true)
+  })
+
+  it('does not fire on unrelated text', () => {
+    expect(looksLikeBuildContinuation('what did you build?')).toBe(false)
+    expect(looksLikeBuildContinuation('thanks')).toBe(false)
+  })
+
+  it('refuses another surface or a real path even when it says continue', () => {
+    expect(looksLikeBuildContinuation('continue drafting my email')).toBe(false)
+    expect(looksLikeBuildContinuation('resume the meeting invite')).toBe(false)
+    expect(looksLikeBuildContinuation('finish cleaning C:\\Temp')).toBe(false)
+  })
+})
+
+/**
+ * PR review mode forces pro tier and its mandate is to comment on EVERY open PR.
+ * Entering it for a read-only or creational request means writing to GitHub the
+ * user never asked for — so the trigger has to require review INTENT, not just a
+ * mention of pull requests. Both false positives below were observed live.
+ */
+describe('looksLikePrReview', () => {
+  it('fires when the user actually asks for a review', () => {
+    expect(looksLikePrReview('review my PRs')).toBe(true)
+    expect(looksLikePrReview('review pull requests')).toBe(true)
+    expect(looksLikePrReview('can you review the open PRs on openui')).toBe(true)
+    expect(looksLikePrReview('go through my pull requests and review them')).toBe(true)
+  })
+
+  it('does NOT hijack a request that merely mentions pull requests', () => {
+    expect(looksLikePrReview('list the open pull requests on my repo')).toBe(false)
+    expect(looksLikePrReview('open a pull request from my current branch')).toBe(false)
+    expect(looksLikePrReview('show me the diff for PR 42')).toBe(false)
+    expect(looksLikePrReview('leave a comment on PR 12 saying looks good to me')).toBe(false)
+  })
+})
+
+/**
+ * Designer mode forces pro tier and swaps in a Figma-only toolset. Entering it by
+ * accident makes the request unanswerable, because the tools the user actually
+ * needed are gone. Observed live: a meeting called "Design Review".
+ */
+describe('looksLikeDesignerRequest', () => {
+  it('fires when Figma is named', () => {
+    expect(looksLikeDesignerRequest('review my figma file')).toBe(true)
+    expect(looksLikeDesignerRequest('turn this Figma frame into React')).toBe(true)
+    expect(looksLikeDesignerRequest('https://www.figma.com/file/abc123/Homepage')).toBe(true)
+  })
+
+  it('does NOT fire on an ordinary meeting called "Design Review"', () => {
+    expect(looksLikeDesignerRequest('schedule a meeting tomorrow at 3pm called Design Review')).toBe(false)
+    expect(looksLikeDesignerRequest('move my design review to Thursday')).toBe(false)
+    expect(looksLikeDesignerRequest('what time is the design review?')).toBe(false)
   })
 
   it('judges the object of the edit, not the whole sentence', () => {

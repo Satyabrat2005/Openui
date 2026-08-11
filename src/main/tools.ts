@@ -2076,10 +2076,51 @@ async function search_files(args: Record<string, unknown>): Promise<ToolResult> 
 }
 
 /**
- * Create an event in, or list today's events from, the system calendar.
+ * Is the Windows Outlook COM automation interface actually registered?
+ *
+ * The Windows calendar path drives `New-Object -ComObject Outlook.Application`,
+ * which needs CLASSIC desktop Outlook installed. Most Windows 11 machines do NOT
+ * have it — the bundled "Outlook for Windows" app exposes no COM interface — so
+ * the call fails with `REGDB_E_CLASSNOTREG` (0x80040154). Verified on this
+ * machine: the ProgID key is absent and instantiating the object throws exactly
+ * that.
+ *
+ * Probing the registry rather than trying the COM call keeps this cheap and
+ * side-effect free (instantiating Outlook can launch it and pop a profile
+ * dialog). Cached because it cannot change while the app runs.
+ */
+let outlookComAvailable: boolean | null = null
+
+async function isOutlookComAvailable(): Promise<boolean> {
+  if (!IS_WIN) return false
+  if (outlookComAvailable !== null) return outlookComAvailable
+  try {
+    const out = await runPowerShellScript(
+      // Both views: a 32-bit Office registers under WOW6432Node.
+      `if ((Test-Path 'HKLM:\\SOFTWARE\\Classes\\Outlook.Application') -or ` +
+        `(Test-Path 'HKLM:\\SOFTWARE\\Classes\\WOW6432Node\\Outlook.Application')) ` +
+        `{ 'yes' } else { 'no' }`
+    )
+    outlookComAvailable = out.trim().toLowerCase().includes('yes')
+  } catch {
+    // If we cannot even probe, assume it is missing: the fallback path below is
+    // strictly more useful than a raw COM error.
+    outlookComAvailable = false
+  }
+  return outlookComAvailable
+}
+
+/** Exported for tests: reset the cached Outlook probe. */
+export function resetOutlookProbeForTests(value: boolean | null = null): void {
+  outlookComAvailable = value
+}
+
+/**
+ * Create an event in, or list today's events from, a calendar.
  * macOS:   AppleScript against Calendar.app
- * Windows: PowerShell Outlook COM (requires Microsoft Outlook to be installed)
- * Linux:   not supported
+ * Windows: PowerShell Outlook COM when classic Outlook is installed, else Google
+ *          Calendar when connected (see the backend selection below)
+ * Linux:   Google Calendar only
  */
 async function control_calendar(
   args: Record<string, unknown>,
@@ -2124,16 +2165,27 @@ async function control_calendar(
     }
   }
 
+  // Is there a usable LOCAL calendar on this machine at all? macOS always has
+  // Calendar.app; Windows only counts when classic Outlook's COM interface is
+  // really registered. Anything else (Linux, or the very common Windows 11 box
+  // with no desktop Outlook) has no local backend.
+  const hasLocalCalendar = IS_MAC || (IS_WIN && (await isOutlookComAvailable()))
+
   // Google Calendar backend: the only path that can email real invites + attach
   // a Meet link. Used when explicitly requested (backend:"google"), or — unless
-  // "system" is forced — automatically when Google is connected and the request
-  // needs a feature the local backends lack (attendees / Meet link) or the OS
-  // has no local calendar backend (neither macOS nor Windows, e.g. Linux).
+  // "system" is forced — automatically when Google is connected AND either the
+  // request needs a feature the local backends lack (attendees / Meet link) or
+  // there is no local backend to fall back on.
+  //
+  // That last clause is the fix for a real failure: "auto" previously required
+  // attendees/Meet before it would consider Google, so a plain "schedule a
+  // meeting tomorrow at 3pm" on Windows went straight to Outlook COM and died
+  // with REGDB_E_CLASSNOTREG even with Google Calendar connected and working.
   const wantGoogle =
     backend === 'google' ||
     (backend !== 'system' &&
       isGoogleCalendarConnected() &&
-      (attendees.length > 0 || addMeetLink || (!IS_MAC && !IS_WIN)))
+      (attendees.length > 0 || addMeetLink || !hasLocalCalendar))
   if (wantGoogle) {
     if (!isGoogleCalendarConnected()) {
       return {
@@ -2229,6 +2281,25 @@ async function control_calendar(
     return {
       ok: false,
       error: `Unknown calendar action "${action}". Use "create" or "list".`
+    }
+  }
+
+  // No local calendar and Google isn't connected: say what to do instead of
+  // letting the COM call fail with a raw HRESULT. `REGDB_E_CLASSNOTREG` told the
+  // user nothing actionable and did not mention the integration that WOULD work.
+  // (backend:"system" is honoured verbatim below — an explicit request gets the
+  // real error rather than being silently redirected.)
+  if (!hasLocalCalendar && backend !== 'system') {
+    return {
+      ok: false,
+      error:
+        IS_WIN
+          ? 'No calendar backend is available. The local Windows path needs classic desktop ' +
+            'Microsoft Outlook, which is not installed here (the built-in "Outlook for Windows" ' +
+            'app cannot be automated). Connect Google Calendar in Settings → Google Calendar and ' +
+            'I can create events directly.'
+          : 'No calendar backend is available on this system. Connect Google Calendar in ' +
+            'Settings → Google Calendar and I can create events directly.'
     }
   }
 

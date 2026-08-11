@@ -105,6 +105,9 @@ vi.mock('./models', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./models')>()),
   resolveGeneralModel: async () => 'qwen3.5:latest',
   resolveOllamaModel: async (preferred: string) => preferred,
+  // See agent.test.ts: the availability probe would otherwise hit /api/tags,
+  // which this file's transport mock does not implement.
+  isModelInstalled: async () => true,
   shouldRouteToCloud: () => false,
   resolveCloudModel: () => 'claude-sonnet-5',
   streamAnthropic: vi.fn(async () => 'cloud reply')
