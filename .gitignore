@@ -59,3 +59,10 @@ Desktop.ini
 /ARCHITECTURE.md
 /SECURITY_AUDIT.md
 
+
+# fine-tuning: never commit locally-captured prompts, per-machine training data, or trained weights
+scripts/finetune/eval/system_prompt.txt
+scripts/finetune/eval/captures*.jsonl
+scripts/finetune/data/
+scripts/finetune/**/adapter*/
+*.gguf
