@@ -1,0 +1,74 @@
+[
+  {
+    "id": "build-01",
+    "prompt": "build me a react landing page for a coffee shop",
+    "looksLikeBuildRequest": true,
+    "looksLikeBuildFollowUp": false,
+    "routed": true,
+    "verdict": "correct"
+  },
+  {
+    "id": "build-02",
+    "prompt": "create a small express api with a health endpoint",
+    "looksLikeBuildRequest": true,
+    "looksLikeBuildFollowUp": false,
+    "routed": true,
+    "verdict": "correct"
+  },
+  {
+    "id": "build-03",
+    "prompt": "scaffold a vite + typescript project for a todo app",
+    "looksLikeBuildRequest": true,
+    "looksLikeBuildFollowUp": false,
+    "routed": true,
+    "verdict": "correct"
+  },
+  {
+    "id": "build-04",
+    "prompt": "make a simple cli program that renames files in bulk",
+    "looksLikeBuildRequest": true,
+    "looksLikeBuildFollowUp": true,
+    "routed": true,
+    "verdict": "correct"
+  },
+  {
+    "id": "build-05",
+    "prompt": "generate a dashboard component in react showing three stat cards",
+    "looksLikeBuildRequest": true,
+    "looksLikeBuildFollowUp": false,
+    "routed": true,
+    "verdict": "correct"
+  },
+  {
+    "id": "cont-01",
+    "prompt": "add a contact section to it",
+    "looksLikeBuildRequest": false,
+    "looksLikeBuildFollowUp": true,
+    "routed": true,
+    "verdict": "correct"
+  },
+  {
+    "id": "cont-02",
+    "prompt": "make the header sticky",
+    "looksLikeBuildRequest": false,
+    "looksLikeBuildFollowUp": true,
+    "routed": true,
+    "verdict": "correct"
+  },
+  {
+    "id": "cont-03",
+    "prompt": "change the colours to a darker palette",
+    "looksLikeBuildRequest": false,
+    "looksLikeBuildFollowUp": true,
+    "routed": true,
+    "verdict": "correct"
+  },
+  {
+    "id": "cont-04",
+    "prompt": "keep building the site",
+    "looksLikeBuildRequest": false,
+    "looksLikeBuildFollowUp": false,
+    "routed": false,
+    "verdict": "not_routed_to_builder"
+  }
+]
