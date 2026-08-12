@@ -375,8 +375,42 @@ export async function runTests(): Promise<TestRunResult> {
     if (e.killed) {
       return { passed: false, output: `Test run timed out after ${TEST_TIMEOUT_MS / 1000}s.` }
     }
-    const output = `${e.stdout ?? ''}\n${e.stderr ?? ''}`.trim() || e.message || 'Tests failed.'
-    return { passed: false, output: output.slice(0, MAX_OUTPUT) }
+    let output = `${e.stdout ?? ''}\n${e.stderr ?? ''}`.trim()
+
+    // `--silent` sets npm's loglevel to silent, which suppresses npm's OWN
+    // errors as well as the noise it is there to remove. When npm fails before
+    // it ever reaches the test script — a malformed package.json (EJSONPARSE),
+    // a missing "test" script — stdout and stderr are both EMPTY, and all the
+    // model receives is execFile's generic "Command failed: npm.cmd test
+    // --silent". With no clue as to the cause it cannot fix it, so it guesses,
+    // and the builder burns its remaining turns re-editing the wrong file.
+    //
+    // Observed live on merged main: a build wrote a package.json missing its
+    // closing brace, then spent 12 consecutive edit_file/run_tests cycles on a
+    // test.js that was correct all along, because "Command failed" was the only
+    // feedback it ever got. Re-running verbosely turns that into "npm error
+    // code EJSONPARSE … Expected ',' or '}' … at position 92", which names the
+    // actual file and offset.
+    //
+    // Only on the failure path, and only when nothing was captured, so a normal
+    // failing test suite (which does print its own output) is unaffected.
+    if (!output) {
+      try {
+        const { stdout, stderr } = await execFileAsync(npmCmd, ['test'], {
+          cwd,
+          timeout: TEST_TIMEOUT_MS,
+          maxBuffer: MAX_OUTPUT,
+          windowsHide: true,
+          shell: IS_WIN
+        })
+        output = `${stdout}\n${stderr}`.trim()
+      } catch (verboseErr) {
+        const v = verboseErr as { stdout?: string; stderr?: string }
+        output = `${v.stdout ?? ''}\n${v.stderr ?? ''}`.trim()
+      }
+    }
+
+    return { passed: false, output: (output || e.message || 'Tests failed.').slice(0, MAX_OUTPUT) }
   }
 }
 

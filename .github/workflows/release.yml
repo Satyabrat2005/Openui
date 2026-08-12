@@ -262,6 +262,29 @@ jobs:
         shell: bash
         run: rm -rf node_modules/hnswlib-node
 
+      # ── Warn (don't fail) if Windows signing secrets are absent — mirrors the
+      # macOS check above. The build still succeeds, but the .exe is unsigned and
+      # SmartScreen shows "Windows protected your PC — Unknown publisher" on
+      # first run. Shipping unsigned is a DELIBERATE, current choice (see the
+      # header comment: the .pfx route died in 2023 and Azure Trusted Signing is
+      # a paid subscription that has not been set up) — this warning exists so
+      # that choice stays visible in every release log instead of going silent.
+      # docs/INSTALL-WINDOWS-BETA.md is the user-facing side of the same fact.
+      - name: Check Windows signing secrets
+        if: matrix.os == 'windows-latest'
+        shell: bash
+        env:
+          WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+          WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+        run: |
+          if [ -z "$WIN_CSC_LINK" ]; then
+            echo "::warning::Windows signing secrets missing: WIN_CSC_LINK — this installer will be UNSIGNED and SmartScreen will show 'Unknown publisher' on first run. This is the current intended state; point users at docs/INSTALL-WINDOWS-BETA.md. To sign, see the Azure Trusted Signing notes in this file's header."
+          elif [ -z "$WIN_CSC_KEY_PASSWORD" ]; then
+            echo "::warning::WIN_CSC_LINK is set but WIN_CSC_KEY_PASSWORD is empty — electron-builder will fail to import the certificate."
+          else
+            echo "Windows signing secrets are present — this build will be Authenticode-signed."
+          fi
+
       - name: Build Windows EXE
         if: matrix.os == 'windows-latest'
         shell: bash

@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import {
+  closeUnbalancedJsonObject,
   extractFirstJsonObject,
   looksLikeAttemptedToolCall,
   objToToolCall,
@@ -415,5 +416,81 @@ describe('StreamGate — classification edge cases', () => {
     const gate = new StreamGate(forward)
     for (const d of ['{', '"tool"', ':', '"delete_file"', ',"args":{"path":"~/a"}}']) gate.push(d)
     expect(forward).not.toHaveBeenCalled()
+  })
+})
+
+// ── Unclosed-object recovery (pass 3) ───────────────────────────────────────
+// Regression cover for a build that wrote ZERO files on merged main: asked for
+// a 10-file site, qwen2.5-coder:7b emitted a write_file call whose OUTER brace
+// it never closed. Both balanced passes returned null, the turn parsed as
+// prose, no tool ran, and the builder "finished" with an empty project folder.
+describe('closeUnbalancedJsonObject', () => {
+  it('returns null for an already-balanced object (strict path owns that case)', () => {
+    expect(closeUnbalancedJsonObject('{"a":1}')).toBeNull()
+    expect(closeUnbalancedJsonObject('{"a":{"b":2}}')).toBeNull()
+  })
+
+  it('returns null when there is no object at all', () => {
+    expect(closeUnbalancedJsonObject('just prose')).toBeNull()
+    expect(closeUnbalancedJsonObject('')).toBeNull()
+  })
+
+  it('closes a single missing brace', () => {
+    expect(closeUnbalancedJsonObject('{"a":{"b":2}')).toBe('{"a":{"b":2}}')
+  })
+
+  it('closes several missing braces', () => {
+    expect(closeUnbalancedJsonObject('{"a":{"b":{"c":1}')).toBe('{"a":{"b":{"c":1}}}')
+  })
+
+  // The important refusal: a response cut off mid-string is genuinely truncated.
+  // Closing it would hand write_file a half-written `content` and silently
+  // truncate a real file — worse than dropping the call.
+  it('REFUSES to recover a response that ends inside an unterminated string', () => {
+    expect(closeUnbalancedJsonObject('{"tool":"write_file","args":{"content":"half a fi')).toBeNull()
+  })
+
+  it('does not mistake braces inside a string for structure', () => {
+    // The `{` inside the string value must not add depth.
+    expect(closeUnbalancedJsonObject('{"a":"a { brace"')).toBe('{"a":"a { brace"}')
+  })
+
+  it('drops a dangling code fence before closing', () => {
+    expect(closeUnbalancedJsonObject('{"a":1\n```')).toBe('{"a":1}')
+  })
+})
+
+describe('parseToolCall — unclosed object recovery', () => {
+  // The EXACT shape streamed by the live app (fenced, outer brace missing).
+  const LIVE_BYTES =
+    '```json\n{\n  "tool": "search_files",\n  "args": {\n    "path": "package.json",\n    "content": "{\n  \\"name\\": \\"bookshop\\"\n}"\n}\n```'
+
+  it('recovers the live unclosed tool call, with its content intact', () => {
+    const call = parseToolCall(LIVE_BYTES, KNOWN)
+    expect(call).not.toBeNull()
+    expect(call?.tool).toBe('search_files')
+    // The escaped JSON the model was writing into the file survives untouched.
+    expect(call?.args.content).toBe('{\n  "name": "bookshop"\n}')
+    expect(call?.args.path).toBe('package.json')
+  })
+
+  it('still refuses an unclosed call naming an UNKNOWN tool', () => {
+    // Pass 3 is guessing at structure, so it must not invent calls from prose.
+    const text = '{"tool":"not_a_real_tool","args":{"a":1}'
+    expect(parseToolCall(text, KNOWN)).toBeNull()
+  })
+
+  it('does not recover a truncated call (ends mid-string) even for a known tool', () => {
+    const text = '{"tool":"open_app","args":{"name":"Sla'
+    expect(parseToolCall(text, KNOWN)).toBeNull()
+  })
+
+  it('leaves balanced parsing untouched', () => {
+    const call = parseToolCall('{"tool":"open_app","args":{"name":"Slack"}}', KNOWN)
+    expect(call).toEqual({ tool: 'open_app', args: { name: 'Slack' } })
+  })
+
+  it('does not turn ordinary prose containing a stray brace into a tool call', () => {
+    expect(parseToolCall('I would use { to open a block here.', KNOWN)).toBeNull()
   })
 })
