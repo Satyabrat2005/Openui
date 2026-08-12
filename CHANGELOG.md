@@ -5,6 +5,120 @@ the newest work lands under **Unreleased** until the next version bump.
 
 ## [Unreleased]
 
+## v7.2.0 — 2026-08-12
+
+The local-model release. Every prior version shipped a system prompt that
+did not fit the context window it was sent with, so the model silently
+stopped calling tools and answered in prose instead — which from the
+outside was indistinguishable from the assistant refusing to work. This
+release fixes that, and the four other failure modes found while proving
+it. 6 PRs since v7.1.4, all verified by driving the real Electron app
+against local Ollama rather than by test harness alone.
+
+### Fixed
+
+- **The system prompt no longer overflows the context window.** All 133
+  tool schemas went into every prompt regardless of the request:
+  **15,059 tokens fixed, 67.9% of it schemas**, against a `CHAT_NUM_CTX`
+  of 8,192 — over budget before the user typed a second word. Ollama
+  does not fail on an over-long prompt, it drops the **middle**, which is
+  exactly where the tool-calling instructions live. Tools are now
+  partitioned into 22 surface groups (`src/main/toolGroups.ts`) and a
+  regex first pass over the user's own words (never over tool output)
+  selects the groups a turn needs; only those schemas plus a 16-tool
+  always-on core reach the prompt. Measured over 35 model-scored eval
+  cases: **15,059 tok → 3,909–6,821 tok**, `num_ctx` 32768 → **8192 on
+  33 of 35**, model VRAM residency 73% → **86%**, routing accuracy
+  74.3% → **77.1%**. No model call is involved in the selection. (#159,
+  #161)
+- **Builder sessions no longer stall out as "limit reached".** There is
+  no sandbox limit in the code — the message users saw came from three
+  independent causes: Ollama installed but not serving on 11434 (now
+  auto-started via `ensureOllamaRunning()`, polling `/api/tags` for 20s,
+  never spawned against a non-local `OLLAMA_HOST`); the builder never
+  trimming its history, so every `write_file` carried a whole source file
+  into a transcript that was never pruned (now `compactBuilderHistory()`);
+  and a model loop that rewrote the same file 38 times. (#157)
+- **Incremental follow-ups stay in the project you just built.** "add a
+  contact section" thirty seconds after a build used to fall through to
+  general chat, which has no sandbox context and cannot write a file.
+  Edit-shaped follow-ups now resume the active project, gated on an
+  active project, a builder turn within 30 minutes, and an edit-shaped
+  object — the guard reads the object of the edit, not the whole
+  sentence, so an OS request is never routed into the sandbox. (#158)
+- **An unclosed tool call no longer throws an entire build away.** The
+  model emitted a `write_file` call whose `args` closed but whose outer
+  object never did; the parser returned null ("likely a still-streaming
+  fragment"), nothing ran, and the build reported success with an
+  **empty project folder**. The streaming premise was false at that call
+  site — every caller parses a completed response. Now recovered, gated
+  on a known tool name and **refusing any response that ends inside an
+  unterminated string** (that one is genuinely truncated). Measured on
+  the same prompt: **0 tool calls / 0 files → 14 tool calls / 12 files**.
+  (#162)
+- **`npm test --silent` no longer hides npm's own errors.** A build wrote
+  a `package.json` missing its closing brace; npm could never run, and
+  the only feedback was `Command failed`, so the model spent 12
+  consecutive turns rewriting a test file that was correct all along.
+  The failure path now re-runs verbose when the first run captured
+  nothing, surfacing the real `EJSONPARSE`. (#162)
+- **Six live routing bugs**, each found by driving the real app and each
+  now covered by a regression test: "list the open PRs" entered PR-review
+  mode (which forces pro tier and comments on every open PR — a
+  read-only ask would have written to GitHub); a meeting named *Design
+  Review* entered Figma mode; a warm build session swallowed
+  `delete everything in C:\Windows\System32` into the sandbox; "keep
+  building the site" reached neither router; **"build an html page" went
+  to general chat** because `BUILD_RE` lacked bare `page`/`html`; and
+  `control_calendar`'s `auto` backend only considered Google when an
+  invite or Meet link was requested — it now probes for the
+  `Outlook.Application` ProgID. (#161)
+
+### Added
+
+- **A 44-case routing eval harness** (`scripts/finetune/eval/`) that
+  captures the *real* system prompt from the running app via a
+  transparent Ollama proxy rather than reconstructing it, parses replies
+  without executing them (the set deliberately contains "send an email"
+  and "message X on WhatsApp" cases), and scores at `temperature=0`.
+  Measured noise floor: 0/44 across identical runs. Includes a 4-bit
+  QLoRA trainer and a GGUF adapter → Ollama build step. (#160)
+
+### Changed
+
+- **The default model was not switched.** #160 recommended
+  `qwen2.5-coder:7b` on a +2.8-point routing win; that win **inverts**
+  once the prompt fits, and a single added line of prompt prose was
+  enough to swap the two models back — a 1-case gap on a 35-case set is
+  inside the harness's sensitivity to one line of prose, not an accuracy
+  difference. `coder:7b` is robustly ~2.4× faster (median 3.03s vs
+  7.42s) and remains the builder's model. (#161)
+
+### Known limitations
+
+- **Windows and macOS installers are unsigned.** SmartScreen will show
+  "Windows protected your PC — Unknown publisher", and macOS Gatekeeper
+  will block the .dmg on a machine that is not a developer's. This is a
+  deliberate current choice: the downloadable-`.pfx` signing route ceased
+  to exist for new certificates in June 2023, and the replacements are
+  paid subscriptions that have not been set up. See
+  `docs/INSTALL-WINDOWS-BETA.md` for the per-platform bypass and for
+  checksum verification.
+- **WhatsApp auto-reply drafting is UNVERIFIED.** Read-only detection is
+  proven working (37 OCR'd lines in ~6.5s, zero drift across idle polls,
+  so OCR jitter alone cannot trigger a draft). The draft/compose path has
+  **never been exercised end to end**, because doing so requires a
+  genuinely new inbound message from a second phone between two polls and
+  faking it would mean messaging a real person. Note that the watcher has
+  **no send path** — `onDraft` only suggests, and a human clicks send —
+  so the blast radius of a false positive is a suggested draft, not a
+  sent message. Treat the feature as beta.
+- **RAG ships on macOS only.** `hnswlib-node` cannot be rebuilt against
+  Electron's ABI on the Windows runner; it is an optional dependency and
+  `rag.ts` degrades gracefully without it.
+- **No Linux build.** OpenUI targets Windows and macOS; there is no Linux
+  packaging target in `electron-builder` config.
+
 ## v7.1.4 — 2026-07-24
 
 A test-hardening release. No shipping behavior changes — this pins the
