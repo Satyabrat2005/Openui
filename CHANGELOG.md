@@ -104,15 +104,28 @@ against local Ollama rather than by test harness alone.
   paid subscriptions that have not been set up. See
   `docs/INSTALL-WINDOWS-BETA.md` for the per-platform bypass and for
   checksum verification.
-- **WhatsApp auto-reply drafting is UNVERIFIED.** Read-only detection is
-  proven working (37 OCR'd lines in ~6.5s, zero drift across idle polls,
-  so OCR jitter alone cannot trigger a draft). The draft/compose path has
-  **never been exercised end to end**, because doing so requires a
-  genuinely new inbound message from a second phone between two polls and
-  faking it would mean messaging a real person. Note that the watcher has
-  **no send path** — `onDraft` only suggests, and a human clicks send —
-  so the blast radius of a false positive is a suggested draft, not a
-  sent message. Treat the feature as beta.
+- **WhatsApp auto-reply is not usable yet — leave it disabled.** It is off
+  by default. Testing this release on the packaged build found a defect
+  upstream of the draft path: `readWhatsAppUnreadSenders()` focuses
+  WhatsApp but then calls `captureScreenPng()`, a **whole-screen**
+  capture, and `ocrWhatsAppCandidates()` treats every 2–60 character line
+  containing a letter as a sender candidate. Text from any other visible
+  window therefore enters the set that `matchAllowlist` is tested
+  against. Measured over a 5-minute live window at a 15s poll:
+  **209 spurious "new sender" candidates across 11 polls, every poll
+  non-zero**, including lines OCR'd from an unrelated terminal window.
+  This **corrects** the earlier "zero drift across idle polls" reading —
+  that held only because the screen happened to be static; drift is a
+  function of what else is on screen, not of OCR jitter.
+  The root cause is a reuse: `ocrWhatsAppCandidates()` was written for
+  contact *resolution*, where a permissive candidate list is fine because
+  everything is scored against a specific query. As an unread-sender
+  detector, entering the set **is** the trigger, so permissiveness is a
+  defect. Blast radius is bounded — the watcher has **no send path**,
+  `onDraft` only suggests and a human clicks send — but a spurious match
+  calls `readChat`, which opens the **top WhatsApp search result** to OCR
+  it. The compose→draft path itself therefore remains unexercised, and
+  deliberately so until the detector is fixed.
 - **RAG ships on macOS only.** `hnswlib-node` cannot be rebuilt against
   Electron's ABI on the Windows runner; it is an optional dependency and
   `rag.ts` degrades gracefully without it.

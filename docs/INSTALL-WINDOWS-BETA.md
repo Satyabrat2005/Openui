@@ -58,12 +58,21 @@ comparing its hash against the one in the release's `latest.yml` asset. Note
 SHA-256 that `Get-FileHash` prints by default, so use this:
 
 ```powershell
-$fs = [System.IO.File]::OpenRead("OpenUI-Setup-7.1.4.exe"); $h = [System.Security.Cryptography.SHA512]::Create().ComputeHash($fs); $fs.Close(); [Convert]::ToBase64String($h)
+$fs = [System.IO.File]::OpenRead("OpenUI-Setup-7.2.0.exe"); $h = [System.Security.Cryptography.SHA512]::Create().ComputeHash($fs); $fs.Close(); [Convert]::ToBase64String($h)
 ```
 
-That prints a string like `xa+IVGuegmPJuJpc…`. It must equal the `sha512:` value
-for the `.exe` entry in `latest.yml` on the same release. (Download `latest.yml`
-from the release's asset list — it's a plain text file.)
+(Substitute the filename you actually downloaded — the installer is named
+`OpenUI-Setup-<version>.exe`.)
+
+It must equal the `sha512:` value for the `.exe` entry in `latest.yml` on the
+same release. (Download `latest.yml` from the release's asset list — it's a
+plain text file.) For **v7.2.0** the expected value is:
+
+```
+d+QEAYLIXiNzTmJ1U5duYUFo2urDttal5XG7WxNxobqJ9o35V/xf1Z+8SiAc19ssf1Df7WO+21p9hWzUMa4QIA==
+```
+
+verified against the published asset (364,864,698 bytes) on 2026-08-12.
 
 ---
 

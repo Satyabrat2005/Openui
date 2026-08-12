@@ -1845,8 +1845,13 @@
     </a>
 
     <!-- Windows -->
+    <!-- Same safe default as the Mac button above, and for the same reason: the
+         published installer is named OpenUI-Setup-${version}.exe, so there is no
+         stable "OpenUI.Setup.exe" and that static URL 404s on every release
+         (verified against v7.2.0). Point at the releases page — which never
+         404s — and let the JS below upgrade it to the direct .exe. -->
     <a id="dl-win" class="dl-btn secondary"
-       href="https://github.com/Satyabrat2005/Openui/releases/latest/download/OpenUI.Setup.exe"
+       href="https://github.com/Satyabrat2005/Openui/releases/latest"
        aria-label="Download OpenUI for Windows (checking latest version)">
       <span class="dl-btn-icon" aria-hidden="true">
         <!-- Windows logo -->
@@ -2031,6 +2036,14 @@
         // never falls back to the non-existent OpenUI.dmg static URL.
         macBtn.setAttribute("href",
           pickMacHref(macAssets, release) || release.html_url || (RELEASES + "/latest"));
+
+        // The Windows button needs the same treatment and was missing it: the
+        // .exe asset name carries the version (OpenUI-Setup-7.2.0.exe), so it
+        // can only be known from the API response. Without this the button kept
+        // its static href for every visitor even when this fetch succeeded.
+        winBtn.setAttribute("href",
+          (winAsset && winAsset.browser_download_url) ||
+          release.html_url || (RELEASES + "/latest"));
 
         // Per-platform: a missing asset means that build isn't published yet.
         if (macAsset || version) {

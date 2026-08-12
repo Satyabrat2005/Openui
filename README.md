@@ -111,7 +111,7 @@ npm run build:mac      # electron-vite build && electron-builder --mac
 npm run build:win      # electron-vite build && electron-builder --win
 ```
 
-Every PR runs typecheck/test/build in CI (`.github/workflows/pr-check.yml`); tagged releases build signed macOS + Windows installers (`.github/workflows/release.yml`). Local semantic-search/RAG indexing (`hnswlib-node`) ships **macOS-only** — it's stripped from Windows builds due to native ABI constraints.
+Every PR runs typecheck/test/build in CI (`.github/workflows/pr-check.yml`); tagged releases build macOS + Windows installers (`.github/workflows/release.yml`). Those installers are currently **unsigned** on both platforms — SmartScreen shows "Unknown publisher" and macOS Gatekeeper blocks the `.dmg` on a machine that is not a developer's. See [docs/INSTALL-WINDOWS-BETA.md](docs/INSTALL-WINDOWS-BETA.md) / [docs/INSTALL-MACOS-BETA.md](docs/INSTALL-MACOS-BETA.md) for the per-platform bypass and hash verification, and the header of `release.yml` for what signing would take. Local semantic-search/RAG indexing (`hnswlib-node`) ships **macOS-only** — it's stripped from Windows builds due to native ABI constraints.
 
 **Screen OCR languages.** Free-tier screen reading uses local Tesseract OCR. The trained-data packs (English, Spanish, French, German, Portuguese, Hindi, Japanese, Chinese — ~16 MB total) are gitignored binaries fetched by `npm run fetch:ocr-langs` into `./tessdata`; `build:mac`/`build:win` run this automatically before packaging. Pick a language (or **Auto**, which follows the OS locale) under **Settings → Screen OCR language**; a non-English UI whose pack isn't installed fails with a clear message instead of returning garbage English OCR.
 
