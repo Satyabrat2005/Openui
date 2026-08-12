@@ -29,7 +29,8 @@ import {
   removeWorktree,
   setActiveProject,
   resetActiveProject,
-  stripRedundantProjectPrefix
+  stripRedundantProjectPrefix,
+  runTests
 } from './sandbox'
 import { resolve, dirname, basename } from 'node:path'
 
@@ -371,4 +372,58 @@ describe('git worktrees', () => {
     // Cleanup: remove the sibling worktree root so /tmp does not accumulate.
     await rm(join(dirname(ws), '.openui-worktrees'), { recursive: true, force: true })
   })
+})
+
+// ── runTests failure diagnostics ────────────────────────────────────────────
+// Regression cover for a builder failure seen on merged main: the model wrote a
+// package.json missing its closing brace, and `npm test --silent` printed
+// NOTHING (--silent suppresses npm's own errors too), so the only feedback the
+// model got was execFile's generic "Command failed: npm.cmd test --silent". With
+// no cause to act on it guessed, and burned 12 consecutive edit_file/run_tests
+// turns rewriting a test.js that was correct the whole time.
+describe('runTests — surfaces npm failure diagnostics', () => {
+  it('reports the real npm error when --silent produced no output', async () => {
+    // package.json missing its closing brace — npm fails before running anything.
+    await writeFile(
+      join(ws, 'package.json'),
+      '{\n  "name": "x",\n  "scripts": {\n    "test": "node test.js"\n}\n'
+    )
+    await writeFile(join(ws, 'test.js'), 'console.log("hi")\n')
+
+    const result = await runTests()
+
+    expect(result.passed).toBe(false)
+    // The actionable part: npm's parse error names the real problem and offset,
+    // instead of the opaque "Command failed" the model used to receive.
+    expect(result.output).toMatch(/EJSONPARSE|JSON\.parse|Invalid package\.json/i)
+    expect(result.output).not.toBe('Tests failed.')
+  }, 120_000)
+
+  it('still reports a plain failing test suite from its own output', async () => {
+    await writeFile(
+      join(ws, 'package.json'),
+      '{"name":"x","version":"1.0.0","scripts":{"test":"node test.js"}}'
+    )
+    await writeFile(
+      join(ws, 'test.js'),
+      'console.error("ASSERTION_FAILED: 1 !== 2"); process.exit(1)\n'
+    )
+
+    const result = await runTests()
+
+    expect(result.passed).toBe(false)
+    expect(result.output).toContain('ASSERTION_FAILED')
+  }, 120_000)
+
+  it('passes a suite that exits zero', async () => {
+    await writeFile(
+      join(ws, 'package.json'),
+      '{"name":"x","version":"1.0.0","scripts":{"test":"node test.js"}}'
+    )
+    await writeFile(join(ws, 'test.js'), 'console.log("all good")\n')
+
+    const result = await runTests()
+
+    expect(result.passed).toBe(true)
+  }, 120_000)
 })

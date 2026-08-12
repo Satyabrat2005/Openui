@@ -348,10 +348,28 @@ describe('handleChat — tool call in prose', () => {
 
 // ── Malformed tool-call JSON ──────────────────────────────────────────────────
 describe('handleChat — malformed tool-call JSON', () => {
-  it('does not crash and executes no tool when the JSON is unbalanced', async () => {
-    // Unbalanced object → parseToolCall returns null → treated as a (revealed)
-    // natural-language answer. The turn must complete cleanly.
-    h.state.responses = ['{"tool":"open_app","args":{"name":"Slack"']
+  // BEHAVIOUR CHANGE (was: "executes no tool when the JSON is unbalanced").
+  // Dropping these turns cost real work: on merged main a 10-file build wrote
+  // ZERO files because the model closed `args` but not the outer object, so
+  // every attempt parsed as prose. A completed response that is unbalanced is
+  // not a streaming fragment — the model simply stopped emitting braces — so
+  // the parser now closes it and runs the call it plainly describes. Recovery
+  // is gated on a KNOWN tool name and on the response NOT ending mid-string
+  // (see the truncation test below, which is the safety half of this pair).
+  it('recovers a complete-but-unclosed tool call and runs it', async () => {
+    h.state.responses = ['{"tool":"open_app","args":{"name":"Slack"', 'Done.']
+    await expect(handleChat(win, 'open slack', 'free')).resolves.toBeUndefined()
+
+    expect(h.executeTool).toHaveBeenCalledWith('open_app', { name: 'Slack' }, expect.anything())
+    expect(sent('openui:chat:done')).toBe(true)
+    expect(sent('openui:chat:error')).toBe(false)
+  })
+
+  // The safety half: a response cut off INSIDE a string value is genuinely
+  // truncated. Closing it would hand the tool a half-written argument (a
+  // half-written file for write_file), so the call is still dropped.
+  it('executes no tool when the response is truncated mid-string', async () => {
+    h.state.responses = ['{"tool":"open_app","args":{"name":"Sla']
     await expect(handleChat(win, 'open slack', 'free')).resolves.toBeUndefined()
 
     expect(h.executeTool).not.toHaveBeenCalled()

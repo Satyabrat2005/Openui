@@ -44,6 +44,62 @@ export function extractFirstJsonObject(text: string): string | null {
 }
 
 /**
+ * Last-resort recovery for an object whose closing brace(s) the model simply
+ * never emitted: re-scan from the first `{` and, if the object ends OUTSIDE a
+ * string with unclosed depth, append the missing `}`s.
+ *
+ * Why this is needed: local models drop the final brace often enough to break
+ * whole builds. Observed live on merged main — asked for a 10-file site,
+ * qwen2.5-coder:7b streamed
+ *   ```json\n{\n "tool": "write_file",\n "args": {\n "path": …, "content": … }\n```
+ * with the OUTER object never closed. extractFirstJsonObject returned null, so
+ * the turn parsed as prose, no tool ran, and after the zero-tool retries the
+ * build "finished" having written nothing at all.
+ *
+ * Why this is safe:
+ *   • every caller parses a COMPLETE model response (agent.ts et al. await
+ *     callModel before parsing), never a live stream, so "unbalanced" here means
+ *     the model finished mid-structure — not that more text is coming;
+ *   • it REFUSES to recover when the scan ends inside an unterminated string.
+ *     That case is a genuinely truncated response, and closing it would hand
+ *     write_file a half-written `content` — silently truncating a real file is
+ *     far worse than dropping the call;
+ *   • it only ever appends `}`, so it cannot change the meaning of any value
+ *     the model did emit.
+ *
+ * Returns null when the text is balanced already (use the strict path), when it
+ * ends inside a string, or when there is no `{` at all.
+ */
+export function closeUnbalancedJsonObject(text: string): string | null {
+  const start = text.indexOf('{')
+  if (start === -1) return null
+  let depth = 0
+  let inString = false
+  let escaped = false
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i]
+    if (inString) {
+      if (escaped) escaped = false
+      else if (ch === '\\') escaped = true
+      else if (ch === '"') inString = false
+      continue
+    }
+    if (ch === '"') inString = true
+    else if (ch === '{') depth++
+    else if (ch === '}') {
+      depth--
+      if (depth === 0) return null // balanced — the strict path already handles it
+    }
+  }
+  // Ended mid-string, or never opened anything: not safely recoverable.
+  if (inString || depth <= 0) return null
+  // Drop a dangling code fence / trailing whitespace before closing, so the
+  // appended braces land on the JSON itself rather than after ``` .
+  const body = text.slice(start).replace(/\s*```\s*$/, '').trimEnd()
+  return body + '}'.repeat(depth)
+}
+
+/**
  * Repair the one thing local models break most often: raw (unescaped) control
  * characters — newlines, tabs, carriage returns — inside a JSON string value.
  *
@@ -213,6 +269,21 @@ export function parseToolCall(text: string, knownTools: Set<string> = new Set())
     if (parsed === undefined) continue // unbalanced or invalid here — try the next `{`
     const call = objToToolCall(parsed, true, knownTools)
     if (call) return call
+  }
+
+  // ── Pass 3: the model never closed the object ─────────────────────────────
+  // Only reached when both balanced passes failed. See closeUnbalancedJsonObject
+  // for why this is safe on a completed response (and why it refuses to recover
+  // a response that ends mid-string). A KNOWN tool name is required here: this
+  // pass is guessing at structure, so it must not be able to invent a call out
+  // of prose that merely contains an unclosed brace.
+  const closed = closeUnbalancedJsonObject(candidate)
+  if (closed) {
+    const parsed = tryParseJson(closed)
+    if (parsed !== undefined) {
+      const call = objToToolCall(parsed, true, knownTools)
+      if (call) return call
+    }
   }
 
   return null
