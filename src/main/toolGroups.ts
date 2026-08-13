@@ -57,6 +57,7 @@ export type ToolGroup =
   | 'whatsapp'
   | 'telegram'
   | 'slack'
+  | 'overleaf'
   | 'github'
   | 'figma'
   | 'docs'
@@ -150,6 +151,14 @@ export const GROUP_TOOLS: Record<ToolGroup, readonly string[]> = {
   ],
   telegram: ['send_telegram_message', 'list_telegram_chats', 'read_telegram_messages'],
   slack: ['send_slack_message', 'list_slack_channels', 'read_slack_channel', 'search_slack'],
+  // Overleaf drives the user's own signed-in browser session, so this group is
+  // only useful alongside the browser group (connect_browser must run first).
+  overleaf: [
+    'overleaf_open_project',
+    'overleaf_write_latex',
+    'overleaf_read_latex',
+    'overleaf_recompile'
+  ],
   github: [
     'list_open_prs',
     'get_pr_diff',
@@ -236,6 +245,7 @@ export const GROUP_SUMMARY: Record<ToolGroup, string> = {
   whatsapp: 'WhatsApp messages and groups',
   telegram: 'Telegram messages',
   slack: 'Slack messages and channels',
+  overleaf: 'Write LaTeX live into the user’s own Overleaf project',
   github: 'GitHub repos, pushes and pull requests',
   figma: 'Figma files, design systems and builds',
   docs: 'Word documents, PDFs and mail merge',
@@ -276,6 +286,12 @@ const GROUP_TRIGGERS: Partial<Record<ToolGroup, RegExp>> = {
   whatsapp: /\bwhats\s?app\b|\bwa\b/i,
   telegram: /\btelegram\b/i,
   slack: /\bslack\b/i,
+  // Deliberately narrow: only the word "overleaf" (or an overleaf.com URL) pulls
+  // this group in. It does NOT claim bare "latex"/"tex"/"paper" — those belong to
+  // write_latex, which authors a local file and needs neither a browser nor an
+  // account. Widening this would hijack every offline LaTeX request into a flow
+  // that demands a signed-in browser session.
+  overleaf: /\boverleaf\b/i,
   github:
     /\b(github|pull\s+requests?|\bprs?\b|repo|repos|repositor\w+|commit|branch|merge|\bdiff\b|readme|clone|fork|push)\b/i,
   figma: /\b(figma|design system|mock ?up|wireframe|\bframe\b|\bframes\b|prototype|design token)\b/i,

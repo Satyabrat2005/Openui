@@ -58,6 +58,7 @@ import { worddocToolSchemas, worddocRegistry } from './worddoc'
 import { pdfToolSchemas, pdfRegistry } from './pdf'
 import { mailMergeToolSchemas, mailMergeRegistry } from './mailmerge'
 import { telegramToolSchemas, telegramRegistry } from './telegram'
+import { overleafToolSchemas, overleafRegistry } from './overleaf'
 import { paperResearchToolSchemas, paperResearchRegistry } from './paperResearch'
 import { runInteractivePython, writeSandboxFile } from './sandbox'
 import {
@@ -345,6 +346,14 @@ export const STATE_CHANGING_TOOLS = new Set<string>([
   // and irreversible, so it is ALSO in DESTRUCTIVE_TOOLS below (always confirms,
   // never runs on autopilot). list/read Telegram tools are read-only, omitted.
   'send_telegram_message',
+  // Overleaf: edits the user's real LaTeX document in their own signed-in
+  // browser, and recompiling spends their compile quota — both are things the
+  // user should watch happen, so both confirm. They are NOT in DESTRUCTIVE_TOOLS:
+  // an edit is visible and undoable in Overleaf's own history, unlike a sent
+  // message. overleaf_open_project / overleaf_read_latex only observe, and there
+  // is deliberately no share/publish/submit tool at all (see overleaf.ts).
+  'overleaf_write_latex',
+  'overleaf_recompile',
   // Running arbitrary Python is sensitive — always confirm (also in DESTRUCTIVE_TOOLS).
   'run_python',
   // Academic-research pipeline. search_papers is read-only (network reads only,
@@ -1007,8 +1016,10 @@ async function launchIsolatedContext(pw: any, kindOrder: BrowserKind[]): Promise
  * Browser tools must NOT auto-launch: the agent attaches to a browser only
  * through the user-approved connect_browser step.
  */
+// Exported so site-specific driver modules (overleaf.ts) can reuse the ONE
+// user-approved attachment instead of opening a browser of their own.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function getConnectedPage(): any | null {
+export function getConnectedPage(): any | null {
   return _pwPage
 }
 
@@ -5828,6 +5839,7 @@ export const toolSchemas: ToolSchema[] = [
   ...pdfToolSchemas,
   ...mailMergeToolSchemas,
   ...telegramToolSchemas,
+  ...overleafToolSchemas,
   ...paperResearchToolSchemas,
   {
     name: 'run_python',
@@ -6569,10 +6581,13 @@ export const toolSchemas: ToolSchema[] = [
       'Write a research paper in LaTeX and SAVE it as main.tex (plus references.bib) to ' +
       '~/OpenUI Research/papers/<title>-<timestamp>/. YOU author the actual content — pass the title, ' +
       'abstract, and an ordered list of sections whose "content" is the LaTeX body you wrote (you may use ' +
-      '\\cite{}, math, \\includegraphics, etc.). Use this whenever the user wants a paper/report written in ' +
-      'LaTeX or "on Overleaf". Set openOverleaf:true to also open Overleaf\'s project page in the connected ' +
-      'browser so the user can upload/import the files (import stays a human action). The file is generated ' +
-      'locally so it always compiles; it never overwrites existing files.',
+      '\\cite{}, math, \\includegraphics, etc.). The file is generated locally so it always compiles; it ' +
+      'never overwrites existing files. Set openOverleaf:true to also open Overleaf\'s project page so the ' +
+      'user can upload/import the files (import stays a human action).\n' +
+      'CHOOSING BETWEEN THIS AND overleaf_write_latex: use write_latex to author a NEW paper as a local ' +
+      'file (nothing needs to be open, no Overleaf account required). Use overleaf_write_latex instead when ' +
+      'the user wants text typed into an EXISTING Overleaf project they already have — e.g. "add a section ' +
+      'to my Overleaf project", or they gave you an overleaf.com/project/... URL.',
     parameters: {
       type: 'object',
       properties: {
@@ -6914,6 +6929,7 @@ const registry: Record<string, Executor> = {
   ...pdfRegistry,
   ...mailMergeRegistry,
   ...telegramRegistry,
+  ...overleafRegistry,
   ...paperResearchRegistry
 }
 
@@ -7204,6 +7220,16 @@ export function describeToolCall(name: string, args: Record<string, unknown>): s
       return 'List Telegram chats'
     case 'read_telegram_messages':
       return `Read Telegram messages in chat ${String(args.chat_id ?? '')}`
+    case 'overleaf_open_project':
+      return `Open Overleaf project ${String(args.project ?? '')}`
+    case 'overleaf_write_latex':
+      return `Write LaTeX into the open Overleaf project (${
+        args.mode === 'append' ? 'append' : 'replace'
+      })`
+    case 'overleaf_read_latex':
+      return 'Read the open Overleaf project’s LaTeX'
+    case 'overleaf_recompile':
+      return 'Rebuild the Overleaf PDF preview'
     case 'upload_to_drive':
       return `Upload ${String(args.local_path ?? args.path ?? '')} to Google Drive`
     case 'download_from_drive':

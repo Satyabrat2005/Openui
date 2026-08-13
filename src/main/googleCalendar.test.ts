@@ -1,4 +1,12 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { EventEmitter } from 'node:events'
+
+// node:https is mocked so the 401-recovery test can drive a real response
+// sequence (401 → 200) without a network or a live Google account.
+const { httpsRequestMock } = vi.hoisted(() => ({ httpsRequestMock: vi.fn() }))
+vi.mock('node:https', () => ({
+  request: (...args: unknown[]) => httpsRequestMock(...args)
+}))
 import {
   buildAuthUrl,
   buildTokenExchangeBody,
@@ -6,7 +14,8 @@ import {
   buildEventResource,
   normalizeAttendees,
   isGoogleCalendarConnected,
-  googleCreateEvent
+  googleCreateEvent,
+  invalidateCachedAccessToken
 } from './googleCalendar'
 
 describe('buildAuthUrl', () => {
@@ -109,5 +118,79 @@ describe('connection gating (no creds → not connected, never hits the network)
     const r = await googleCreateEvent({ title: '', start: '2026-06-24T11:00:00Z' })
     expect(r.ok).toBe(false)
     expect(r.error).toMatch(/title/)
+  })
+})
+
+// ── access-token recovery ────────────────────────────────────────────────────
+//
+// Regression guard for a defect in the Google path that only shows up once the
+// path is actually exercised: the access token is cached until its nominal
+// expiry, so a token Google rejected EARLY (revoked, password changed, scopes
+// altered) was never evicted. Every later calendar call reused the dead token
+// and failed identically until the whole app restarted.
+
+describe('stale access token recovery', () => {
+  /** Serve a queued sequence of {status, body}; each request consumes the next. */
+  function queue(responses: { status: number; body: string }[]): { count: () => number } {
+    let i = 0
+    httpsRequestMock.mockImplementation((_opts: unknown, cb: (res: EventEmitter) => void) => {
+      const spec = responses[Math.min(i, responses.length - 1)]
+      i += 1
+      const req = Object.assign(new EventEmitter(), {
+        write: (): void => {},
+        destroy: (): void => {},
+        setTimeout: (): void => {},
+        end: (): void => {
+          setImmediate(() => {
+            const res = Object.assign(new EventEmitter(), { statusCode: spec.status, headers: {} })
+            cb(res)
+            setImmediate(() => {
+              res.emit('data', Buffer.from(spec.body))
+              res.emit('end')
+            })
+          })
+        }
+      })
+      return req
+    })
+    return { count: () => i }
+  }
+
+  const tokenOk = { status: 200, body: JSON.stringify({ access_token: 'at-1', expires_in: 3600 }) }
+  const unauthorized = {
+    status: 401,
+    body: JSON.stringify({ error: { message: 'Invalid Credentials' } })
+  }
+  const created = { status: 200, body: JSON.stringify({ htmlLink: 'https://cal/evt' }) }
+
+  beforeEach(() => {
+    httpsRequestMock.mockReset()
+    invalidateCachedAccessToken()
+    process.env.GOOGLE_OAUTH_CLIENT_ID = 'cid'
+    process.env.GOOGLE_OAUTH_CLIENT_SECRET = 'secret'
+    process.env.GOOGLE_CALENDAR_REFRESH_TOKEN = 'rt-1'
+  })
+
+  afterEach(() => {
+    delete process.env.GOOGLE_OAUTH_CLIENT_ID
+    delete process.env.GOOGLE_OAUTH_CLIENT_SECRET
+    delete process.env.GOOGLE_CALENDAR_REFRESH_TOKEN
+    invalidateCachedAccessToken()
+  })
+
+  it('re-mints the token and succeeds after a 401 instead of staying broken', async () => {
+    // token → 401 → fresh token → created
+    queue([tokenOk, unauthorized, tokenOk, created])
+    const r = await googleCreateEvent({ title: 'Standup', start: '2026-08-14T15:00:00Z' })
+    expect(r.ok).toBe(true)
+    expect(r.output).toMatch(/Created Google Calendar event "Standup"/)
+  })
+
+  it('gives up after one retry rather than looping on a genuinely dead credential', async () => {
+    // Every API call 401s; the retry must not become an infinite loop.
+    queue([tokenOk, unauthorized, tokenOk, unauthorized, tokenOk, unauthorized])
+    const r = await googleCreateEvent({ title: 'Standup', start: '2026-08-14T15:00:00Z' })
+    expect(r.ok).toBe(false)
+    expect(r.error).toMatch(/Invalid Credentials|HTTP 401/)
   })
 })

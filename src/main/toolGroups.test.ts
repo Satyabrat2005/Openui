@@ -139,7 +139,17 @@ describe('selectToolGroups — the expected tool is always in the loaded surface
     { prompt: 'open my WhatsApp chat with Mom', expected: 'open_whatsapp_chat' },
     // browser / research
     { prompt: 'look up the current price of the RTX 4060 online', expected: 'research_web' },
-    { prompt: 'go to github.com in my browser', expected: 'browser_navigate' }
+    { prompt: 'go to github.com in my browser', expected: 'browser_navigate' },
+    // overleaf — the tools are useless unless the group actually loads for the
+    // phrasings a user would really type.
+    { prompt: 'add an introduction section to my Overleaf project', expected: 'overleaf_write_latex' },
+    {
+      prompt: 'write this up in https://www.overleaf.com/project/65a1b2c3d4e5f60718293a4b',
+      expected: 'overleaf_open_project'
+    },
+    // ...while a plain LaTeX request with no Overleaf project stays on the local
+    // authoring tool, which needs no browser and no account.
+    { prompt: 'write me a research paper in LaTeX about solar cells', expected: 'write_latex' }
   ]
 
   for (const { prompt, expected } of cases) {
