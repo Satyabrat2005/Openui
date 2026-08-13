@@ -1,4 +1,5 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { EventEmitter } from 'node:events'
 import {
   isValidBotToken,
   isValidChatId,
@@ -9,8 +10,17 @@ import {
   formatMessages,
   getTelegramToken,
   send_telegram_message,
-  read_telegram_messages
+  read_telegram_messages,
+  list_telegram_chats
 } from './telegram'
+
+// node:https is mocked so the transport tests can assert the exact request BODY
+// the Bot API receives (mirrors figma.test.ts). Every other test in this file
+// fails validation or the token gate before reaching the network.
+const { httpsRequestMock } = vi.hoisted(() => ({ httpsRequestMock: vi.fn() }))
+vi.mock('node:https', () => ({
+  request: (...args: unknown[]) => httpsRequestMock(...args)
+}))
 
 // A syntactically valid BotFather token (bot_id : 35-char secret). Not a real one.
 const GOOD_TOKEN = '123456789:AAABBBCCCDDDEEEFFFGGGHHHIIIJJJKKKLLL'
@@ -213,5 +223,159 @@ describe('read_telegram_messages (validation gate)', () => {
     const r = await read_telegram_messages({ chat_id: '123', limit: 0 })
     expect(r.ok).toBe(false)
     expect(r.error).toMatch(/positive integer/)
+  })
+})
+
+// ── transport: what actually goes on the wire ────────────────────────────────
+//
+// These are the regression guards for two defects that are invisible to the
+// pure-function tests because they live in the request PARAMETERS, not in the
+// formatting of the response.
+
+describe('getUpdates request parameters', () => {
+  /** Capture the JSON bodies https.request is asked to write. */
+  function captureBodies(responseBody: string): { bodies: Record<string, unknown>[] } {
+    const captured: Record<string, unknown>[] = []
+    httpsRequestMock.mockImplementation((_opts: unknown, cb: (res: EventEmitter) => void) => {
+      const req = Object.assign(new EventEmitter(), {
+        write: (chunk: string): void => {
+          captured.push(JSON.parse(chunk) as Record<string, unknown>)
+        },
+        destroy: (): void => {},
+        setTimeout: (): void => {},
+        end: (): void => {
+          setImmediate(() => {
+            const res = Object.assign(new EventEmitter(), { statusCode: 200, headers: {} })
+            cb(res)
+            setImmediate(() => {
+              res.emit('data', Buffer.from(responseBody))
+              res.emit('end')
+            })
+          })
+        }
+      })
+      return req
+    })
+    return { bodies: captured }
+  }
+
+  beforeEach(() => {
+    httpsRequestMock.mockReset()
+    process.env.TELEGRAM_BOT_TOKEN = GOOD_TOKEN
+  })
+
+  const emptyUpdates = JSON.stringify({ ok: true, result: [] })
+
+  // THE BUG: getUpdates with no offset returns the EARLIEST unconfirmed updates.
+  // Both read tools promise recent activity, so on a bot with a queue longer than
+  // the page size they returned stale data and missed the newest messages — the
+  // exact case an active account (i.e. a live demo) hits. A negative offset reads
+  // from the END of the queue, and unlike a positive one does not confirm/consume.
+  it('list_telegram_chats asks for the TAIL of the queue, not the head', async () => {
+    const { bodies } = captureBodies(emptyUpdates)
+    await list_telegram_chats()
+    expect(bodies).toHaveLength(1)
+    expect(bodies[0].offset).toBe(-100)
+    expect(bodies[0].limit).toBe(100)
+    // timeout 0 keeps it a plain poll rather than a long-poll that blocks the tool.
+    expect(bodies[0].timeout).toBe(0)
+  })
+
+  it('read_telegram_messages asks for the TAIL of the queue, not the head', async () => {
+    const { bodies } = captureBodies(emptyUpdates)
+    await read_telegram_messages({ chat_id: '123456789' })
+    expect(bodies).toHaveLength(1)
+    expect(bodies[0].offset).toBe(-100)
+  })
+
+  it('never sends a positive offset (which would consume the update queue)', async () => {
+    const { bodies } = captureBodies(emptyUpdates)
+    await list_telegram_chats()
+    await read_telegram_messages({ chat_id: '123456789', limit: 5 })
+    for (const body of bodies) {
+      expect(Number(body.offset)).toBeLessThan(0)
+    }
+  })
+})
+
+describe('send_telegram_message threading', () => {
+  function captureSend(): { bodies: Record<string, unknown>[] } {
+    const captured: Record<string, unknown>[] = []
+    httpsRequestMock.mockImplementation((_opts: unknown, cb: (res: EventEmitter) => void) => {
+      const req = Object.assign(new EventEmitter(), {
+        write: (chunk: string): void => {
+          captured.push(JSON.parse(chunk) as Record<string, unknown>)
+        },
+        destroy: (): void => {},
+        setTimeout: (): void => {},
+        end: (): void => {
+          setImmediate(() => {
+            const res = Object.assign(new EventEmitter(), { statusCode: 200, headers: {} })
+            cb(res)
+            setImmediate(() => {
+              res.emit('data', Buffer.from(JSON.stringify({ ok: true, result: { message_id: 42 } })))
+              res.emit('end')
+            })
+          })
+        }
+      })
+      return req
+    })
+    return { bodies: captured }
+  }
+
+  beforeEach(() => {
+    httpsRequestMock.mockReset()
+    process.env.TELEGRAM_BOT_TOKEN = GOOD_TOKEN
+  })
+
+  it('sends a plain message with no reply_parameters by default', async () => {
+    const { bodies } = captureSend()
+    const r = await send_telegram_message({ chat_id: '123456789', text: 'hi' })
+    expect(r.ok).toBe(true)
+    expect(bodies[0]).toMatchObject({ chat_id: '123456789', text: 'hi' })
+    expect(bodies[0].reply_parameters).toBeUndefined()
+  })
+
+  // Telegram deprecated the flat reply_to_message_id in favour of ReplyParameters,
+  // so the wire format must be the object even though the tool argument is flat.
+  it('translates reply_to_message_id into a reply_parameters object', async () => {
+    const { bodies } = captureSend()
+    const r = await send_telegram_message({
+      chat_id: '123456789',
+      text: 'answering',
+      reply_to_message_id: 7
+    })
+    expect(r.ok).toBe(true)
+    expect(bodies[0].reply_parameters).toEqual({ message_id: 7 })
+    // allow_sending_without_reply is deliberately unset: a threaded reply whose
+    // target vanished should fail, not silently land as a contextless message.
+    expect(bodies[0].allow_sending_without_reply).toBeUndefined()
+  })
+
+  it('rejects a non-integer reply_to_message_id before any network call', async () => {
+    const { bodies } = captureSend()
+    const r = await send_telegram_message({
+      chat_id: '123456789',
+      text: 'hi',
+      reply_to_message_id: 'not-a-number'
+    })
+    expect(r.ok).toBe(false)
+    expect(r.error).toMatch(/positive integer message id/)
+    expect(bodies).toHaveLength(0)
+  })
+})
+
+describe('formatMessages exposes message ids', () => {
+  // Without the id in the transcript there is no way to obtain one, so the model
+  // could read a thread but never reply into it.
+  it('prints the id needed for an in-thread reply', () => {
+    const out = formatMessages(
+      [{ message: { message_id: 99, date: 1, text: 'ping', chat: { id: 5, type: 'private', first_name: 'Ada' } } }],
+      '5',
+      10
+    )
+    expect(out).toMatch(/#99/)
+    expect(out).toMatch(/Ada: ping/)
   })
 })

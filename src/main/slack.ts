@@ -44,6 +44,9 @@ const MAX_QUERY_CHARS = 500
 const MAX_READ_LIMIT = 100
 const DEFAULT_READ_LIMIT = 20
 const MAX_OUTPUT_CHARS = 40_000
+// Hard ceiling on a single Slack round-trip; node:https sets no response
+// timeout of its own, so a dead socket would otherwise hang the tool forever.
+const REQUEST_TIMEOUT_MS = 20_000
 // Slack channel IDs look like C0123ABCD / G… (private) / D… (DM): an uppercase
 // letter followed by uppercase alphanumerics. Used to skip name→ID resolution.
 const CHANNEL_ID_RE = /^[CGD][A-Z0-9]{6,}$/
@@ -170,9 +173,54 @@ function slackApi(
       }
     )
     req.on('error', reject)
+    // Without an explicit timeout an unresponsive socket leaves this promise
+    // pending forever and the tool call never returns — the agent loop hangs
+    // with nothing to report. destroy() routes through the 'error' handler
+    // above, so the caller gets a real, named error instead.
+    req.setTimeout(REQUEST_TIMEOUT_MS, () => {
+      req.destroy(new Error(`Slack API did not respond within ${REQUEST_TIMEOUT_MS / 1000}s (${method}).`))
+    })
     if (body) req.write(body)
     req.end()
   })
+}
+
+// conversations.list is cursor-paginated. Slack does NOT guarantee it returns
+// `limit` results — the limit is a maximum "per page" hint and a page can come
+// back short with a next_cursor, so a single call is not a reliable way to see
+// every channel however high the limit is set. Pages are capped rather than
+// followed forever, so a huge workspace degrades to a clear error instead of an
+// unbounded API loop (Slack rate-limits conversations.list hard, tier 2).
+const CHANNEL_PAGE_SIZE = 200
+const MAX_CHANNEL_PAGES = 10
+
+/**
+ * Fetch the workspace's channels, following cursor pagination.
+ *
+ * Returns `truncated: true` when the page cap was hit before the cursor ran out,
+ * so callers can say "I only looked at the first N" rather than claim a channel
+ * does not exist on the strength of a partial list.
+ */
+async function fetchAllChannels(): Promise<
+  { channels: Array<Record<string, unknown>>; truncated: boolean } | { error: string }
+> {
+  const all: Array<Record<string, unknown>> = []
+  let cursor = ''
+  for (let page = 0; page < MAX_CHANNEL_PAGES; page++) {
+    const params: Record<string, string | number> = {
+      types: 'public_channel,private_channel',
+      limit: CHANNEL_PAGE_SIZE,
+      exclude_archived: 'true'
+    }
+    if (cursor) params.cursor = cursor
+    const res = await slackApi('conversations.list', 'GET', params)
+    if (!res.ok) return { error: explainSlackError(res.error ?? 'unknown') }
+    if (Array.isArray(res.channels)) all.push(...(res.channels as Array<Record<string, unknown>>))
+    const meta = res.response_metadata as Record<string, unknown> | undefined
+    cursor = typeof meta?.next_cursor === 'string' ? meta.next_cursor : ''
+    if (!cursor) return { channels: all, truncated: false }
+  }
+  return { channels: all, truncated: true }
 }
 
 /** Resolve a channel reference to an ID. IDs pass through; names are looked up. */
@@ -181,16 +229,19 @@ async function resolveChannelId(ref: string): Promise<{ id: string } | { error: 
   if (looksLikeChannelId(trimmed)) return { id: trimmed }
   const name = normalizeChannelName(trimmed)
   try {
-    // A single page of up to 1000 channels is enough for typical workspaces.
-    const res = await slackApi('conversations.list', 'GET', {
-      types: 'public_channel,private_channel',
-      limit: 1000,
-      exclude_archived: 'true'
-    })
-    if (!res.ok) return { error: explainSlackError(res.error ?? 'unknown') }
-    const channels = Array.isArray(res.channels) ? (res.channels as Array<Record<string, unknown>>) : []
-    const match = channels.find((c) => String(c.name ?? '').toLowerCase() === name.toLowerCase())
-    if (!match) return { error: `no channel named "#${name}" found (or the bot isn't in it).` }
+    const listed = await fetchAllChannels()
+    if ('error' in listed) return { error: listed.error }
+    const match = listed.channels.find((c) => String(c.name ?? '').toLowerCase() === name.toLowerCase())
+    if (!match) {
+      // Distinguish "definitely absent" from "I ran out of pages" — the second
+      // is not evidence the channel is missing, and saying so would send the
+      // user hunting for a typo in a name that is actually fine.
+      return {
+        error: listed.truncated
+          ? `no channel named "#${name}" in the first ${listed.channels.length} channels, and this workspace has more than that. Pass the channel ID (e.g. "C0123ABCD") instead — list_slack_channels shows IDs.`
+          : `no channel named "#${name}" found (or the bot isn't in it).`
+      }
+    }
     return { id: String(match.id) }
   } catch (e) {
     return { error: errText(e) }
@@ -225,18 +276,19 @@ async function send_slack_message(args: Record<string, unknown>): Promise<ToolRe
 
 async function list_slack_channels(): Promise<ToolResult> {
   try {
-    const res = await slackApi('conversations.list', 'GET', {
-      types: 'public_channel,private_channel',
-      limit: 1000,
-      exclude_archived: 'true'
-    })
-    if (!res.ok) return { ok: false, error: `list_slack_channels: ${explainSlackError(res.error ?? 'unknown')}` }
-    const channels = Array.isArray(res.channels) ? (res.channels as Array<Record<string, unknown>>) : []
+    const listed = await fetchAllChannels()
+    if ('error' in listed) return { ok: false, error: `list_slack_channels: ${listed.error}` }
+    const { channels, truncated } = listed
     if (channels.length === 0) return { ok: true, output: 'No channels found (the bot may need channels:read, or to be added to channels).' }
     const lines = channels
       .map((c) => `  #${String(c.name ?? '?')} (${String(c.id ?? '?')})${c.is_private ? ' [private]' : ''}${c.is_member === false ? ' [not a member]' : ''}`)
       .join('\n')
-    return { ok: true, output: `${channels.length} channel(s):\n${lines}`.slice(0, MAX_OUTPUT_CHARS) }
+    // Say so when the list is partial, so neither the model nor the user reads
+    // this as the complete set of channels.
+    const header = truncated
+      ? `First ${channels.length} channel(s) (more exist — list truncated):`
+      : `${channels.length} channel(s):`
+    return { ok: true, output: `${header}\n${lines}`.slice(0, MAX_OUTPUT_CHARS) }
   } catch (e) {
     return { ok: false, error: `list_slack_channels failed: ${errText(e)}` }
   }

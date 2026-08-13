@@ -63,6 +63,33 @@ const MAX_MESSAGE_CHARS = 4096
 const MAX_READ_LIMIT = 100
 const DEFAULT_READ_LIMIT = 20
 
+/**
+ * The getUpdates window both read tools fetch: the last MAX_READ_LIMIT updates.
+ *
+ * The offset MUST be negative. Bot API getUpdates with no offset returns
+ * "updates starting with the earliest unconfirmed update" — the OLDEST of the
+ * queue, not the newest. Both of these tools promise *recent* activity, so on a
+ * bot with more than 100 queued updates the un-offset call returned the oldest
+ * 100 and the newest messages were invisible: list_telegram_chats showed stale
+ * chats and read_telegram_messages missed the message just sent. (formatMessages
+ * takes .slice(-limit), but the last N of the oldest 100 is still stale.) A quiet
+ * bot has a short queue, so this reads correct on an idle account and wrong on an
+ * active one — exactly the case a live demo hits.
+ *
+ * A NEGATIVE offset is the documented way to read the tail: "retrieve updates
+ * starting from -offset update from the end of the updates queue". It is also
+ * still non-destructive — only an offset HIGHER than a previously received
+ * update_id confirms/forgets updates, so this preserves the property the read
+ * tools deliberately maintain (see the module header).
+ */
+const TAIL_UPDATES_PARAMS = { offset: -MAX_READ_LIMIT, limit: MAX_READ_LIMIT, timeout: 0 } as const
+
+// Hard ceiling on a single Bot API round-trip. Without this an unresponsive
+// socket leaves the promise pending forever and the tool call never returns —
+// the agent loop hangs with no error to report. node:https has no default
+// response timeout, so it must be set explicitly.
+const REQUEST_TIMEOUT_MS = 20_000
+
 // Cap tool output so a busy bot can't flood the context window.
 const MAX_OUTPUT_CHARS = 12_000
 
@@ -250,7 +277,12 @@ export function formatMessages(updates: TgUpdate[], chatId: string, limit: numbe
   const recent = msgs.slice(-Math.max(1, limit))
   const lines = recent.map((m) => {
     const body = m.text ?? m.caption ?? '(non-text message)'
-    return `[${fmtTime(m.date)}] ${describeSender(m.from, m.chat)}: ${body}`
+    // The message_id is printed because it is the ONLY handle a caller has for
+    // replying in-thread: send_telegram_message's reply_to_message_id needs it,
+    // and there is no other way to obtain one. Without it the model can read a
+    // conversation but can only ever answer it as a detached new message.
+    const id = m.message_id != null ? ` #${m.message_id}` : ''
+    return `[${fmtTime(m.date)}]${id} ${describeSender(m.from, m.chat)}: ${body}`
   })
   return `Last ${recent.length} message(s) in chat "${chatId}":\n${lines.join('\n')}`.slice(
     0,
@@ -315,6 +347,14 @@ function telegramCall<T>(method: string, body: Record<string, unknown>): Promise
       }
     )
     req.on('error', reject)
+    // Fail loudly rather than hang: destroy() makes the 'error' handler above
+    // fire, so the caller gets a real error instead of a promise that never
+    // settles. The message names the cause so the user isn't left guessing.
+    req.setTimeout(REQUEST_TIMEOUT_MS, () => {
+      req.destroy(
+        new Error(`Telegram API did not respond within ${REQUEST_TIMEOUT_MS / 1000}s (${method}).`)
+      )
+    })
     req.write(bodyStr)
     req.end()
   })
@@ -362,8 +402,30 @@ export async function send_telegram_message(args: Record<string, unknown>): Prom
     }
   }
 
+  // Optional in-thread reply. Telegram has deprecated the top-level
+  // reply_to_message_id in favour of the ReplyParameters object, so this sends
+  // reply_parameters — and deliberately does NOT set allow_sending_without_reply,
+  // whose default (false) makes Telegram reject the send if the target message is
+  // gone. Failing is right here: silently demoting a threaded reply to a loose
+  // message drops it into the chat with no context, which reads as a non-sequitur.
+  let replyParameters: { message_id: number } | undefined
+  if (args.reply_to_message_id != null && args.reply_to_message_id !== '') {
+    const n = Number(args.reply_to_message_id)
+    if (!Number.isInteger(n) || n <= 0) {
+      return {
+        ok: false,
+        error: `send_telegram_message: "reply_to_message_id" must be a positive integer message id (the "#123" shown by read_telegram_messages); got "${String(args.reply_to_message_id)}".`
+      }
+    }
+    replyParameters = { message_id: n }
+  }
+
   try {
-    const resp = await telegramCall<TgMessage>('sendMessage', { chat_id: chatId, text })
+    const resp = await telegramCall<TgMessage>('sendMessage', {
+      chat_id: chatId,
+      text,
+      ...(replyParameters ? { reply_parameters: replyParameters } : {})
+    })
     if (!resp.ok) return { ok: false, error: apiError('send_telegram_message', resp) }
     const mid = resp.result?.message_id
     return {
@@ -385,9 +447,8 @@ export async function send_telegram_message(args: Record<string, unknown>): Prom
  */
 export async function list_telegram_chats(): Promise<ToolResult> {
   try {
-    // limit 100, timeout 0 (no long-poll), and NO offset — reads without
-    // consuming the update queue so this stays non-destructive.
-    const resp = await telegramCall<TgUpdate[]>('getUpdates', { limit: 100, timeout: 0 })
+    // Tail of the queue, no long-poll, non-destructive — see TAIL_UPDATES_PARAMS.
+    const resp = await telegramCall<TgUpdate[]>('getUpdates', { ...TAIL_UPDATES_PARAMS })
     if (!resp.ok) return { ok: false, error: apiError('list_telegram_chats', resp) }
     return { ok: true, output: formatChats(resp.result ?? []) }
   } catch (err) {
@@ -419,7 +480,7 @@ export async function read_telegram_messages(args: Record<string, unknown>): Pro
   }
 
   try {
-    const resp = await telegramCall<TgUpdate[]>('getUpdates', { limit: 100, timeout: 0 })
+    const resp = await telegramCall<TgUpdate[]>('getUpdates', { ...TAIL_UPDATES_PARAMS })
     if (!resp.ok) return { ok: false, error: apiError('read_telegram_messages', resp) }
     return { ok: true, output: formatMessages(resp.result ?? [], chatId, limit) }
   } catch (err) {
@@ -452,6 +513,13 @@ export const telegramToolSchemas: ToolSchema[] = [
         text: {
           type: 'string',
           description: 'The message text (max 4096 characters).'
+        },
+        reply_to_message_id: {
+          type: 'number',
+          description:
+            'Optional. Reply in-thread to a specific message, quoting it. Use the "#123" id shown by ' +
+            'read_telegram_messages. Omit for a normal standalone message. The send fails if that ' +
+            'message no longer exists.'
         }
       },
       required: ['chat_id', 'text']
@@ -484,7 +552,7 @@ export const telegramToolSchemas: ToolSchema[] = [
           description: 'The chat to read: a numeric id from list_telegram_chats or a public "@channelusername".'
         },
         limit: {
-          type: 'string',
+          type: 'number',
           description: 'How many recent messages to return (default 20, max 100).'
         }
       },

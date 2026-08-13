@@ -33,6 +33,9 @@ const TOKEN_ENDPOINT = 'https://oauth2.googleapis.com/token'
 const API_BASE = 'https://www.googleapis.com/calendar/v3'
 const MAX_ATTENDEES = 50
 const CONNECT_TIMEOUT_MS = 300_000
+// Ceiling on a single Google API round-trip (the OAuth connect flow has its own,
+// much longer budget above — that one waits on a human).
+const REQUEST_TIMEOUT_MS = 20_000
 const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/
 
 interface OAuthConfig {
@@ -196,9 +199,18 @@ function httpsSend(
         res.on('end', () =>
           resolve({ status: res.statusCode ?? 0, body: Buffer.concat(chunks).toString('utf8') })
         )
+        // Without this a stream error mid-response leaves the promise pending
+        // forever — control_calendar would hang rather than report anything.
+        res.on('error', reject)
       }
     )
     req.on('error', reject)
+    // node:https applies no response timeout of its own, so a dead socket would
+    // hang the calendar tool indefinitely. Fail loudly instead: destroy() routes
+    // through the 'error' handler above.
+    req.setTimeout(REQUEST_TIMEOUT_MS, () => {
+      req.destroy(new Error(`Google API did not respond within ${REQUEST_TIMEOUT_MS / 1000}s.`))
+    })
     if (payload) req.write(payload)
     req.end()
   })
@@ -229,6 +241,14 @@ async function postToken(body: URLSearchParams): Promise<TokenResponse> {
 
 let cachedToken: { value: string; expiresAt: number } | null = null
 
+/**
+ * Drop the cached access token so the next call mints a fresh one.
+ * Exported for tests; also called on a 401 (see apiJson).
+ */
+export function invalidateCachedAccessToken(): void {
+  cachedToken = null
+}
+
 async function getAccessToken(): Promise<string> {
   const nowSec = Math.floor(Date.now() / 1000)
   if (cachedToken && cachedToken.expiresAt > nowSec + 60) return cachedToken.value
@@ -242,32 +262,47 @@ async function getAccessToken(): Promise<string> {
   return cachedToken.value
 }
 
+/**
+ * One authenticated Calendar API round-trip.
+ *
+ * Retries ONCE on a 401 with a freshly-minted access token. Without that, a
+ * token Google rejected before its nominal expiry — revoked, password changed,
+ * scopes altered, or simply minted just before a clock skew — stayed in
+ * `cachedToken` and poisoned every later call: the cache only refreshes on
+ * `expiresAt`, so nothing would ever evict it and the calendar stayed broken
+ * until the app restarted. The retry is capped at one so a genuinely bad
+ * refresh token surfaces as an error instead of looping.
+ */
 async function apiJson(
   method: string,
   path: string,
   query?: string,
   body?: unknown
 ): Promise<{ status: number; json: Record<string, unknown> }> {
-  const token = await getAccessToken()
   const payload = body === undefined ? undefined : JSON.stringify(body)
-  const headers: Record<string, string> = { Authorization: `Bearer ${token}` }
-  if (payload) {
-    headers['Content-Type'] = 'application/json'
-    headers['Content-Length'] = String(Buffer.byteLength(payload))
+  const url = `${API_BASE}${path}${query ? `?${query}` : ''}`
+
+  const attempt = async (): Promise<{ status: number; json: Record<string, unknown> }> => {
+    const token = await getAccessToken()
+    const headers: Record<string, string> = { Authorization: `Bearer ${token}` }
+    if (payload) {
+      headers['Content-Type'] = 'application/json'
+      headers['Content-Length'] = String(Buffer.byteLength(payload))
+    }
+    const { status, body: text } = await httpsSend(method, url, headers, payload)
+    let json: Record<string, unknown> = {}
+    try {
+      json = text ? (JSON.parse(text) as Record<string, unknown>) : {}
+    } catch {
+      /* leave json empty */
+    }
+    return { status, json }
   }
-  const { status, body: text } = await httpsSend(
-    method,
-    `${API_BASE}${path}${query ? `?${query}` : ''}`,
-    headers,
-    payload
-  )
-  let json: Record<string, unknown> = {}
-  try {
-    json = text ? (JSON.parse(text) as Record<string, unknown>) : {}
-  } catch {
-    /* leave json empty */
-  }
-  return { status, json }
+
+  const first = await attempt()
+  if (first.status !== 401) return first
+  invalidateCachedAccessToken()
+  return attempt()
 }
 
 // ── high-level operations used by control_calendar ────────────────────────────
