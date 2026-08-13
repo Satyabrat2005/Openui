@@ -71,7 +71,7 @@ export function detectProjectType(title: string, description?: string): ProjectT
  * verifier names can never drift out of sync with the function that judges them.
  * Spread into a profile: `...markerVerdict({ run_tests: { pass: 'TESTS PASSED' } })`.
  */
-function markerVerdict(tools: Record<string, { pass: string }>): {
+function markerVerdict(tools: Record<string, { pass: string; skip?: string }>): {
   verifiers: readonly string[]
   verdict: (tool: string, output: string) => 'pass' | 'fail' | null
 } {
@@ -80,7 +80,14 @@ function markerVerdict(tools: Record<string, { pass: string }>): {
     verdict: (tool, output) => {
       const spec = tools[tool]
       if (!spec) return null
-      return output.startsWith(spec.pass) ? 'pass' : 'fail'
+      if (output.startsWith(spec.pass)) return 'pass'
+      // `skip` marks an outcome that is the ABSENCE of a verdict rather than a
+      // red one — a verifier that found nothing to run. Only types where that is
+      // legitimate opt in (a static site genuinely has no test suite). Without
+      // this, VerifyGate reads "no suite" as failure and nudges the model toward
+      // a suite it cannot conjure, ending a finished build in a false GIVE UP.
+      if (spec.skip && output.startsWith(spec.skip)) return 'pass'
+      return 'fail'
     }
   }
 }
@@ -107,9 +114,14 @@ const PROFILES: Record<ProjectType, ProjectProfile> = {
 - Verify your work: with a package.json, run_script "build" (or "dev" as a boot smoke test) or run_tests if you wrote tests. A plain static site with no package.json cannot be executed here — in that case call list_files once after writing your files; that counts as verification for a static site (it confirms the files actually exist on disk) and say clearly in your summary that the site is static and was not smoke-run.`,
     taskHint:
       'Build the site in the workspace. Verify it: run the build/dev script (or tests) if it has a package.json, otherwise call list_files to confirm the files exist.',
+    // A static site has no suite to run, so TESTS SKIPPED counts as satisfied
+    // here — the bar this profile already accepts for a static site is
+    // list_files ("the files exist"), and "there is nothing to test" is not a
+    // weaker claim than that. Only `website` opts in: on `node`, a missing test
+    // script is a real gap the model is told to close by writing one.
     ...markerVerdict({
-      run_tests: { pass: 'TESTS PASSED' },
-      run_script: { pass: 'SCRIPT OK' },
+      run_tests: { pass: 'TESTS PASSED', skip: 'TESTS SKIPPED' },
+      run_script: { pass: 'SCRIPT OK', skip: 'SCRIPT SKIPPED' },
       list_files: { pass: 'Workspace files:' }
     })
   },

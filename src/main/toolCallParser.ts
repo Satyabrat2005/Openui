@@ -99,17 +99,48 @@ export function closeUnbalancedJsonObject(text: string): string | null {
   return body + '}'.repeat(depth)
 }
 
+/** The characters JSON allows immediately after a backslash inside a string. */
+const VALID_JSON_ESCAPES = new Set(['"', '\\', '/', 'b', 'f', 'n', 'r', 't'])
+
 /**
- * Repair the one thing local models break most often: raw (unescaped) control
- * characters — newlines, tabs, carriage returns — inside a JSON string value.
+ * True when `src[i]` is a backslash that begins a LEGAL JSON escape sequence.
+ * `\u` additionally requires four hex digits — `\uXY` is as invalid as `\.`.
+ */
+function isValidJsonEscape(src: string, i: number): boolean {
+  const next = src[i + 1]
+  if (next === undefined) return false
+  if (next === 'u') return /^[0-9a-fA-F]{4}$/.test(src.slice(i + 2, i + 6))
+  return VALID_JSON_ESCAPES.has(next)
+}
+
+/**
+ * Repair the two things local models break most often inside a JSON string value:
  *
- * A model writing a multi-line file with write_file routinely emits the LITERAL
- * newline instead of "\n", e.g.  {"tool":"write_file","args":{"content":"line1
- * line2"}}  — which is invalid JSON, so JSON.parse throws and the tool call is
- * silently dropped, stalling the whole automation. We re-scan and escape only
- * control chars that sit INSIDE a string (structural whitespace between tokens
- * is left untouched), so the caller can re-parse. Valid JSON is returned
- * unchanged, so this is a safe second attempt, never a first-choice parser.
+ *   1. RAW CONTROL CHARACTERS — newlines, tabs, carriage returns. A model writing
+ *      a multi-line file with write_file routinely emits the LITERAL newline
+ *      instead of "\n", e.g. {"tool":"write_file","args":{"content":"line1
+ *      line2"}} — invalid JSON, so JSON.parse throws and the tool call is
+ *      silently dropped, stalling the whole automation.
+ *
+ *   2. INVALID ESCAPE SEQUENCES — a backslash followed by anything JSON does not
+ *      define an escape for. This is the THIRD builder failure class, sibling to
+ *      the two fixed in #162, and it was measured, not guessed: across 67 captured
+ *      builder turns every single "JSON but not a tool call" abort (4/4) was this
+ *      one error. qwen2.5-coder:7b asked for a webpack config emitted
+ *          "content": "... test: /\.js$/, ... test: /\.scss$/ ..."
+ *      — JavaScript regex literals, whose `\.` is not a JSON escape. JSON.parse
+ *      fails with "Bad escaped character", the call is dropped, and because the
+ *      model re-emits the same content on the retry it fails identically until
+ *      the malformed-retry budget is spent and the build aborts having written
+ *      nothing. Windows paths ("C:\Users\...") break the same way.
+ *
+ *      A backslash the model did not intend as an escape is a LITERAL backslash,
+ *      so doubling it is the meaning-preserving repair: `/\.js$/` becomes
+ *      `/\\.js$/`, which parses back to exactly the JavaScript the model wrote.
+ *
+ * Only string interiors are touched (structural whitespace between tokens is left
+ * alone), and this runs ONLY as a second attempt after a strict parse has already
+ * failed — so valid JSON is never rewritten.
  */
 export function repairLooseJson(src: string): string {
   let out = ''
@@ -124,8 +155,17 @@ export function repairLooseJson(src: string): string {
         continue
       }
       if (ch === '\\') {
-        out += ch
-        escaped = true
+        if (isValidJsonEscape(src, i)) {
+          out += ch
+          escaped = true
+          continue
+        }
+        // Not a JSON escape — the model meant a literal backslash (a regex
+        // literal, a Windows path, a LaTeX command). Double it so the value
+        // round-trips to the backslash it actually wrote. Deliberately does NOT
+        // set `escaped`: the next character is ordinary content and must still
+        // go through the control-character handling below.
+        out += '\\\\'
         continue
       }
       if (ch === '"') {

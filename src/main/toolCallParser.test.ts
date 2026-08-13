@@ -211,6 +211,62 @@ describe('parseToolCall — tolerates raw control chars in string values', () =>
   })
 })
 
+// ── invalid escape sequences: the THIRD builder failure class ───────────────
+// Sibling to the two fixed in #162, and measured rather than guessed: across 67
+// captured builder turns, 4 of 4 "JSON but not a tool call" aborts were this one
+// error. qwen2.5-coder:7b writing a webpack config emitted JavaScript regex
+// literals inside the JSON string value — `/\.js$/` — and `\.` is not a JSON
+// escape, so JSON.parse died with "Bad escaped character". The model re-emits
+// the same bytes on every retry, so it fails identically until the retry budget
+// is spent and the build aborts having written nothing.
+describe('parseToolCall — tolerates invalid escape sequences in string values', () => {
+  const KNOWN_BUILD = new Set(['write_file', 'run_script'])
+
+  it('recovers a write_file whose content holds a regex literal (the real capture)', () => {
+    // Trimmed from the actual proxy capture that broke four turns in a row.
+    const raw =
+      '{"tool": "write_file", "args": {"path": "webpack.config.js", "content": "module.exports = {\\n  module: {\\n    rules: [\\n      { test: /\\.js$/, exclude: /node_modules/ },\\n      { test: /\\.scss$/, use: [\'style-loader\'] }\\n    ]\\n  }\\n};"}}'
+    // Precondition: this is genuinely invalid JSON, so the test is not vacuous.
+    expect(() => JSON.parse(raw)).toThrow()
+
+    const call = parseToolCall(raw, KNOWN_BUILD)
+    expect(call?.tool).toBe('write_file')
+    expect(call?.args.path).toBe('webpack.config.js')
+    // The regex literals must survive as the JavaScript the model meant.
+    expect(String(call?.args.content)).toContain('/\\.js$/')
+    expect(String(call?.args.content)).toContain('/\\.scss$/')
+  })
+
+  it('recovers a Windows path written with single backslashes', () => {
+    const raw = '{"tool":"write_file","args":{"path":"a.txt","content":"C:\\Users\\dev\\app"}}'
+    expect(() => JSON.parse(raw)).toThrow()
+    const call = parseToolCall(raw, KNOWN_BUILD)
+    expect(call?.args.content).toBe('C:\\Users\\dev\\app')
+  })
+
+  it('preserves genuine escapes rather than doubling them', () => {
+    // \n and \" are legal escapes and must keep their meaning; only the illegal
+    // \d is repaired into a literal backslash.
+    const raw = '{"tool":"write_file","args":{"path":"a.js","content":"say \\"hi\\"\\nre = /\\d+/"}}'
+    const call = parseToolCall(raw, KNOWN_BUILD)
+    expect(call?.args.content).toBe('say "hi"\nre = /\\d+/')
+  })
+
+  it('repairs an invalid \\u escape but keeps a valid one', () => {
+    const bad = '{"tool":"write_file","args":{"path":"a.txt","content":"\\uZZ99"}}'
+    expect(parseToolCall(bad, KNOWN_BUILD)?.args.content).toBe('\\uZZ99')
+    const good = '{"tool":"write_file","args":{"path":"a.txt","content":"\\u0041"}}'
+    expect(parseToolCall(good, KNOWN_BUILD)?.args.content).toBe('A')
+  })
+
+  it('such a response is no longer reported as a malformed tool call', () => {
+    // The user-visible half of the bug: this used to burn the malformed-retry
+    // budget and abort the build with "I couldn't start building".
+    const raw = '{"tool":"write_file","args":{"path":"w.js","content":"test: /\\.js$/"}}'
+    expect(looksLikeAttemptedToolCall(raw)).toBe(false)
+  })
+})
+
 describe('looksLikeAttemptedToolCall', () => {
   it('flags a JSON object describing a project instead of calling a tool', () => {
     const blob = '{"projectName":"my-site","files":["index.html","style.css"],"stack":"static"}'

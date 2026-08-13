@@ -11,7 +11,68 @@ let client: PostHog | null = null
 let deviceId = 'anonymous'
 
 const POSTHOG_API_KEY = process.env.POSTHOG_API_KEY ?? ''
-const POSTHOG_HOST = process.env.POSTHOG_HOST ?? 'https://us.i.posthog.com'
+
+/** PostHog's ingest host when nothing usable is configured. */
+export const DEFAULT_POSTHOG_HOST = 'https://us.i.posthog.com'
+
+/**
+ * PostHog has TWO hostnames per region and they are easy to confuse: the app
+ * you log into (`us.posthog.com/project/12345/...`) and the ingest endpoint the
+ * SDK posts to (`us.i.posthog.com`). Configuring the former makes every flush
+ * POST to `us.posthog.com/project/…/batch/`, which 403s — silently, because the
+ * SDK swallows delivery errors. That is exactly what shipped in v7.2.0: the
+ * `VITE_POSTHOG_HOST` secret holds a project URL, so the release reports no
+ * usage data at all while looking healthy.
+ *
+ * Normalising here rather than only correcting the secret means a copy-pasted
+ * project URL can never silently disable telemetry again — in any deployment,
+ * not just this repo's CI.
+ *
+ * Deliberately conservative: an unrecognised host is passed through untouched so
+ * a self-hosted PostHog keeps working. Only two things are corrected — a path on
+ * the URL (ingest hosts have none) and the known app-hostname → ingest-hostname
+ * pairs.
+ */
+export function normalizePostHogHost(raw: string | undefined): string {
+  const value = (raw ?? '').trim()
+  if (!value) return DEFAULT_POSTHOG_HOST
+
+  let url: URL
+  try {
+    url = new URL(value)
+  } catch {
+    console.warn(`[telemetry] POSTHOG_HOST is not a valid URL ("${value}") — using ${DEFAULT_POSTHOG_HOST}.`)
+    return DEFAULT_POSTHOG_HOST
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    console.warn(`[telemetry] POSTHOG_HOST has an unsupported protocol ("${value}") — using ${DEFAULT_POSTHOG_HOST}.`)
+    return DEFAULT_POSTHOG_HOST
+  }
+
+  const APP_TO_INGEST: Record<string, string> = {
+    'us.posthog.com': 'us.i.posthog.com',
+    'eu.posthog.com': 'eu.i.posthog.com',
+    'app.posthog.com': 'us.i.posthog.com' // legacy single-region hostname
+  }
+  const mapped = APP_TO_INGEST[url.hostname.toLowerCase()]
+  const hadPath = url.pathname !== '/' && url.pathname !== ''
+  if (mapped) url.hostname = mapped
+  // An ingest host never carries a path; a project URL always does.
+  url.pathname = '/'
+  url.search = ''
+  url.hash = ''
+
+  const normalized = url.origin
+  if (mapped || hadPath) {
+    console.warn(
+      `[telemetry] POSTHOG_HOST looked like a PostHog project URL ("${value}"); ` +
+        `using the ingest host ${normalized} instead.`
+    )
+  }
+  return normalized
+}
+
+const POSTHOG_HOST = normalizePostHogHost(process.env.POSTHOG_HOST)
 
 function loadOrCreateDeviceId(): string {
   const file = join(app.getPath('userData'), '.telemetry-id')

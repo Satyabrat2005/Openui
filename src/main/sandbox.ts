@@ -323,6 +323,33 @@ export interface TestRunResult {
   passed: boolean
   /** Combined stdout + stderr, trimmed and capped at MAX_OUTPUT. */
   output: string
+  /**
+   * The project has NOTHING to test — no package.json at all, or a package.json
+   * whose "test" script is absent/npm-init's placeholder AND which defines no
+   * other runnable script. This is the absence of a verdict, not a red one; see
+   * runTests for why the distinction matters.
+   */
+  skipped?: boolean
+}
+
+/**
+ * `npm init`'s default test script: present in package.json, but deliberately
+ * non-functional (it exists only to make `npm test` say something). Treated the
+ * same as no test script at all.
+ */
+const NPM_INIT_TEST_PLACEHOLDER = /^echo\s+(["']?)Error: no test specified\1\s*&&\s*exit\s+1$/i
+
+/** A package.json's "scripts" map, or null when the file is not parseable JSON. */
+function readPackageScripts(raw: string): Record<string, unknown> | null {
+  try {
+    const parsed = JSON.parse(raw) as { scripts?: unknown }
+    const scripts = parsed?.scripts
+    return scripts && typeof scripts === 'object' && !Array.isArray(scripts)
+      ? (scripts as Record<string, unknown>)
+      : {}
+  } catch {
+    return null
+  }
 }
 
 /**
@@ -344,15 +371,57 @@ export interface TestRunResult {
 export async function runTests(): Promise<TestRunResult> {
   const cwd = await ensureWorkspace()
 
-  // Without a package.json there is nothing to test — surface that clearly so
-  // the model writes one rather than failing on an opaque npm error.
+  // "Nothing to test" is NOT a failed test run, and conflating the two is what
+  // made finished static-site builds report GIVE UP. A plain HTML/CSS/JS site has
+  // no package.json and no suite; `npm test` exits 1 regardless, that surfaced as
+  // TESTS FAILED, VerifyGate never saw a pass, and the model — unable to make a
+  // suite that does not exist go green — burned its nudges and gave up on work
+  // that was already complete. So: classify the no-suite cases BEFORE running npm.
+  //
+  // The distinction we keep is between "nothing is runnable here" (skipped — the
+  // absence of a verdict) and "no test script, but something else IS runnable"
+  // (still a failure, because a site with a build script should be built, not
+  // waved through). A package.json we cannot parse stays on the npm path, where
+  // the verbose re-run below turns it into an actionable EJSONPARSE.
+  let pkgRaw: string
   try {
-    await stat(join(cwd, 'package.json'))
+    pkgRaw = await readFile(join(cwd, 'package.json'), 'utf8')
   } catch {
     return {
       passed: false,
+      skipped: true,
       output:
-        'No package.json found in the workspace. Create one with a "test" script before running tests.'
+        'No package.json in the workspace, so there is no test suite to run. If this is a ' +
+        'static site (plain HTML/CSS/JS), nothing here needs testing — call list_files to ' +
+        'confirm the files exist, then finish and say the site is static and was not smoke-run. ' +
+        'If it is a Node project, write a package.json with a "test" script first.'
+    }
+  }
+
+  const scripts = readPackageScripts(pkgRaw)
+  if (scripts) {
+    const testScript = typeof scripts.test === 'string' ? scripts.test.trim() : ''
+    if (!testScript || NPM_INIT_TEST_PLACEHOLDER.test(testScript)) {
+      const others = Object.keys(scripts).filter((name) => name !== 'test')
+      if (others.length > 0) {
+        const suggested = others.includes('build') ? 'build' : others[0]
+        return {
+          passed: false,
+          output:
+            `This project defines no usable "test" script, so run_tests has nothing to run. ` +
+            `It does define: ${others.join(', ')}. Verify with run_script (name "${suggested}") ` +
+            `instead, or add a real "test" script and run this again.`
+        }
+      }
+      return {
+        passed: false,
+        skipped: true,
+        output:
+          'This project defines no "test" script and no other runnable script, so there is ' +
+          'nothing to run. If it is a static site, call list_files to confirm the files exist ' +
+          'and finish — do not give up on work that is already complete. Otherwise add a real ' +
+          '"test" script.'
+      }
     }
   }
 
@@ -544,22 +613,50 @@ export async function runScript(scriptName: unknown): Promise<TestRunResult> {
   const name = scriptName.trim()
 
   let pkg: { scripts?: Record<string, unknown> }
+  let raw: string
   try {
-    pkg = JSON.parse(await readFile(join(cwd, 'package.json'), 'utf8'))
+    raw = await readFile(join(cwd, 'package.json'), 'utf8')
   } catch {
+    // Same "nothing to run" case runTests handles: a static site has no
+    // package.json and never will. Reporting it as a failed script sent the
+    // model looking for a build system that does not exist, and it gave up on a
+    // finished site rather than admitting there was nothing to run.
     return {
       passed: false,
-      output: 'No readable package.json in the workspace. Create one with a "scripts" section first.'
+      skipped: true,
+      output:
+        'No package.json in the workspace, so there is no script to run. If this is a static ' +
+        'site (plain HTML/CSS/JS), there is nothing to build — call list_files to confirm the ' +
+        'files exist, then finish. Otherwise create a package.json with a "scripts" section first.'
+    }
+  }
+  try {
+    pkg = JSON.parse(raw)
+  } catch {
+    // A malformed package.json IS a real failure the model must fix — never skipped.
+    return {
+      passed: false,
+      output: 'package.json is not valid JSON. Read it and fix the syntax before running a script.'
     }
   }
   const scripts = pkg && typeof pkg.scripts === 'object' && pkg.scripts ? pkg.scripts : {}
   if (!Object.prototype.hasOwnProperty.call(scripts, name)) {
     const available = Object.keys(scripts)
+    if (available.length === 0) {
+      return {
+        passed: false,
+        skipped: true,
+        output:
+          'This package.json defines no scripts at all, so there is nothing to run. If the project ' +
+          'is a static site, call list_files to confirm the files exist and finish. Otherwise add ' +
+          'the script you need.'
+      }
+    }
+    // Scripts DO exist — the model just named the wrong one. That is a real
+    // failure with an obvious fix, so keep it red and name the alternatives.
     return {
       passed: false,
-      output:
-        `Script "${name}" is not defined in package.json. ` +
-        `Available scripts: ${available.length ? available.join(', ') : '(none)'}.`
+      output: `Script "${name}" is not defined in package.json. Available scripts: ${available.join(', ')}.`
     }
   }
 

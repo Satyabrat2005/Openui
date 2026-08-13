@@ -251,16 +251,26 @@ async function workOnTask(
     gate.finalize(toolCall !== null || malformed)
     if (!toolCall) {
       // Plain-language reply ⇒ the agent considers the task finished (or gave up).
+      // Ask BEFORE onFinalReply consumes the nudge, since it reads the same state.
+      const giveUp = verifyGate.giveUpChallenge(responseText)
       const decision = verifyGate.onFinalReply(responseText)
       if (decision === 'nudge') {
-        // It wrote code and never proved it works. Say so and keep the loop alive.
+        // It wrote code and never proved it works — or it proved it works and
+        // then gave up anyway. Say which, and keep the loop alive.
         emit(win, 'openui:task:update', {
           id: `a${++taskSeq}`,
-          label: verifyGate.nudgeLabel,
+          label: giveUp ? 'Gave up too early' : verifyGate.nudgeLabel,
           status: 'working',
-          detail: `Summarised without running ${profile.verifiers.join(' / ')} — asking it to verify.`
+          detail: giveUp
+            ? giveUp === 'contradicted'
+              ? `Said GIVE UP after ${profile.verifiers.join(' / ')} passed — asking it to summarise instead.`
+              : 'Said GIVE UP without running any verification — asking it to check first.'
+            : `Summarised without running ${profile.verifiers.join(' / ')} — asking it to verify.`
         })
-        messages.push({ role: 'user', content: verifyGate.nudgeMessage() })
+        messages.push({
+          role: 'user',
+          content: giveUp ? verifyGate.giveUpMessage(giveUp) : verifyGate.nudgeMessage()
+        })
         continue
       }
       return { success: verifyGate.isVerified && decision !== 'give_up', summary: responseText.trim() }

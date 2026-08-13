@@ -154,9 +154,14 @@ async function runWorker(
       gate.finalize(toolCall !== null || malformed)
 
       if (!toolCall) {
+        // Ask BEFORE onFinalReply consumes the nudge, since it reads the same state.
+        const giveUp = verifyGate.giveUpChallenge(responseText)
         const decision = verifyGate.onFinalReply(responseText)
         if (decision === 'nudge') {
-          messages.push({ role: 'user', content: verifyGate.nudgeMessage() })
+          messages.push({
+            role: 'user',
+            content: giveUp ? verifyGate.giveUpMessage(giveUp) : verifyGate.nudgeMessage()
+          })
           continue
         }
         success = verifyGate.isVerified && decision !== 'give_up'

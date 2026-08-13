@@ -67,6 +67,19 @@ describe('project profile verdicts', () => {
     expect(p.verdict('run_pytest', 'PYTEST PASSED\n')).toBeNull()
   })
 
+  // A static site has no test suite, so run_tests reports TESTS SKIPPED. That is
+  // the absence of a verdict, not a red one — reading it as 'fail' is what ended
+  // finished static builds in a false GIVE UP.
+  it('website: TESTS SKIPPED counts as satisfied, not failed', () => {
+    const p = getProjectProfile('website')
+    expect(p.verdict('run_tests', 'TESTS SKIPPED\nno package.json, call list_files')).toBe('pass')
+  })
+
+  it('node: TESTS SKIPPED still fails — a Node project is told to write tests', () => {
+    const p = getProjectProfile('node')
+    expect(p.verdict('run_tests', 'TESTS SKIPPED\nno test script')).toBe('fail')
+  })
+
   it('every profile ships a prompt addendum and task hint', () => {
     for (const type of ['website', 'node', 'ml', 'dl', 'cp'] as const) {
       const p = getProjectProfile(type)

@@ -35,7 +35,7 @@ import { runOsLoop, describe as describeVisionAction, type CapturedFrame } from 
 import { decodePngToRawFrame } from './osLoop/capture'
 import { activeWindow } from './osLoop/windowTarget'
 import { getFocusedWindowElements, formatElementsForPrompt } from './accessibility'
-import { trailingSegment } from './osLoop/windowMatch'
+import { trailingSegment, bestWindow, type WindowInfo } from './osLoop/windowMatch'
 import { isAppGranted, signalFor, auditAction, audit } from './osConsent'
 import type { RunLog } from './runLog'
 import { resolveApp, scoreAppName, normalizeAppName } from './appResolver'
@@ -1374,14 +1374,101 @@ async function openWhatsAppChatViaKeyboard(contact: string, nut: any): Promise<v
 }
 
 /**
- * Screenshot the screen and OCR it (tesseract.js, loaded lazily — mirrors
- * read_screen's local-OCR path) to read back the chat names WhatsApp's search
- * is currently showing. Returns plausible name-like lines only (2–60 chars,
- * contains a letter) — this is deliberately permissive; scoreContactCandidates
- * does the real filtering by relevance to the query.
+ * Pick WhatsApp's window out of a desktopCapturer window-source list, returning
+ * its INDEX in the original array (so the caller can take its thumbnail), or
+ * null when WhatsApp is not among them.
+ *
+ * Sources with no pixels are dropped first: minimized windows and message-only
+ * helper windows come back with an empty 0×0 thumbnail, and OCR'ing one yields
+ * nothing while looking like a successful capture. (Measured: while WhatsApp is
+ * minimized it is absent from the window-source list entirely — which is why
+ * callers must focus it first, and why this returns null rather than guessing.)
+ *
+ * Matching reuses bestWindow/rankWindows — the same scorer `open_app whatsapp`
+ * uses to find a window — rather than a second, subtly different title test.
+ * Exported for unit testing.
  */
-async function ocrWhatsAppCandidates(): Promise<string[]> {
-  const { pngBuffer } = await captureScreenPng()
+export function pickWhatsAppWindowSource(
+  sources: readonly { name: string; empty: boolean; width: number; height: number }[]
+): number | null {
+  const usable: WindowInfo[] = []
+  sources.forEach((source, index) => {
+    if (source.empty || source.width <= 0 || source.height <= 0) return
+    // `handle` carries the index back through bestWindow to the original array.
+    usable.push({
+      handle: index,
+      title: source.name,
+      bounds: { left: 0, top: 0, width: source.width, height: source.height }
+    })
+  })
+  const match = bestWindow(usable, 'WhatsApp')
+  return match ? match.handle : null
+}
+
+/**
+ * Capture ONLY WhatsApp's window as a PNG, never the rest of the desktop.
+ *
+ * THIS IS THE FIX for the detector's central defect. The chat-list reader used
+ * to call captureScreenPng() — the WHOLE SCREEN — and hand every 2–60 character
+ * line on it to the sender filter. Measured on the shipped v7.2.0 build: 209
+ * spurious sender candidates across an 11-poll window, including lines OCR'd out
+ * of an unrelated terminal. For contact *resolution* a permissive capture is
+ * survivable (everything is scored against a query), but for the unread-sender
+ * detector ENTERING the candidate set IS the trigger, so desktop text could put
+ * a name in front of the allowlist matcher and navigate the user's WhatsApp to
+ * the wrong contact's chat.
+ *
+ * Uses desktopCapturer's own per-window source rather than screenshotting and
+ * cropping to nut-js window bounds. Same API captureScreenPng already uses, and
+ * it avoids two real hazards: the coordinate spaces genuinely disagree on this
+ * machine (a 1707×1067 DIP display at scaleFactor 1.5 is 2561×1601 physical but
+ * captures as a 1728×1080 thumbnail, so a bounds rectangle needs scaling that is
+ * silently wrong when it is wrong), and a cropped screenshot of an OCCLUDED
+ * window contains whatever is on top of it, which is the same bug again.
+ *
+ * Fails CLOSED: returns null when WhatsApp has no capturable window, so callers
+ * report "could not read" rather than falling back to the whole screen.
+ */
+async function captureWhatsAppWindowPng(): Promise<Buffer | null> {
+  const sources = await desktopCapturer.getSources({
+    types: ['window'],
+    thumbnailSize: { width: 1920, height: 1080 }
+  })
+  const index = pickWhatsAppWindowSource(
+    sources.map((source) => {
+      const { width, height } = source.thumbnail.getSize()
+      return { name: source.name, empty: source.thumbnail.isEmpty(), width, height }
+    })
+  )
+  return index === null ? null : sources[index].thumbnail.toPNG()
+}
+
+/**
+ * OCR WhatsApp's own window (tesseract.js, loaded lazily — mirrors read_screen's
+ * local-OCR path) to read back the chat names it is currently showing. Returns
+ * plausible name-like lines only (2–60 chars, contains a letter) — deliberately
+ * permissive WITHIN the window; scoreContactCandidates does the real filtering
+ * by relevance to the query.
+ *
+ * Throws when WhatsApp's window cannot be captured. Both callers already treat a
+ * throw as "unresolved"/"nothing read", which is the fail-closed outcome we want:
+ * silently reading the whole desktop instead is the bug this replaced.
+ */
+async function ocrWhatsAppCandidates(region?: {
+  left: number
+  top: number
+  width: number
+  height: number
+}): Promise<string[]> {
+  const windowPng = await captureWhatsAppWindowPng()
+  if (!windowPng) {
+    throw new Error(
+      'Could not find a capturable WhatsApp window. Make sure WhatsApp Desktop is open and not minimized.'
+    )
+  }
+  // A failed crop falls back to the whole WINDOW, never the whole screen — the
+  // degraded case is still scoped to WhatsApp.
+  const pngBuffer = region ? ((await cropPngRegion(windowPng, region)) ?? windowPng) : windowPng
   const text = await ocrImage(pngBuffer, configuredOcrLang())
 
   const seen = new Set<string>()
@@ -1975,9 +2062,56 @@ export async function readWhatsAppUnreadSenders(): Promise<string[]> {
   if (!checkAccessibility()) return []
   try {
     await launchAndFocusWhatsApp()
-    return await ocrWhatsAppCandidates()
+    // Scoped to the chat-LIST column, not the whole window. The open
+    // conversation to the right re-renders between polls, and every line it
+    // draws would otherwise ENTER the candidate set and read as a new sender.
+    // Measured over a 20-poll / 5-minute window on a deliberately busy screen:
+    // whole screen 617 spurious candidates, whole WhatsApp window 78, chat-list
+    // column 10 (~0.5 per poll). See docs/post-v7.2.0-fixes-2026-08.md.
+    return await ocrWhatsAppCandidates(WA_CHAT_LIST_REGION)
   } catch {
     return []
+  }
+}
+
+/**
+ * The chat-LIST column of a WhatsApp window capture — the left sidebar listing
+ * conversations, which is the only part the unread-sender detector wants.
+ *
+ * Scoping to it is the second half of the capture fix. Confining the capture to
+ * WhatsApp removes desktop text, but the open conversation in the right-hand
+ * pane still re-renders between polls, and each line it draws ENTERS the
+ * candidate set and reads as a newly-arrived sender. Measured over 20 polls on a
+ * busy screen: 617 spurious candidates whole-screen → 78 whole-window → 10 here.
+ *
+ * Measured on a real window, the sidebar ends at ~38% of the window width, so
+ * 0.34 stays inside the chat list rather than spilling into the message pane.
+ * Empirically validated, not assumed: this crop yields a stable 17-18 real
+ * chat-name lines every poll, which is what makes the near-zero drift above a
+ * signal-stability result rather than the artefact of an empty image.
+ */
+const WA_CHAT_LIST_REGION = { left: 0, top: 0, width: 0.34, height: 1 }
+
+/** Crop a PNG to a fractional region, or null if it cannot be decoded. */
+async function cropPngRegion(
+  pngBuffer: Buffer,
+  region: { left: number; top: number; width: number; height: number }
+): Promise<Buffer | null> {
+  try {
+    // jimp is already a dependency and is the codebase's PNG tool (osLoop/capture
+    // decodes with it, imageEdit crops with it).
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const Jimp = require('jimp') as any
+    const image = await Jimp.read(pngBuffer)
+    const { width, height } = image.bitmap as { width: number; height: number }
+    const x = Math.max(0, Math.round(width * region.left))
+    const y = Math.max(0, Math.round(height * region.top))
+    const w = Math.min(width - x, Math.round(width * region.width))
+    const h = Math.min(height - y, Math.round(height * region.height))
+    if (w <= 0 || h <= 0) return null
+    return await image.crop(x, y, w, h).getBufferAsync(Jimp.MIME_PNG)
+  } catch {
+    return null
   }
 }
 
@@ -1995,14 +2129,47 @@ export async function readWhatsAppChatText(
   if (!checkAccessibility()) return { fullText: '', recentContext: [] }
   try {
     const nut = loadNut()
-    await openWhatsAppChatViaKeyboard(name, nut)
+
+    // DEFENCE IN DEPTH: resolve the contact BEFORE opening anything.
+    //
+    // This used to call openWhatsAppChatViaKeyboard, which types into search and
+    // presses Down+Enter with ZERO verification of what it landed on. If the
+    // search filtered to a different contact — or to nothing, leaving the
+    // previous conversation open — the composer would read a stranger's messages
+    // and draft a reply against them. That is the same class of defect as the
+    // whole-screen capture this file just fixed, one step further down the path.
+    //
+    // resolveWhatsAppContact is the verify-before-selecting flow
+    // send_whatsapp_message already uses: it OCRs the filtered results and scores
+    // them, resolving only a clearly-best, well-separated match. The auto-reply
+    // read path is NOT the low-stakes case open_whatsapp_chat was built for, so
+    // it belongs on the verified flow. Fails CLOSED — an ambiguous or unreadable
+    // result yields no draft rather than a guessed one.
+    //
+    // (An earlier attempt verified the on-screen conversation HEADER instead.
+    // That was measured against a real window and the crop landed on WhatsApp's
+    // title bar, not the header — it would have rejected every legitimate chat
+    // and silently disabled drafting. Pixel geometry was the wrong tool here.)
+    const resolution = await resolveWhatsAppContact(name, nut)
+    if (!resolution.resolved) return { fullText: '', recentContext: [] }
+
+    // Phase 2: re-search the CONFIRMED string and open it, mirroring
+    // send_whatsapp_message's second phase.
+    await searchWhatsAppFor(resolution.resolved, nut)
+    await openTopWhatsAppSearchResult(nut)
     await delay(600)
-    const { pngBuffer } = await captureScreenPng()
-    const text = await ocrImage(pngBuffer)
+
+    // Window-scoped for the same reason the chat-list reader is: OCR'ing the
+    // whole desktop here would splice unrelated on-screen text into the message
+    // context that gets composed against.
+    const pngBuffer = await captureWhatsAppWindowPng()
+    if (!pngBuffer) return { fullText: '', recentContext: [] }
+    const text = await ocrImage(pngBuffer, configuredOcrLang())
     const lines = text
       .split(/\r?\n/)
       .map((l) => l.trim())
       .filter((l) => l.length > 0)
+
     const recent = lines.slice(-6)
     return { fullText: recent.length > 0 ? recent[recent.length - 1] : '', recentContext: recent }
   } catch {
