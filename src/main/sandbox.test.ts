@@ -30,7 +30,8 @@ import {
   setActiveProject,
   resetActiveProject,
   stripRedundantProjectPrefix,
-  runTests
+  runTests,
+  runScript
 } from './sandbox'
 import { resolve, dirname, basename } from 'node:path'
 
@@ -425,5 +426,114 @@ describe('runTests — surfaces npm failure diagnostics', () => {
     const result = await runTests()
 
     expect(result.passed).toBe(true)
+  }, 120_000)
+})
+
+// ── runTests: "nothing to test" is not a failure ────────────────────────────
+// Regression cover for the false GIVE UP on finished static-site builds. A plain
+// HTML/CSS/JS site has no suite; `npm test` exits 1 either way (measured: with no
+// "test" script, `npm test --silent` exits 1 having printed NOTHING), which read
+// as TESTS FAILED. VerifyGate never saw a pass, and since no amount of editing
+// can make a non-existent suite go green, the model spent its nudges and quit on
+// completed work. These pin the three shapes apart.
+describe('runTests — distinguishes "nothing to test" from a failure', () => {
+  it('skips (does not fail) a static site with no package.json', async () => {
+    await writeFile(join(ws, 'index.html'), '<!doctype html><h1>hi</h1>\n')
+
+    const result = await runTests()
+
+    expect(result.skipped).toBe(true)
+    // Points at the verifier a static site CAN satisfy, rather than demanding a
+    // package.json the site does not need.
+    expect(result.output).toMatch(/list_files/)
+    expect(result.output).toMatch(/static site/i)
+  }, 120_000)
+
+  it('skips a package.json with no test script and nothing else runnable', async () => {
+    await writeFile(join(ws, 'package.json'), '{"name":"site","version":"1.0.0"}')
+
+    const result = await runTests()
+
+    expect(result.skipped).toBe(true)
+    expect(result.output).toMatch(/list_files/)
+  }, 120_000)
+
+  it('treats npm init\'s placeholder test script as no test script', async () => {
+    await writeFile(
+      join(ws, 'package.json'),
+      JSON.stringify({
+        name: 'site',
+        version: '1.0.0',
+        scripts: { test: 'echo "Error: no test specified" && exit 1' }
+      })
+    )
+
+    const result = await runTests()
+
+    expect(result.skipped).toBe(true)
+  }, 120_000)
+
+  it('does NOT skip when another script is runnable — steers to run_script', async () => {
+    // A site with a build step should be BUILT, not waved through as "nothing to
+    // test". This stays a failure, but one that names the tool that can verify it.
+    await writeFile(
+      join(ws, 'package.json'),
+      JSON.stringify({ name: 'site', version: '1.0.0', scripts: { build: 'echo building' } })
+    )
+
+    const result = await runTests()
+
+    expect(result.skipped).toBeFalsy()
+    expect(result.passed).toBe(false)
+    expect(result.output).toMatch(/run_script/)
+    expect(result.output).toMatch(/build/)
+  }, 120_000)
+
+  it('runScript skips when there is no package.json at all', async () => {
+    // Seen live: the model called run_script "dev" on a finished static site,
+    // got a hard failure, and gave up looking for a build system that will
+    // never exist.
+    await writeFile(join(ws, 'index.html'), '<!doctype html><h1>hi</h1>\n')
+    const result = await runScript('dev')
+    expect(result.skipped).toBe(true)
+    expect(result.output).toMatch(/list_files/)
+  }, 120_000)
+
+  it('runScript skips when package.json defines no scripts at all', async () => {
+    await writeFile(join(ws, 'package.json'), '{"name":"site","version":"1.0.0"}')
+    const result = await runScript('dev')
+    expect(result.skipped).toBe(true)
+  }, 120_000)
+
+  it('runScript still FAILS when scripts exist but the named one does not', async () => {
+    // The model just guessed wrong — an actionable failure, not "nothing to run".
+    await writeFile(
+      join(ws, 'package.json'),
+      JSON.stringify({ name: 's', version: '1.0.0', scripts: { build: 'echo hi' } })
+    )
+    const result = await runScript('dev')
+    expect(result.skipped).toBeFalsy()
+    expect(result.passed).toBe(false)
+    expect(result.output).toMatch(/build/)
+  }, 120_000)
+
+  it('runScript still fails a malformed package.json rather than skipping it', async () => {
+    await writeFile(join(ws, 'package.json'), '{"name":"s",')
+    const result = await runScript('dev')
+    expect(result.skipped).toBeFalsy()
+    expect(result.passed).toBe(false)
+  }, 120_000)
+
+  it('still fails an unparseable package.json rather than skipping it', async () => {
+    // Must not be swallowed by the skip path: a malformed package.json is a real
+    // bug the model has to fix, and npm's EJSONPARSE is what tells it where.
+    await writeFile(join(ws, 'package.json'), '{\n  "name": "x",\n  "scripts": {\n    "test": "node test.js"\n}\n')
+    await writeFile(join(ws, 'test.js'), 'console.log("hi")\n')
+
+    const result = await runTests()
+
+    expect(result.skipped).toBeFalsy()
+    expect(result.passed).toBe(false)
+    expect(result.output).toMatch(/EJSONPARSE|JSON\.parse|Invalid package\.json/i)
   }, 120_000)
 })

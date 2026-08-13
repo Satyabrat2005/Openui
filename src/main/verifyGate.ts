@@ -48,6 +48,13 @@ export type FinalDecision =
 /** How many times we'll ask the model to verify before letting the run end red. */
 const DEFAULT_MAX_NUDGES = 2
 
+/** Grounds on which a "GIVE UP:" reply is challenged once before being honoured. */
+export type GiveUpChallenge =
+  /** A verifier passed against the tree as it stands — the give-up contradicts it. */
+  | 'contradicted'
+  /** Files were written but nothing was ever verified — the give-up is a guess. */
+  | 'untested'
+
 export class VerifyGate {
   /** A verifier passed AND nothing has touched the tree since. */
   private verified = false
@@ -101,11 +108,69 @@ export class VerifyGate {
    * the budget — call it exactly once per prose turn.
    */
   onFinalReply(responseText: string): FinalDecision {
-    if (/^\s*GIVE UP:/i.test(responseText)) return 'give_up'
+    if (/^\s*GIVE UP:/i.test(responseText)) {
+      if (this.giveUpChallenge(responseText)) {
+        this.nudgesUsed++
+        return 'nudge'
+      }
+      return 'give_up'
+    }
     if (!this.hasUnverifiedWork) return 'accept'
     if (this.nudgesUsed >= this.maxNudges) return 'accept'
     this.nudgesUsed++
     return 'nudge'
+  }
+
+  /**
+   * Whether this GIVE UP should be challenged once before it is honoured, and
+   * on what grounds. Null means honour it immediately.
+   *
+   * Both grounds were measured on merged main, where GIVE UP accounted for 8 of
+   * 18 builder runs and 6 of those had already written files:
+   *
+   *   'contradicted' — a verifier PASSED against the code exactly as it stands,
+   *     and the model declared defeat anyway. Observed shape: write index.html →
+   *     open_in_browser → list_files (which IS the website profile's verifier,
+   *     and passes) → "GIVE UP: there are no tests or scripts to run".
+   *
+   *   'untested' — files were written but no verifier was ever run, so the
+   *     give-up is a guess about work nobody checked. Observed shape: the model
+   *     recites the profile's own guidance ("calling list_files counts as
+   *     verification for a static site") and then gives up instead of calling it.
+   *
+   * A run that never touched the tree is NOT challenged: nothing was built, so
+   * "I can't do this" is a real answer, not a false negative.
+   *
+   * Challenging costs one turn and never invents a pass — if the model gives up
+   * again the answer stands, so a genuinely broken build still terminates.
+   */
+  giveUpChallenge(responseText: string): GiveUpChallenge | null {
+    if (!/^\s*GIVE UP:/i.test(responseText)) return null
+    if (this.nudgesUsed >= this.maxNudges) return null
+    if (this.verified) return 'contradicted'
+    if (this.touchedTree) return 'untested'
+    return null
+  }
+
+  /** Pushback text for a challenged GIVE UP. */
+  giveUpMessage(kind: GiveUpChallenge): string {
+    const named = this.spec.verifiers.length ? this.spec.verifiers.join(' / ') : 'the verification tool'
+    if (kind === 'contradicted') {
+      return (
+        `You said GIVE UP, but ${named} already passed against the project exactly as it stands now — ` +
+        'nothing is failing. If the work is done, do NOT give up: reply in plain natural language ' +
+        'summarising what you built, and say plainly what was and was not exercised (for example that ' +
+        'a static site has no test suite and was not smoke-run). Only give up again if something is ' +
+        'genuinely broken, and name it.'
+      )
+    }
+    return (
+      'You said GIVE UP, but you have written files and never ran a single verification, so nothing ' +
+      `has actually failed yet — you are guessing. Call ${named} now and read the result. ` +
+      'If this is a static site with no test suite, list_files is the verification for it: call it, ' +
+      'then finish with a plain summary saying the site is static and was not smoke-run. ' +
+      'Only give up if a verifier actually reports a failure you cannot fix.'
+    )
   }
 
   /** Short label for the task-list row shown while the gate is pushing back. */

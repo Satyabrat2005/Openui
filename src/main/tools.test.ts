@@ -46,7 +46,8 @@ import {
   detectLoginState,
   resolveServices,
   SUBSCRIPTION_SERVICES,
-  parseKeyCombo
+  parseKeyCombo,
+  pickWhatsAppWindowSource
 } from './tools'
 import {
   grantApp,
@@ -467,6 +468,64 @@ describe('scoreContactCandidates', () => {
     const lines = ['Ashu A', 'Ashu B', 'Ashu C', 'Ashu D', 'Ashu E', 'Ashu F', 'Ashu G']
     const r = scoreContactCandidates('ashu', lines)
     expect(r.candidates.length).toBe(5)
+  })
+})
+
+// ── pickWhatsAppWindowSource — the capture-scoping fix ───────────────────────
+// The shipped v7.2.0 detector OCR'd the WHOLE SCREEN and handed every readable
+// line to the allowlist matcher (measured: 209 spurious sender candidates over
+// an 11-poll window, including text from an unrelated terminal). Selecting
+// WhatsApp's own window source is what confines the reader to WhatsApp, so the
+// selection has to be right — and has to refuse rather than guess.
+describe('pickWhatsAppWindowSource', () => {
+  const src = (name: string, over: Partial<{ empty: boolean; width: number; height: number }> = {}) => ({
+    name,
+    empty: false,
+    width: 1438,
+    height: 1080,
+    ...over
+  })
+
+  it('picks WhatsApp out of a busy desktop', () => {
+    const sources = [src('Claude'), src('WhatsApp'), src('Inbox - Outlook'), src('NVIDIA GeForce Overlay')]
+    expect(pickWhatsAppWindowSource(sources)).toBe(1)
+  })
+
+  it('returns the INDEX into the original array, not the filtered one', () => {
+    // Empty sources are dropped before matching; if the index came from the
+    // filtered list the caller would capture the wrong window's pixels.
+    const sources = [
+      src('AsHDRControl', { empty: true, width: 0, height: 0 }),
+      src('AsHotplugCtrl', { empty: true, width: 0, height: 0 }),
+      src('Claude'),
+      src('WhatsApp')
+    ]
+    expect(pickWhatsAppWindowSource(sources)).toBe(3)
+  })
+
+  it('returns null when WhatsApp is not on screen — never a nearest guess', () => {
+    // Fail closed: null makes the caller report "could not read", where any
+    // fallback to a whole-screen capture would restore the original bug.
+    const sources = [src('Claude'), src('Signal'), src('Telegram Desktop')]
+    expect(pickWhatsAppWindowSource(sources)).toBeNull()
+  })
+
+  it('ignores an empty WhatsApp thumbnail (minimized windows capture nothing)', () => {
+    // Measured: while WhatsApp is minimized it drops out of the window-source
+    // list entirely, but a 0x0 or empty thumbnail must not be OCR'd either — it
+    // yields no text while looking like a successful capture.
+    const sources = [src('WhatsApp', { empty: true }), src('Claude')]
+    expect(pickWhatsAppWindowSource(sources)).toBeNull()
+  })
+
+  it('still finds WhatsApp when the title carries an unread count', () => {
+    // The real WebView2 window is titled "(186) WhatsApp" on this machine.
+    const sources = [src('Claude'), src('(186) WhatsApp')]
+    expect(pickWhatsAppWindowSource(sources)).toBe(1)
+  })
+
+  it('returns null for an empty source list', () => {
+    expect(pickWhatsAppWindowSource([])).toBeNull()
   })
 })
 

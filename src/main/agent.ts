@@ -1327,15 +1327,24 @@ async function runBuilderSession(win: BrowserWindow, tier: Tier, userMessage: st
     if (!toolCall) {
       // Natural-language reply ⇒ the model thinks it is done. Only let it be done
       // if it actually ran something against the code as it now stands.
+      // Ask BEFORE onFinalReply consumes the nudge, since it reads the same state.
+      const giveUp = verifyGate.giveUpChallenge(responseText)
       const decision = verifyGate.onFinalReply(responseText)
       if (decision === 'nudge') {
         emit(win, 'openui:task:update', {
           id: `b${++taskSeq}`,
-          label: verifyGate.nudgeLabel,
+          label: giveUp ? 'Gave up too early' : verifyGate.nudgeLabel,
           status: 'working',
-          detail: `Summarised without running ${profile.verifiers.join(' / ')} — asking it to verify.`
+          detail: giveUp
+            ? giveUp === 'contradicted'
+              ? `Said GIVE UP after ${profile.verifiers.join(' / ')} passed — asking it to summarise instead.`
+              : 'Said GIVE UP without running any verification — asking it to check first.'
+            : `Summarised without running ${profile.verifiers.join(' / ')} — asking it to verify.`
         } satisfies TaskUpdate)
-        messages.push({ role: 'user', content: verifyGate.nudgeMessage() })
+        messages.push({
+          role: 'user',
+          content: giveUp ? verifyGate.giveUpMessage(giveUp) : verifyGate.nudgeMessage()
+        })
         continue
       }
       if (decision === 'accept' && toolCallCount === 0) {

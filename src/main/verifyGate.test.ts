@@ -134,10 +134,24 @@ describe('VerifyGate — deciding on a prose reply', () => {
     expect(gate.onFinalReply('Built and tested.')).toBe('accept')
   })
 
-  it('honours GIVE UP even with unverified work outstanding', () => {
+  // CONTRACT CHANGE (was: honoured immediately). A GIVE UP after files were
+  // written but nothing was ever verified is a guess about untested work — 6 of
+  // the 8 give_ups in an 18-run live sample had already written files. It is now
+  // challenged ONCE and then honoured, so a real dead end still terminates.
+  it('challenges a GIVE UP over untested work, then honours the repeat', () => {
     const gate = new VerifyGate(nodeSpec)
     gate.observe('write_file', { path: 'a.js' }, true, 'ok')
-    expect(gate.onFinalReply('GIVE UP: the dependency will not install.')).toBe('give_up')
+    const reply = 'GIVE UP: the dependency will not install.'
+    expect(gate.giveUpChallenge(reply)).toBe('untested')
+    expect(gate.onFinalReply(reply)).toBe('nudge')
+    expect(gate.giveUpMessage('untested')).toMatch(/never ran a single verification/i)
+    expect(gate.onFinalReply(reply)).toBe('nudge') // second nudge in the budget
+    expect(gate.onFinalReply(reply)).toBe('give_up') // budget spent — honoured
+  })
+
+  it('honours GIVE UP immediately when the run never touched the tree', () => {
+    const gate = new VerifyGate(nodeSpec)
+    expect(gate.onFinalReply('GIVE UP: I do not understand the request.')).toBe('give_up')
   })
 
   it('stops nudging once the budget is spent, ending the run red rather than looping', () => {
@@ -157,6 +171,95 @@ describe('VerifyGate — deciding on a prose reply', () => {
     // The one nudge is still available if work later goes unverified.
     gate.observe('edit_file', { path: 'a.js' }, true, 'ok')
     expect(gate.onFinalReply('done again')).toBe('nudge')
+  })
+})
+
+// The exact sequence that produced a false GIVE UP on a finished static site:
+// write the files, run the only verifier the model has, get back "there is no
+// suite here". Before the fix that read as a red run, so the gate nudged, the
+// model could not make a non-existent suite pass, and a complete build ended as
+// a failure. Driven through the REAL website profile, not a stub spec.
+describe('VerifyGate — a finished static site is not a failure', () => {
+  const SKIPPED = 'TESTS SKIPPED\nNo package.json in the workspace, so there is no test suite to run.'
+
+  it('accepts a static-site build whose run_tests found nothing to run', () => {
+    const gate = new VerifyGate(getProjectProfile('website'))
+    gate.observe('write_file', { path: 'index.html' }, true, 'ok')
+    gate.observe('write_file', { path: 'styles.css' }, true, 'ok')
+    gate.observe('run_tests', {}, true, SKIPPED)
+
+    expect(gate.isVerified).toBe(true)
+    expect(gate.hasUnverifiedWork).toBe(false)
+    expect(gate.onFinalReply('Built the static site — no build step, so nothing was smoke-run.')).toBe(
+      'accept'
+    )
+  })
+
+  it('still nudges a Node project that never wrote a test script', () => {
+    const gate = new VerifyGate(getProjectProfile('node'))
+    gate.observe('write_file', { path: 'index.js' }, true, 'ok')
+    gate.observe('run_tests', {}, true, 'TESTS SKIPPED\nno test script')
+
+    expect(gate.isVerified).toBe(false)
+    expect(gate.onFinalReply('done')).toBe('nudge')
+  })
+
+  // The shape a finished static site ACTUALLY fails in on merged main, seen in
+  // live trials: write index.html → open_in_browser → list_files (which IS the
+  // website profile's verifier, and passes) → "GIVE UP: there are no tests or
+  // scripts to run". The gate honoured that unconditionally and reported a
+  // completed build as a failure.
+  it('pushes back on a GIVE UP that a passing verifier contradicts', () => {
+    const gate = new VerifyGate(getProjectProfile('website'))
+    gate.observe('write_file', { path: 'index.html' }, true, 'ok')
+    gate.observe('list_files', {}, true, 'Workspace files:\nindex.html')
+    expect(gate.isVerified).toBe(true)
+
+    const reply = 'GIVE UP: the project is static HTML, so there are no tests to run.'
+    expect(gate.giveUpChallenge(reply)).toBe('contradicted')
+    expect(gate.onFinalReply(reply)).toBe('nudge')
+    expect(gate.giveUpMessage('contradicted')).toMatch(/already passed/i)
+  })
+
+  it('honours a repeated GIVE UP so a real dead end still terminates', () => {
+    const gate = new VerifyGate(getProjectProfile('website'), 1)
+    gate.observe('write_file', { path: 'index.html' }, true, 'ok')
+    gate.observe('list_files', {}, true, 'Workspace files:\nindex.html')
+    const reply = 'GIVE UP: nothing to run.'
+    expect(gate.onFinalReply(reply)).toBe('nudge')
+    // Budget spent — the model's answer stands rather than looping forever.
+    expect(gate.onFinalReply(reply)).toBe('give_up')
+  })
+
+  it('still honours GIVE UP immediately when nothing has been verified', () => {
+    // Unverified work plus GIVE UP is a genuine dead end, not a contradiction.
+    // Nothing was built at all — "I can't do this" is a real answer.
+    const gate = new VerifyGate(getProjectProfile('node'))
+    const reply = 'GIVE UP: I do not understand the request.'
+    expect(gate.giveUpChallenge(reply)).toBeNull()
+    expect(gate.onFinalReply(reply)).toBe('give_up')
+  })
+
+  it('a site whose only script run was skipped still counts as verified', () => {
+    // run_script on a project with no package.json reports SCRIPT SKIPPED —
+    // "nothing to run" — which the website profile treats as satisfied.
+    const gate = new VerifyGate(getProjectProfile('website'))
+    gate.observe('write_file', { path: 'index.html' }, true, 'ok')
+    gate.observe('run_script', { script: 'dev' }, true, 'SCRIPT SKIPPED [dev]\nNo package.json')
+    expect(gate.isVerified).toBe(true)
+    expect(gate.onFinalReply('Built the static site.')).toBe('accept')
+  })
+
+  it('a site WITH a build script is still held to running it', () => {
+    // run_tests returns a plain failure (not skipped) when another script exists,
+    // so the gate keeps pushing until run_script actually goes green.
+    const gate = new VerifyGate(getProjectProfile('website'))
+    gate.observe('write_file', { path: 'src/main.js' }, true, 'ok')
+    gate.observe('run_tests', {}, true, 'TESTS FAILED\nno usable "test" script. It does define: build.')
+    expect(gate.onFinalReply('done')).toBe('nudge')
+
+    gate.observe('run_script', { name: 'build' }, true, 'SCRIPT OK [build]\nbuilt')
+    expect(gate.onFinalReply('Built.')).toBe('accept')
   })
 })
 

@@ -46,6 +46,15 @@ vi.mock('./verifyGate', () => ({
     nudgeMessage(): string {
       return 'please verify'
     }
+    // A challenged GIVE UP gets a different pushback — these tests drive the
+    // decision directly via h.verify.decision, so the double just needs to
+    // answer "no challenge" rather than model the real rule.
+    giveUpChallenge(): string | null {
+      return null
+    }
+    giveUpMessage(): string {
+      return 'it already passed'
+    }
     nudgeLabel = 'verify'
   }
 }))

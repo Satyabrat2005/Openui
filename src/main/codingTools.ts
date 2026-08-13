@@ -274,10 +274,14 @@ async function run_tests(): Promise<ToolResult> {
     // Report PASS/FAIL in the output text (always ok:true) so the model reads
     // the test log and decides the next step rather than treating a normal
     // test failure as a tool error it should retry blindly.
-    return {
-      ok: true,
-      output: `${result.passed ? 'TESTS PASSED' : 'TESTS FAILED'}\n${result.output}`
-    }
+    //
+    // TESTS SKIPPED is a third, distinct marker for "this project has no suite
+    // to run at all" — see runTests. It must not read as FAILED: on a project
+    // type where having nothing to test is legitimate (a static site), the
+    // profile maps this marker to a pass so a finished build can end without
+    // being nudged toward a suite that cannot exist.
+    const marker = result.skipped ? 'TESTS SKIPPED' : result.passed ? 'TESTS PASSED' : 'TESTS FAILED'
+    return { ok: true, output: `${marker}\n${result.output}` }
   } catch (err) {
     return { ok: false, error: `run_tests failed: ${err instanceof Error ? err.message : String(err)}` }
   }
@@ -351,10 +355,10 @@ async function run_script(args: Record<string, unknown>): Promise<ToolResult> {
   if (!script) return { ok: false, error: 'run_script requires a string "script".' }
   try {
     const result = await runScript(script)
-    return {
-      ok: true,
-      output: `${result.passed ? 'SCRIPT OK' : 'SCRIPT FAILED'} [${script}]\n${result.output}`
-    }
+    // SCRIPT SKIPPED mirrors TESTS SKIPPED: "this project has nothing to run",
+    // which is the absence of a verdict rather than a red one. See runScript.
+    const marker = result.skipped ? 'SCRIPT SKIPPED' : result.passed ? 'SCRIPT OK' : 'SCRIPT FAILED'
+    return { ok: true, output: `${marker} [${script}]\n${result.output}` }
   } catch (err) {
     return {
       ok: false,
