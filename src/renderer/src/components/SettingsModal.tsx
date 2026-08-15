@@ -118,6 +118,11 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
   const [gcalConnected, setGcalConnected] = useState(false)
   const [gcalConnecting, setGcalConnecting] = useState(false)
   const [gcalMessage, setGcalMessage] = useState('')
+  // Local calendar automation (Calendar.app / Outlook COM). Default OFF: its
+  // delete/reschedule path is new, unit-tested only, and has never run against
+  // a real calendar app — a mistake there cancels or moves a real meeting.
+  // Absent setting ⇒ off, the inverse of most toggles here.
+  const [localCalendarEnabled, setLocalCalendarEnabled] = useState(false)
   // Gmail — shares the Google Calendar OAuth client id/secret above (one
   // Google Cloud client, multiple scopes) but has its own refresh token and
   // Connect button, since it's a separate OAuth grant.
@@ -250,6 +255,13 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
       .googleCalendarStatus()
       .then((s) => {
         if (!cancelled) setGcalConnected(Boolean(s?.connected))
+      })
+      .catch(() => {})
+
+    window.openui
+      .getSetting('local_calendar_backend_enabled')
+      .then((value) => {
+        if (!cancelled) setLocalCalendarEnabled(value === true) // absent/null/undefined ⇒ off
       })
       .catch(() => {})
 
@@ -455,6 +467,14 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
     void window.openui
       .setSetting('cloud_routing_enabled', next)
       .catch(() => setCloudRouting(!next))
+  }
+
+  const toggleLocalCalendar = (): void => {
+    const next = !localCalendarEnabled
+    setLocalCalendarEnabled(next)
+    void window.openui
+      .setSetting('local_calendar_backend_enabled', next)
+      .catch(() => setLocalCalendarEnabled(!next))
   }
 
   const saveGcalClientId = (): void => {
@@ -1113,6 +1133,30 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
             </button>
             {gcalMessage && <span className="ou-settings-msg">{gcalMessage}</span>}
           </div>
+        </div>
+
+        {/* Local calendar automation (Calendar.app / Outlook COM). Default OFF:
+            delete/reschedule on these backends is new and has only ever been
+            unit-tested, never run against a real calendar app — a mistake there
+            cancels or moves a real meeting. Google Calendar above is unaffected
+            and needs no toggle. */}
+        <div className="ou-settings-row ou-settings-section">
+          <div className="ou-settings-grow">
+            <div className="ou-settings-label">Local calendar automation</div>
+            <div className="ou-settings-desc">
+              Lets OpenUI create, cancel and reschedule events directly in Calendar.app (macOS) or
+              Outlook (Windows) instead of Google Calendar. <strong style={{ color: 'var(--ou-text)' }}>Off by
+              default</strong> — cancelling/rescheduling on these backends is new and has not yet been
+              verified against a real calendar app, and a mistake could cancel or move the wrong
+              meeting. Google Calendar above works either way and is unaffected by this toggle.
+            </div>
+          </div>
+          <Switch
+            on={localCalendarEnabled}
+            disabled={false}
+            label="Local calendar automation"
+            onClick={toggleLocalCalendar}
+          />
         </div>
 
         {/* Integrations: Gmail (shares the Calendar OAuth client above, own refresh token) */}

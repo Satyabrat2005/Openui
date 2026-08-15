@@ -73,8 +73,27 @@ vi.mock('./powershell', () => ({
     })
   })
 }))
+// A real database needs native better-sqlite3, which this plain-Node Vitest
+// runner cannot load (see repositories.test.ts) — and this suite has no need
+// for real persistence, only the one setting tools.ts reads to gate the local
+// calendar backend. An in-memory stand-in keeps this a true unit test.
+const settingsStore = new Map<string, unknown>()
+vi.mock('./database', () => ({
+  database: {
+    settings: {
+      getSetting: (key: string) => (settingsStore.has(key) ? settingsStore.get(key) : null),
+      setSetting: (key: string, value: unknown) => {
+        settingsStore.set(key, value)
+      }
+    }
+  }
+}))
 
 import { executeTool, resetOutlookProbeForTests } from './tools'
+import { database } from './database'
+
+/** The setting key tools.ts gates Calendar.app / Outlook COM automation behind. */
+const LOCAL_CALENDAR_KEY = 'local_calendar_backend_enabled'
 
 const IS_WIN = process.platform === 'win32'
 const IS_MAC = process.platform === 'darwin'
@@ -102,6 +121,9 @@ beforeEach(() => {
   gcal.deleted = []
   gcal.updated = []
   resetOutlookProbeForTests(null)
+  // Default OFF, matching production — each test that needs the local backend
+  // reachable opts in explicitly (see "local calendar automation gate" below).
+  database.settings.setSetting(LOCAL_CALENDAR_KEY, false)
 })
 
 /** Same call, but WITHOUT pre-approval - the shape the agent loop first sees. */
@@ -295,6 +317,13 @@ describe('control_calendar backend selection — no local calendar available', (
 })
 
 describe('control_calendar backend selection — local calendar IS available', () => {
+  // These tests exercise routing when the local backend is genuinely reachable,
+  // so they opt into the safety gate explicitly (see the "gate" describe below
+  // for what happens when a user has NOT opted in, which is the shipped default).
+  beforeEach(() => {
+    database.settings.setSetting(LOCAL_CALENDAR_KEY, true)
+  })
+
   it('prefers the local calendar for a plain event', async () => {
     if (!IS_WIN) return
     resetOutlookProbeForTests(true) // pretend classic Outlook is installed
@@ -339,5 +368,86 @@ describe('control_calendar backend selection — local calendar IS available', (
     const res = await calendar({ action: 'list', backend: 'google' })
     expect(res.ok).toBe(false)
     expect(res.error).toMatch(/not connected/i)
+  })
+})
+
+/**
+ * SAFETY GATE: Calendar.app / Outlook COM delete+update are new this sprint,
+ * unit-tested only, and have never run against a real calendar app — a mistake
+ * there cancels or moves a real meeting, not a cosmetic bug. Shipped default is
+ * OFF (the top-level beforeEach above sets the key to false before every test
+ * in this file), so these tests exercise exactly what a fresh install does: a
+ * genuinely-present local backend must never be reached unless the user opts
+ * in via Settings, regardless of how the request phrases "backend".
+ */
+describe('control_calendar — local calendar automation gate (default OFF)', () => {
+  it('WINDOWS: blocks a plain create when Outlook is real but the gate is off, Google absent', async () => {
+    if (!IS_WIN) return
+    resetOutlookProbeForTests(true) // classic Outlook genuinely installed
+    gcal.connected = false
+    const res = await calendar({ action: 'create', eventDetails: { title: 'Standup', start: 'tomorrow 9am' } })
+    expect(res.ok).toBe(false)
+    expect(res.error).toMatch(/off by default/i)
+    expect(res.error).toMatch(/Local calendar automation/)
+    expect(res.error).toMatch(/Settings/)
+    expect(res.error).not.toMatch(/REGDB_E_CLASSNOTREG/)
+  })
+
+  it('WINDOWS: routes to Google seamlessly when the gate is off but Google is connected', async () => {
+    if (!IS_WIN) return
+    resetOutlookProbeForTests(true)
+    gcal.connected = true
+    const res = await calendar({ action: 'create', eventDetails: { title: 'Standup', start: 'tomorrow 9am' } })
+    expect(res.ok).toBe(true)
+    expect(res.output).toBe('GOOGLE_CREATED')
+    expect(gcal.created).toHaveLength(1)
+  })
+
+  it('WINDOWS: an explicit backend:"system" does NOT bypass the gate', async () => {
+    if (!IS_WIN) return
+    resetOutlookProbeForTests(true)
+    gcal.connected = true // even with Google available, forcing "system" must still refuse
+    const res = await calendar({ action: 'list', backend: 'system' })
+    expect(res.ok).toBe(false)
+    expect(gcal.listed).toBe(0)
+    expect(res.error).toMatch(/Local calendar automation/)
+  })
+
+  it('WINDOWS: delete/update stay blocked too, not just create/list', async () => {
+    if (!IS_WIN) return
+    resetOutlookProbeForTests(true)
+    gcal.connected = false
+    const res = await calendar({ action: 'delete', eventDetails: { title: 'standup' } })
+    expect(res.ok).toBe(false)
+    expect(res.error).toMatch(/Local calendar automation/)
+  })
+
+  it('MAC: blocks a plain create when the gate is off, Google absent', async () => {
+    if (!IS_MAC) return
+    gcal.connected = false
+    const res = await calendar({ action: 'create', eventDetails: { title: 'Standup', start: 'tomorrow 9am' } })
+    expect(res.ok).toBe(false)
+    expect(res.error).toMatch(/Local calendar automation/)
+  })
+
+  it('MAC: an explicit backend:"system" does NOT bypass the gate', async () => {
+    if (!IS_MAC) return
+    gcal.connected = true
+    const res = await calendar({ action: 'delete', eventDetails: { title: 'standup' }, backend: 'system' })
+    expect(res.ok).toBe(false)
+    expect(res.error).toMatch(/Local calendar automation/)
+  })
+
+  it('turning the setting on restores the previous (opt-in) behaviour', async () => {
+    if (!IS_WIN) return
+    database.settings.setSetting(LOCAL_CALENDAR_KEY, true)
+    resetOutlookProbeForTests(true)
+    gcal.connected = false
+    const res = await calendar({ action: 'list' })
+    // Reaches the real Outlook COM path (which our mock rejects with the
+    // REGDB_E_CLASSNOTREG-shaped error) rather than the gate message — proving
+    // opt-in genuinely re-enables the local backend.
+    expect(res.ok).toBe(false)
+    expect(res.error).not.toMatch(/off by default/i)
   })
 })
