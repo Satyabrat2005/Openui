@@ -1,0 +1,352 @@
+{
+  "version": 1,
+  "created": "2026-08-15",
+  "purpose": "Cross-system benchmark of OpenUI/Splen against general assistants (GPT, Claude, Gemini) on the messaging + calendar automation tasks Splen is actually built for. Every system sees the SAME system prompt and the SAME user turn, and is scored by the SAME scorer (run_eval.py's score_case).",
+  "comparison_set": {
+    "included": [
+      "splen (local)",
+      "gpt",
+      "claude",
+      "gemini"
+    ],
+    "excluded": [
+      "GitHub Copilot",
+      "Cursor"
+    ],
+    "why_excluded": "They are coding assistants with no messaging or calendar automation surface. Scoring them on 'send a WhatsApp message' would manufacture a win rather than measure one."
+  },
+  "protocol": {
+    "tool_call_format": "{\"tool\": \"<name>\", \"args\": {...}} as the WHOLE message, first char '{', no fences",
+    "no_tool": "a plain natural-language answer with no JSON tool call",
+    "decoding": "temperature 0 where the provider allows it; replies are PARSED, never executed",
+    "safety": "No task in this set is executed. Nothing is sent to a real contact."
+  },
+  "scoring": {
+    "shared_scorer": "scripts/finetune/eval/run_eval.py :: score_case — imported, not reimplemented, so a scoring change cannot advantage one system",
+    "correct": "parseable, right tool, required args present and plausible",
+    "headline_accuracy": "the 18 core cases only; the 2 'memory' cases are reported separately because they measure the Day-1 memory feature rather than raw model skill"
+  },
+  "cases": [
+    {
+      "id": "mail-01",
+      "category": "gmail",
+      "prompt": "draft an email to priya@example.com about tomorrow's demo",
+      "expect": {
+        "kind": "tool",
+        "tool": "create_email_draft",
+        "args_required": [
+          "to"
+        ],
+        "args_must_not_match": {
+          "any": "outlook|chrome|\\.exe"
+        }
+      },
+      "note": "recorded failure: the model ran open_app 'Microsoft Outlook' instead (see #157-159 findings)",
+      "source": "evalset.json v1 (frozen 2026-08-11)"
+    },
+    {
+      "id": "mail-02",
+      "category": "gmail",
+      "prompt": "check my latest email",
+      "expect": {
+        "kind": "tool",
+        "tool": "find_email_thread",
+        "alt_tools": [
+          "search_local_files"
+        ]
+      },
+      "note": "recorded failure: called read_clipboard and invented a report",
+      "source": "evalset.json v1 (frozen 2026-08-11)"
+    },
+    {
+      "id": "mail-03",
+      "category": "gmail",
+      "prompt": "send an email to my manager saying I'll be out sick today",
+      "expect": {
+        "kind": "tool",
+        "tool": "send_email",
+        "alt_tools": [
+          "create_email_draft"
+        ],
+        "args_required": [
+          "to"
+        ]
+      },
+      "note": "send vs draft both defensible; must not be open_app",
+      "source": "evalset.json v1 (frozen 2026-08-11)"
+    },
+    {
+      "id": "mail-04",
+      "category": "gmail",
+      "prompt": "find the email thread about the invoice from last week",
+      "expect": {
+        "kind": "tool",
+        "tool": "find_email_thread",
+        "args_required": [
+          "query"
+        ]
+      },
+      "note": "search intent, needs a query arg — empty-args failure mode",
+      "source": "evalset.json v1 (frozen 2026-08-11)"
+    },
+    {
+      "id": "mail-05",
+      "category": "gmail",
+      "prompt": "write a refund email for order 4471 that arrived broken",
+      "expect": {
+        "kind": "tool",
+        "tool": "draft_refund_email",
+        "alt_tools": [
+          "create_email_draft"
+        ]
+      },
+      "note": "specific tool exists; generic draft is acceptable",
+      "source": "evalset.json v1 (frozen 2026-08-11)"
+    },
+    {
+      "id": "mail-06",
+      "category": "gmail",
+      "prompt": "open my email",
+      "expect": {
+        "kind": "tool",
+        "tool": "open_app",
+        "args_required": [
+          "appName"
+        ]
+      },
+      "note": "control: 'open my email' genuinely IS an open_app case — guards against over-correcting mail-01",
+      "source": "evalset.json v1 (frozen 2026-08-11)"
+    },
+    {
+      "id": "cal-01",
+      "category": "calendar",
+      "prompt": "schedule a meeting tomorrow at 3pm called Design Review",
+      "expect": {
+        "kind": "tool",
+        "tool": "control_calendar",
+        "args_required": [
+          "action"
+        ],
+        "args_must_match": {
+          "action": "create"
+        }
+      },
+      "note": "in the prompt's own examples — a miss here is a strong signal",
+      "source": "evalset.json v1 (frozen 2026-08-11)"
+    },
+    {
+      "id": "cal-02",
+      "category": "calendar",
+      "prompt": "what's on my calendar today?",
+      "expect": {
+        "kind": "tool",
+        "tool": "control_calendar",
+        "args_required": [
+          "action"
+        ],
+        "args_must_match": {
+          "action": "list|read|get|query"
+        }
+      },
+      "note": "read action, not create",
+      "source": "evalset.json v1 (frozen 2026-08-11)"
+    },
+    {
+      "id": "cal-03",
+      "category": "calendar",
+      "prompt": "cancel my 2pm standup on Friday",
+      "expect": {
+        "kind": "tool",
+        "tool": "control_calendar",
+        "alt_tools": [
+          "open_cancellation"
+        ],
+        "args_required": [
+          "action"
+        ]
+      },
+      "note": "delete/cancel action",
+      "source": "evalset.json v1 (frozen 2026-08-11)"
+    },
+    {
+      "id": "cal-04",
+      "category": "calendar",
+      "prompt": "block out 9 to 11 on Monday for focus time",
+      "expect": {
+        "kind": "tool",
+        "tool": "control_calendar",
+        "args_required": [
+          "action"
+        ],
+        "args_must_match": {
+          "action": "create"
+        }
+      },
+      "note": "phrased without the word 'meeting' or 'schedule'",
+      "source": "evalset.json v1 (frozen 2026-08-11)"
+    },
+    {
+      "id": "cal-05",
+      "category": "calendar",
+      "prompt": "move my dentist appointment to next Wednesday",
+      "expect": {
+        "kind": "tool",
+        "tool": "control_calendar",
+        "args_required": [
+          "action"
+        ]
+      },
+      "note": "update action",
+      "source": "evalset.json v1 (frozen 2026-08-11)"
+    },
+    {
+      "id": "wa-01",
+      "category": "whatsapp",
+      "prompt": "message Ashu on WhatsApp that I'll be 10 minutes late",
+      "expect": {
+        "kind": "tool",
+        "tool": "send_whatsapp_message",
+        "args_required": [
+          "contact",
+          "message"
+        ]
+      },
+      "note": "in the prompt's examples; two required args",
+      "source": "evalset.json v1 (frozen 2026-08-11)"
+    },
+    {
+      "id": "wa-02",
+      "category": "whatsapp",
+      "prompt": "open my WhatsApp chat with Mom",
+      "expect": {
+        "kind": "tool",
+        "tool": "open_whatsapp_chat",
+        "args_required": [
+          "contact"
+        ]
+      },
+      "note": "must NOT send a message — open vs send disambiguation",
+      "source": "evalset.json v1 (frozen 2026-08-11)"
+    },
+    {
+      "id": "slack-01",
+      "category": "slack",
+      "prompt": "tell #eng on slack that standup is at 10",
+      "expect": {
+        "kind": "tool",
+        "tool": "send_slack_message",
+        "args_required": [
+          "channel",
+          "text"
+        ]
+      },
+      "note": "Slack send; the evalset had no Slack coverage at all.",
+      "source": "new 2026-08-15"
+    },
+    {
+      "id": "slack-02",
+      "category": "slack",
+      "prompt": "what has been posted in #general on slack recently?",
+      "expect": {
+        "kind": "tool",
+        "tool": "read_slack_channel",
+        "alt_tools": [
+          "list_slack_channels",
+          "search_slack"
+        ],
+        "args_required": [
+          "channel"
+        ]
+      },
+      "note": "read vs send disambiguation on Slack.",
+      "source": "new 2026-08-15"
+    },
+    {
+      "id": "tg-01",
+      "category": "telegram",
+      "prompt": "send a telegram message to chat 123456789 saying I am on my way",
+      "expect": {
+        "kind": "tool",
+        "tool": "send_telegram_message",
+        "args_required": [
+          "chat_id",
+          "text"
+        ]
+      },
+      "note": "Telegram send with an explicit numeric chat_id.",
+      "source": "new 2026-08-15"
+    },
+    {
+      "id": "tg-02",
+      "category": "telegram",
+      "prompt": "which telegram chats can you see?",
+      "expect": {
+        "kind": "tool",
+        "tool": "list_telegram_chats",
+        "args_required": []
+      },
+      "note": "zero-arg discovery call; empty args are CORRECT here.",
+      "source": "new 2026-08-15"
+    },
+    {
+      "id": "wa-03",
+      "category": "whatsapp",
+      "prompt": "create a whatsapp group called Trip Planning with Ashu, Mom and Ravi",
+      "expect": {
+        "kind": "tool",
+        "tool": "create_whatsapp_group",
+        "args_required": [
+          "name",
+          "members"
+        ]
+      },
+      "note": "array-valued arg; a common shape for models to get wrong.",
+      "source": "new 2026-08-15"
+    },
+    {
+      "id": "mem-01",
+      "category": "memory",
+      "prompt": "post in #eng on slack what I told Ashu about the design review",
+      "memory": [
+        {
+          "channel": "whatsapp",
+          "subject_label": "Ashu",
+          "age": "1h ago",
+          "summary": "Sent a WhatsApp message to Ashu: \"The design review moved to Thursday 4pm\""
+        }
+      ],
+      "expect": {
+        "kind": "tool",
+        "tool": "send_slack_message",
+        "args_required": [
+          "channel",
+          "text"
+        ],
+        "args_must_match": {
+          "text": "thursday"
+        }
+      },
+      "note": "Cross-channel: the fact is ONLY in the memory block. Scored separately — see README.",
+      "source": "new 2026-08-15"
+    },
+    {
+      "id": "mem-02",
+      "category": "memory",
+      "prompt": "what time did I tell Priya her interview is?",
+      "memory": [
+        {
+          "channel": "whatsapp",
+          "subject_label": "Ashu",
+          "age": "1h ago",
+          "summary": "Sent a WhatsApp message to Ashu: \"The design review moved to Thursday 4pm\""
+        }
+      ],
+      "expect": {
+        "kind": "no_tool",
+        "must_not_match": "\b\\d{1,2}\\s*(am|pm|:\\d{2})"
+      },
+      "note": "Negative control: memory present but silent on Priya. Inventing a time is the failure.",
+      "source": "new 2026-08-15"
+    }
+  ]
+}

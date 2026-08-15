@@ -35,6 +35,7 @@ import * as settings from './settingsRepo'
 import * as subscriptions from './subscriptionRepo'
 import * as feedback from './feedbackRepo'
 import * as training from './trainingRepo'
+import * as memory from './memoryRepo'
 
 let temp: TempDb
 
@@ -394,5 +395,104 @@ describe('trainingRepo', () => {
     ).toThrow()
     // The failed transaction must leave nothing behind.
     expect(training.getStats().total).toBe(0)
+  })
+})
+
+describe('memoryRepo — cross-channel memory', () => {
+  /** A memory input with sensible defaults; override what the test cares about. */
+  const input = (over: Partial<Parameters<typeof memory.recordMemory>[0]> = {}): Parameters<
+    typeof memory.recordMemory
+  >[0] => ({
+    subjectKey: 'ashu',
+    subjectLabel: 'Ashu',
+    channel: 'whatsapp',
+    action: 'send_whatsapp_message',
+    direction: 'sent',
+    summary: 'Sent a WhatsApp message to Ashu: "design review moved to Thursday 4pm"',
+    ...over
+  })
+
+  it('records a memory and reads it back', () => {
+    const id = memory.recordMemory(input())
+    expect(id).toBeTruthy()
+    const rows = memory.listMemories()
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toMatchObject({
+      id,
+      subject_key: 'ashu',
+      subject_label: 'Ashu',
+      channel: 'whatsapp',
+      direction: 'sent'
+    })
+    // created_at is defaulted by SQLite, not passed in.
+    expect(rows[0].created_at).toBeGreaterThan(0)
+  })
+
+  it('collapses an identical repeat inside the dedup window', () => {
+    const first = memory.recordMemory(input())
+    const second = memory.recordMemory(input())
+    expect(second).toBe(first)
+    expect(memory.countMemories()).toBe(1)
+  })
+
+  it('treats a different summary under the same subject as a new memory', () => {
+    memory.recordMemory(input())
+    memory.recordMemory(input({ summary: 'Sent a WhatsApp message to Ashu: "on my way"' }))
+    expect(memory.countMemories()).toBe(2)
+  })
+
+  it('findMemories returns rows for a requested subject key', () => {
+    memory.recordMemory(input())
+    memory.recordMemory(input({ subjectKey: 'eng', subjectLabel: '#eng', channel: 'slack', summary: 'Posted in Slack #eng: "standup at 10"' }))
+    const found = memory.findMemories(['eng'])
+    expect(found.some((r) => r.subject_key === 'eng')).toBe(true)
+  })
+
+  it('findMemories still returns the recent tail when no key matches', () => {
+    memory.recordMemory(input())
+    // A topic question naming no known subject must still get candidates to rank.
+    expect(memory.findMemories(['nobody-by-this-name'])).toHaveLength(1)
+  })
+
+  it('listMemories returns newest first', () => {
+    memory.recordMemory(input({ summary: 'first' }))
+    memory.recordMemory(input({ summary: 'second' }))
+    // Same-second inserts tie on created_at; the repo breaks the tie on rowid.
+    expect(memory.listMemories()[0].summary).toBe('second')
+  })
+
+  it('deletes one memory', () => {
+    const id = memory.recordMemory(input())
+    expect(memory.deleteMemory(id)).toBe(true)
+    expect(memory.countMemories()).toBe(0)
+    // Deleting again reports that nothing was removed.
+    expect(memory.deleteMemory(id)).toBe(false)
+  })
+
+  it('clears every memory for one subject, leaving others intact', () => {
+    memory.recordMemory(input())
+    memory.recordMemory(input({ summary: 'Sent a WhatsApp message to Ashu: "on my way"' }))
+    memory.recordMemory(input({ subjectKey: 'mom', subjectLabel: 'Mom', summary: 'Sent a WhatsApp message to Mom: "running late"' }))
+    expect(memory.clearSubject('ashu')).toBe(2)
+    expect(memory.countMemories()).toBe(1)
+    expect(memory.listMemories()[0].subject_key).toBe('mom')
+  })
+
+  it('clears everything', () => {
+    memory.recordMemory(input())
+    memory.recordMemory(input({ subjectKey: 'mom', summary: 'Sent a WhatsApp message to Mom: "hi"' }))
+    expect(memory.clearAllMemories()).toBe(2)
+    expect(memory.listMemories()).toEqual([])
+  })
+
+  it('prunes a subject past MAX_ROWS_PER_SUBJECT, keeping the newest', () => {
+    for (let i = 0; i < memory.MAX_ROWS_PER_SUBJECT + 5; i++) {
+      memory.recordMemory(input({ summary: `message number ${i}` }))
+    }
+    expect(memory.countMemories()).toBe(memory.MAX_ROWS_PER_SUBJECT)
+    // The most recent write survived; the first ones did not.
+    const summaries = memory.listMemories().map((r) => r.summary)
+    expect(summaries).toContain(`message number ${memory.MAX_ROWS_PER_SUBJECT + 4}`)
+    expect(summaries).not.toContain('message number 0')
   })
 })

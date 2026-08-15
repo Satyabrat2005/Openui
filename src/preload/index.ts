@@ -65,6 +65,18 @@ type OsAuditEntry = {
   screenshotHash?: string
 }
 
+/** One stored cross-channel memory: what OpenUI did on a messaging channel. */
+type ChannelMemory = {
+  id: string
+  subject_key: string
+  subject_label: string
+  channel: string
+  action: string
+  direction: string
+  summary: string
+  created_at: number
+}
+
 /** Signed-in user profile pushed/returned by the main auth layer. */
 type AuthUser = {
   id: string
@@ -498,6 +510,20 @@ const api = {
     ipcRenderer.invoke('openui:os-consent:audit', limit),
   /** Path of the audit log, for a "reveal in folder" affordance. */
   osAuditLogPath: (): Promise<string> => ipcRenderer.invoke('openui:os-consent:audit-path'),
+
+  // ── Cross-channel memory (local, per-contact/topic) ──────────────────────────
+  // Read + delete only. Memory is written by the agent loop when a messaging
+  // action succeeds; the renderer can inspect and clear it, never add to it.
+  /** Every stored memory, newest first. Backs Settings → Memory. */
+  listMemories: (): Promise<ChannelMemory[]> => ipcRenderer.invoke('openui:memory:list'),
+  /** Forget one stored memory. */
+  deleteMemory: (id: string): Promise<boolean> =>
+    ipcRenderer.invoke('openui:memory:delete', id),
+  /** Forget everything filed under one contact or topic. Returns rows removed. */
+  clearMemorySubject: (subjectKey: string): Promise<number> =>
+    ipcRenderer.invoke('openui:memory:clear-subject', subjectKey),
+  /** Forget everything — the "OpenUI should not remember any of this" button. */
+  clearAllMemories: (): Promise<number> => ipcRenderer.invoke('openui:memory:clear-all'),
 
   getAppVersion: (): Promise<string> => ipcRenderer.invoke('openui:get-app-version'),
   checkForUpdates: (): Promise<{ currentVersion: string }> =>

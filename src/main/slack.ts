@@ -361,8 +361,10 @@ export const slackToolSchemas: ToolSchema[] = [
     name: 'send_slack_message',
     description:
       'Post a message to a Slack channel. Use this whenever the user wants to message a Slack channel ' +
-      '(e.g. "tell #eng standup is at 10"). Requires a Slack token (Settings → Slack). This ALWAYS asks ' +
-      'the user to confirm before sending, since it messages other people.',
+      '(e.g. "tell #eng standup is at 10"). Pass the channel NAME straight through as the user said it — ' +
+      '"#eng" or "eng" both work and are resolved to an ID for you, so do NOT call list_slack_channels ' +
+      'first when the user already named the channel. Requires a Slack token (Settings → Slack). ' +
+      'This ALWAYS asks the user to confirm before sending, since it messages other people.',
     parameters: {
       type: 'object',
       properties: {
@@ -375,8 +377,12 @@ export const slackToolSchemas: ToolSchema[] = [
   {
     name: 'list_slack_channels',
     description:
-      'List the Slack channels the token can see (name, ID, private/membership flags). Call this first to ' +
-      'discover the exact channel to send to or read from. Requires a Slack token (Settings → Slack).',
+      'List the Slack channels the token can see (name, ID, private/membership flags). ' +
+      'Use this ONLY when you do not already know which channel is meant — for example the user said ' +
+      '"post this in the eng channel" and you need the exact name, or they asked what channels exist. ' +
+      'If the user already named a channel (e.g. "#eng", "general"), do NOT call this first: ' +
+      'send_slack_message and read_slack_channel take a channel NAME directly and resolve it themselves, ' +
+      'so listing first just wastes a step. Requires a Slack token (Settings → Slack).',
     parameters: { type: 'object', properties: {}, required: [] }
   },
   {

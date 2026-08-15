@@ -65,6 +65,10 @@ import {
   isGoogleCalendarConnected,
   googleCreateEvent,
   googleListToday,
+  googleFindEvents,
+  googleDeleteEvent,
+  googleUpdateEvent,
+  SEARCH_WINDOW_DAYS,
   normalizeAttendees
 } from './googleCalendar'
 import {
@@ -2300,6 +2304,27 @@ export function resetOutlookProbeForTests(value: boolean | null = null): void {
  *          Calendar when connected (see the backend selection below)
  * Linux:   Google Calendar only
  */
+/**
+ * Render an event's start for a confirmation prompt or picker row.
+ *
+ * The user is about to authorise cancelling this exact event, so the label has
+ * to be readable at a glance — a raw ISO timestamp is not. Falls back to the
+ * original string when it isn't a parseable date (Google returns bare `date`
+ * values for all-day events).
+ */
+function formatEventWhen(iso: string): string {
+  if (!iso) return 'time unknown'
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return iso
+  return d.toLocaleString(undefined, {
+    weekday: 'short',
+    day: 'numeric',
+    month: 'short',
+    hour: '2-digit',
+    minute: '2-digit'
+  })
+}
+
 async function control_calendar(
   args: Record<string, unknown>,
   context?: ExecutorContext
@@ -2382,7 +2407,97 @@ async function control_calendar(
       })
     }
     if (action === 'list') return googleListToday()
-    return { ok: false, error: `control_calendar: unknown action "${action}". Use "create" or "list".` }
+
+    // ── delete / update: resolve the event, then confirm ──────────────────────
+    // Both change something the other attendees see, so neither runs on a name
+    // alone. The order matters: RESOLVE first, CONFIRM second, act third — so
+    // the confirmation names the actual event ("Standup, Fri 6 Sep 14:00")
+    // rather than the search term the model guessed.
+    if (action === 'delete' || action === 'update') {
+      const wanted = str(details.title) || str(details.summary) || str(details.query)
+      const explicitId = str(details.eventId)
+
+      let targetId = explicitId
+      let targetLabel = wanted
+
+      if (!targetId) {
+        if (!wanted) {
+          return {
+            ok: false,
+            error: `control_calendar "${action}" needs eventDetails.title naming the event (e.g. {"title": "standup"}).`
+          }
+        }
+        const found = await googleFindEvents(wanted)
+        if (!found.ok) return { ok: false, error: found.error ?? 'Calendar search failed.' }
+        const events = found.events ?? []
+        if (events.length === 0) {
+          return {
+            ok: false,
+            error: `No calendar event matching "${wanted}" was found in the next ${SEARCH_WINDOW_DAYS} days. Do not retry with the same term; ask the user for the exact event name.`
+          }
+        }
+        // Identification and approval are INDEPENDENT. An earlier version made
+        // the picker conditional on !sensitiveApproved, so an already-approved
+        // ambiguous match fell through to events[0] and silently cancelled the
+        // first of several same-named meetings. Resolve identity first, always.
+        const chosen = str((args as Record<string, unknown>).resolvedContact)
+        if (chosen) {
+          // The picker hands back the rendered label; recover the id from it and
+          // check it against the candidates, so a value that never came from
+          // this search cannot address an arbitrary event.
+          const m = /\[([^\]]+)\]\s*$/.exec(chosen)
+          const picked = events.find((e) => e.id === (m ? m[1] : ''))
+          if (!picked) return { ok: false, error: 'Could not identify the chosen event.' }
+          targetId = picked.id
+          targetLabel = `${picked.summary} — ${formatEventWhen(picked.start)}`
+        } else if (events.length > 1) {
+          // More than one match is NOT resolved by guessing. This returns the
+          // same 'choice' shape the WhatsApp contact picker uses, so the agent
+          // loop shows the user a picker and re-runs with resolvedContact set.
+          return {
+            ok: false,
+            error: `Several events match "${wanted}".`,
+            needsConfirmation: {
+              kind: 'choice',
+              label: `Which event should I ${action === 'delete' ? 'cancel' : 'change'}?`,
+              choices: events.map((e) => `${e.summary} — ${formatEventWhen(e.start)} [${e.id}]`)
+            }
+          }
+        } else {
+          targetId = events[0].id
+          targetLabel = `${events[0].summary} — ${formatEventWhen(events[0].start)}`
+        }
+      }
+
+      // Attendees are emailed either way, so this gate is never bypassed by
+      // autonomy level (see the attendees gate above for the same reasoning).
+      if (!context?.sensitiveApproved) {
+        return {
+          ok: false,
+          error: `Awaiting confirmation to ${action} the calendar event.`,
+          needsConfirmation: {
+            kind: 'sensitive-action',
+            label:
+              action === 'delete'
+                ? `Cancel the calendar event "${targetLabel}" and notify its attendees?`
+                : `Change the calendar event "${targetLabel}" and notify its attendees?`
+          }
+        }
+      }
+
+      if (action === 'delete') return googleDeleteEvent(targetId)
+      return googleUpdateEvent(targetId, {
+        title: str(details.newTitle),
+        start: str(details.start),
+        end: str(details.end),
+        notes: str(details.notes)
+      })
+    }
+
+    return {
+      ok: false,
+      error: `control_calendar: unknown action "${action}". Use "create", "list", "delete" or "update".`
+    }
   }
 
   // ── macOS path (AppleScript / Calendar.app) ─────────────────────────────────
@@ -2456,9 +2571,146 @@ async function control_calendar(
       }
     }
 
+    if (action === 'delete' || action === 'update') {
+      const wanted = str(details.title) || str(details.summary) || str(details.query)
+      if (!wanted) {
+        return {
+          ok: false,
+          error: `control_calendar "${action}" needs eventDetails.title naming the event (e.g. {"title": "standup"}).`
+        }
+      }
+
+      // Find first. `whose summary contains` would happily delete EVERY match
+      // in one statement, so the candidates are listed and resolved before any
+      // deletion is issued.
+      const findScript = [
+        'set output to ""',
+        'set windowStart to (current date) - (1 * days)',
+        `set windowEnd to (current date) + (${SEARCH_WINDOW_DAYS} * days)`,
+        'tell application "Calendar"',
+        '  repeat with cal in calendars',
+        `    repeat with evt in (every event of cal whose summary contains ${asStringLiteral(wanted)} and start date >= windowStart and start date < windowEnd)`,
+        '      set output to output & (summary of evt) & "\\t" & (start date of evt as string) & "\\t" & (uid of evt) & linefeed',
+        '    end repeat',
+        '  end repeat',
+        'end tell',
+        'return output'
+      ].join('\n')
+
+      let candidates: Array<{ summary: string; when: string; uid: string }>
+      try {
+        const raw = (await runAppleScript(findScript)).trim()
+        candidates = raw
+          ? raw.split('\n').map((line) => {
+              const [summary = '', when = '', uid = ''] = line.split('\t')
+              return { summary: summary.trim(), when: when.trim(), uid: uid.trim() }
+            }).filter((c) => c.uid)
+          : []
+      } catch (err) {
+        return {
+          ok: false,
+          error: `control_calendar "${action}" could not search Calendar.app: ${err instanceof Error ? err.message : String(err)}`
+        }
+      }
+
+      if (candidates.length === 0) {
+        return {
+          ok: false,
+          error: `No calendar event matching "${wanted}" was found in the next ${SEARCH_WINDOW_DAYS} days. Do not retry with the same term; ask the user for the exact event name.`
+        }
+      }
+
+      // Identity is resolved independently of approval — see the Google path
+      // for the bug this shape prevents (an approved ambiguous match silently
+      // cancelling the first of several same-named meetings).
+      let target = candidates[0]
+      const chosen = str((args as Record<string, unknown>).resolvedContact)
+      if (chosen) {
+        const m = /\[([^\]]+)\]\s*$/.exec(chosen)
+        const picked = candidates.find((c) => c.uid === (m ? m[1] : ''))
+        if (!picked) return { ok: false, error: 'Could not identify the chosen event.' }
+        target = picked
+      } else if (candidates.length > 1) {
+        return {
+          ok: false,
+          error: `Several events match "${wanted}".`,
+          needsConfirmation: {
+            kind: 'choice',
+            label: `Which event should I ${action === 'delete' ? 'cancel' : 'change'}?`,
+            choices: candidates.map((c) => `${c.summary} — ${c.when} [${c.uid}]`)
+          }
+        }
+      }
+
+      if (!context?.sensitiveApproved) {
+        return {
+          ok: false,
+          error: `Awaiting confirmation to ${action} the calendar event.`,
+          needsConfirmation: {
+            kind: 'sensitive-action',
+            label:
+              action === 'delete'
+                ? `Cancel the calendar event "${target.summary} — ${target.when}"?`
+                : `Change the calendar event "${target.summary} — ${target.when}"?`
+          }
+        }
+      }
+
+      // Act on the resolved UID, never on the search term.
+      const newStart = str(details.start)
+      const newTitle = str(details.newTitle)
+      const actScript =
+        action === 'delete'
+          ? [
+              'tell application "Calendar"',
+              '  repeat with cal in calendars',
+              `    repeat with evt in (every event of cal whose uid is ${asStringLiteral(target.uid)})`,
+              '      delete evt',
+              '    end repeat',
+              '  end repeat',
+              'end tell',
+              'return "deleted"'
+            ].join('\n')
+          : [
+              newStart ? `set newStart to date ${asStringLiteral(newStart)}` : '',
+              'tell application "Calendar"',
+              '  repeat with cal in calendars',
+              `    repeat with evt in (every event of cal whose uid is ${asStringLiteral(target.uid)})`,
+              newStart ? '      set start date of evt to newStart' : '',
+              newStart ? '      set end date of evt to newStart + (60 * minutes)' : '',
+              newTitle ? `      set summary of evt to ${asStringLiteral(newTitle)}` : '',
+              '    end repeat',
+              '  end repeat',
+              'end tell',
+              'return "updated"'
+            ]
+              .filter(Boolean)
+              .join('\n')
+
+      if (action === 'update' && !newStart && !newTitle) {
+        return { ok: false, error: 'control_calendar "update" needs a new start time or a newTitle.' }
+      }
+
+      try {
+        await runAppleScript(actScript)
+        return {
+          ok: true,
+          output:
+            action === 'delete'
+              ? `Cancelled "${target.summary}" (${target.when}).`
+              : `Updated "${target.summary}".`
+        }
+      } catch (err) {
+        return {
+          ok: false,
+          error: `control_calendar "${action}" failed: ${err instanceof Error ? err.message : String(err)}`
+        }
+      }
+    }
+
     return {
       ok: false,
-      error: `Unknown calendar action "${action}". Use "create" or "list".`
+      error: `Unknown calendar action "${action}". Use "create", "list", "delete" or "update".`
     }
   }
 
@@ -2560,9 +2812,152 @@ try {
       }
     }
 
+    if (action === 'delete' || action === 'update') {
+      const wanted = str(details.title) || str(details.summary) || str(details.query)
+      if (!wanted) {
+        return {
+          ok: false,
+          error: `control_calendar "${action}" needs eventDetails.title naming the event (e.g. {"title": "standup"}).`
+        }
+      }
+
+      // As on macOS: enumerate candidates first, never delete by subject match.
+      // The search term travels via the environment, so nothing user-supplied is
+      // interpolated into the script text.
+      const findScript = `
+try {
+  $ol  = New-Object -ComObject Outlook.Application -ErrorAction Stop
+  $ns  = $ol.GetNamespace('MAPI')
+  $cal = $ns.GetDefaultFolder(9)
+  $items = $cal.Items
+  $items.Sort('[Start]')
+  $items.IncludeRecurrences = $true
+  $s = (Get-Date).AddDays(-1).ToString('MM/dd/yyyy HH:mm')
+  $e = (Get-Date).AddDays(${SEARCH_WINDOW_DAYS}).ToString('MM/dd/yyyy HH:mm')
+  $f = $items.Restrict("[Start] >= '$s' AND [Start] < '$e'")
+  $needle = $env:OPENUI_CAL_QUERY
+  $lines = @()
+  foreach ($item in $f) {
+    if ($item.Subject -and $item.Subject.ToLower().Contains($needle.ToLower())) {
+      $lines += ($item.Subject + "\`t" + $item.Start + "\`t" + $item.EntryID)
+    }
+  }
+  $lines -join [char]10
+} catch { Write-Error ('Calendar not available (Microsoft Outlook required): ' + $_.Exception.Message); exit 1 }
+`
+      let candidates: Array<{ summary: string; when: string; uid: string }>
+      try {
+        const raw = (await runPowerShellScript(findScript, { OPENUI_CAL_QUERY: wanted })).trim()
+        candidates = raw
+          ? raw.split('\n').map((line) => {
+              const [summary = '', when = '', uid = ''] = line.split('\t')
+              return { summary: summary.trim(), when: when.trim(), uid: uid.trim() }
+            }).filter((c) => c.uid)
+          : []
+      } catch (err) {
+        const stderr = (err as { stderr?: string }).stderr?.trim()
+        return {
+          ok: false,
+          error: `control_calendar "${action}" could not search Outlook: ${stderr || (err instanceof Error ? err.message : String(err))}`
+        }
+      }
+
+      if (candidates.length === 0) {
+        return {
+          ok: false,
+          error: `No calendar event matching "${wanted}" was found in the next ${SEARCH_WINDOW_DAYS} days. Do not retry with the same term; ask the user for the exact event name.`
+        }
+      }
+
+      // Identity is resolved independently of approval — see the Google path
+      // for the bug this shape prevents (an approved ambiguous match silently
+      // cancelling the first of several same-named meetings).
+      let target = candidates[0]
+      const chosen = str((args as Record<string, unknown>).resolvedContact)
+      if (chosen) {
+        const m = /\[([^\]]+)\]\s*$/.exec(chosen)
+        const picked = candidates.find((c) => c.uid === (m ? m[1] : ''))
+        if (!picked) return { ok: false, error: 'Could not identify the chosen event.' }
+        target = picked
+      } else if (candidates.length > 1) {
+        return {
+          ok: false,
+          error: `Several events match "${wanted}".`,
+          needsConfirmation: {
+            kind: 'choice',
+            label: `Which event should I ${action === 'delete' ? 'cancel' : 'change'}?`,
+            choices: candidates.map((c) => `${c.summary} — ${c.when} [${c.uid}]`)
+          }
+        }
+      }
+
+      if (!context?.sensitiveApproved) {
+        return {
+          ok: false,
+          error: `Awaiting confirmation to ${action} the calendar event.`,
+          needsConfirmation: {
+            kind: 'sensitive-action',
+            label:
+              action === 'delete'
+                ? `Cancel the calendar event "${target.summary} — ${target.when}"?`
+                : `Change the calendar event "${target.summary} — ${target.when}"?`
+          }
+        }
+      }
+
+      const newStart = str(details.start)
+      const newTitle = str(details.newTitle)
+      if (action === 'update' && !newStart && !newTitle) {
+        return { ok: false, error: 'control_calendar "update" needs a new start time or a newTitle.' }
+      }
+
+      // GetItemFromID addresses the ONE resolved event — no subject matching
+      // survives into the mutating step.
+      const actScript =
+        action === 'delete'
+          ? `
+try {
+  $ol = New-Object -ComObject Outlook.Application -ErrorAction Stop
+  $ns = $ol.GetNamespace('MAPI')
+  $item = $ns.GetItemFromID($env:OPENUI_CAL_ID)
+  $subject = $item.Subject
+  $item.Delete()
+  'Cancelled: ' + $subject
+} catch { Write-Error ('Could not cancel the event: ' + $_.Exception.Message); exit 1 }
+`
+          : `
+try {
+  $ol = New-Object -ComObject Outlook.Application -ErrorAction Stop
+  $ns = $ol.GetNamespace('MAPI')
+  $item = $ns.GetItemFromID($env:OPENUI_CAL_ID)
+  if ($env:OPENUI_CAL_NEWTITLE) { $item.Subject = $env:OPENUI_CAL_NEWTITLE }
+  if ($env:OPENUI_CAL_START) {
+    $item.Start = [DateTime]::Parse($env:OPENUI_CAL_START)
+    $item.End = $item.Start.AddHours(1)
+  }
+  $item.Save()
+  'Updated: ' + $item.Subject
+} catch { Write-Error ('Could not update the event: ' + $_.Exception.Message); exit 1 }
+`
+      try {
+        const output = await runPowerShellScript(actScript, {
+          OPENUI_CAL_ID: target.uid,
+          OPENUI_CAL_START: newStart,
+          OPENUI_CAL_NEWTITLE: newTitle
+        })
+        return { ok: true, output: output || `${action === 'delete' ? 'Cancelled' : 'Updated'} "${target.summary}".` }
+      } catch (err) {
+        const stderr = (err as { stderr?: string }).stderr?.trim()
+        return {
+          ok: false,
+          error: `control_calendar "${action}" failed: ${stderr || (err instanceof Error ? err.message : String(err))}`
+        }
+      }
+    }
+
     return {
       ok: false,
-      error: `Unknown calendar action "${action}". Use "create" or "list".`
+      error: `Unknown calendar action "${action}". Use "create", "list", "delete" or "update".`
     }
   }
 
@@ -5873,7 +6268,11 @@ export const toolSchemas: ToolSchema[] = [
       'work for Store and desktop apps alike (e.g. "WhatsApp", "Spotify", "Notepad", ' +
       '"Microsoft Edge"), as do bare executable names on PATH ("notepad", "msedge", "code") ' +
       'and full paths to an .exe. For folders and files, pass an absolute path, "~"-relative path, ' +
-      'or home-relative path such as "Downloads/test".',
+      'or home-relative path such as "Downloads/test". ' +
+      'Prefer this over browser_navigate when the user asks to OPEN something they think of as an app — ' +
+      '"open my email", "open my calendar", "open Spotify" mean the app on this machine ' +
+      '(e.g. appName "Mail" / "Outlook" / "Calendar"), not a web page. Reach for browser_navigate only ' +
+      'when the user names a website or URL, or asks for something that exists only on the web.',
     parameters: {
       type: 'object',
       properties: { appName: { type: 'string', description: 'The application name to open.' } },
@@ -6109,18 +6508,26 @@ export const toolSchemas: ToolSchema[] = [
   {
     name: 'control_calendar',
     description:
-      "Create an event in, or list today's events from, a calendar. " +
+      'Work with the user\'s calendar: CREATE an event, LIST today\'s events, ' +
+      'DELETE (cancel) an event, or UPDATE (move / reschedule / rename) one. ' +
+      'Use this for "schedule…", "what\'s on my calendar", "cancel my 2pm standup", ' +
+      'and "move my dentist appointment to Wednesday". ' +
       'Uses Calendar.app on macOS and Microsoft Outlook (via COM) on Windows. ' +
       'To email invites to other people or attach a video-call (Meet) link, connect ' +
       'Google Calendar in Settings and pass eventDetails.attendees — that routes ' +
-      'through the Google Calendar API automatically. Sending invites asks the user to confirm.',
+      'through the Google Calendar API automatically. Sending invites asks the user to confirm. ' +
+      'Cancelling and rescheduling find the event by title first: if several match you will be ' +
+      'asked which one you meant, and the change is always confirmed before it happens, since ' +
+      'the other attendees are notified.',
     parameters: {
       type: 'object',
       properties: {
         action: {
           type: 'string',
-          description: 'Either "create" or "list".',
-          enum: ['create', 'list']
+          description:
+            '"create" (new event), "list" (today\'s events), "delete" (cancel an existing ' +
+            'event), or "update" (move or rename an existing event).',
+          enum: ['create', 'list', 'delete', 'update']
         },
         eventDetails: {
           type: 'object',
@@ -6128,7 +6535,10 @@ export const toolSchemas: ToolSchema[] = [
             'For "create": {title, start, end, calendar, notes, attendees, addMeetLink}. ' +
             'Dates are natural strings, e.g. "June 24, 2026 11:00 AM". ' +
             'attendees is a list of email addresses to invite (requires Google Calendar). ' +
-            'addMeetLink:true attaches a Google Meet link.'
+            'addMeetLink:true attaches a Google Meet link. ' +
+            'For "delete": {title} naming the event to cancel, e.g. {"title": "standup"}. ' +
+            'For "update": {title} to find the event, plus the new {start} and/or {end}, ' +
+            'and {newTitle} to rename it.'
         },
         backend: {
           type: 'string',

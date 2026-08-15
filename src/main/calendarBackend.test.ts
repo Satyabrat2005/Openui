@@ -19,7 +19,12 @@ import { homedir } from 'node:os'
 const gcal = {
   connected: false,
   created: [] as unknown[],
-  listed: 0
+  listed: 0,
+  /** Candidate events googleFindEvents will return for the next search. */
+  found: [] as Array<{ id: string; summary: string; start: string; htmlLink: string }>,
+  /** Every id actually passed to googleDeleteEvent — must stay empty until approval. */
+  deleted: [] as string[],
+  updated: [] as Array<{ id: string; patch: unknown }>
 }
 
 vi.mock('electron', () => ({
@@ -45,6 +50,16 @@ vi.mock('./googleCalendar', () => ({
     gcal.listed++
     return { ok: true, output: 'GOOGLE_LISTED' }
   },
+  googleFindEvents: async () => ({ ok: true, events: gcal.found }),
+  googleDeleteEvent: async (id: string) => {
+    gcal.deleted.push(id)
+    return { ok: true, output: 'GOOGLE_DELETED' }
+  },
+  googleUpdateEvent: async (id: string, patch: unknown) => {
+    gcal.updated.push({ id, patch })
+    return { ok: true, output: 'GOOGLE_UPDATED' }
+  },
+  SEARCH_WINDOW_DAYS: 60,
   normalizeAttendees: (raw: unknown) => (Array.isArray(raw) ? raw.filter((x) => typeof x === 'string') : [])
 }))
 // If a test ever reaches the real Windows path, this stands in for the COM call
@@ -83,7 +98,142 @@ beforeEach(() => {
   gcal.connected = false
   gcal.created = []
   gcal.listed = 0
+  gcal.found = []
+  gcal.deleted = []
+  gcal.updated = []
   resetOutlookProbeForTests(null)
+})
+
+/** Same call, but WITHOUT pre-approval - the shape the agent loop first sees. */
+async function calendarUnapproved(
+  args: Record<string, unknown>
+): Promise<{ ok: boolean; output?: string; error?: string; needsConfirmation?: { kind: string; label: string; choices?: string[] } }> {
+  return (await executeTool('control_calendar', args, {
+    tier: 'free',
+    bypassHitl: true
+  } as never)) as never
+}
+
+/**
+ * Cancelling and rescheduling events - the destructive half of control_calendar.
+ *
+ * These paths email the other attendees, and a cancellation cannot be undone
+ * from their point of view, so the invariant under test is not "does it delete"
+ * but "what does it refuse to delete": nothing is cancelled without an explicit
+ * approval, and an ambiguous name is never resolved by guessing.
+ *
+ * Google is the backend here because it is the one path with no OS dependency;
+ * the Calendar.app and Outlook paths follow the same resolve -> confirm -> act
+ * shape but need real hosts to exercise.
+ */
+describe('control_calendar delete / update - Google backend', () => {
+  beforeEach(() => {
+    gcal.connected = true
+    resetOutlookProbeForTests(false) // force the Google path on every OS
+  })
+
+  it('cancels the single matching event once approved', async () => {
+    if (IS_MAC) return // macOS has a local backend and takes the AppleScript path
+    gcal.found = [{ id: 'evt-1', summary: 'Standup', start: '2026-09-04T14:00:00Z', htmlLink: '' }]
+    const res = await calendar({ action: 'delete', eventDetails: { title: 'standup' } })
+    expect(res.ok).toBe(true)
+    expect(gcal.deleted).toEqual(['evt-1'])
+  })
+
+  it('SAFETY: cancels NOTHING until the user approves', async () => {
+    if (IS_MAC) return
+    gcal.found = [{ id: 'evt-1', summary: 'Standup', start: '2026-09-04T14:00:00Z', htmlLink: '' }]
+    const res = await calendarUnapproved({ action: 'delete', eventDetails: { title: 'standup' } })
+    expect(res.ok).toBe(false)
+    expect(res.needsConfirmation?.kind).toBe('sensitive-action')
+    // The confirmation names the resolved event, not the search term.
+    expect(res.needsConfirmation?.label).toMatch(/Standup/)
+    // The one that matters: no delete was issued.
+    expect(gcal.deleted).toEqual([])
+  })
+
+  it('SAFETY: asks which event when several match, instead of picking one', async () => {
+    if (IS_MAC) return
+    gcal.found = [
+      { id: 'evt-1', summary: 'Standup', start: '2026-09-04T14:00:00Z', htmlLink: '' },
+      { id: 'evt-2', summary: 'Standup', start: '2026-09-11T14:00:00Z', htmlLink: '' }
+    ]
+    const res = await calendarUnapproved({ action: 'delete', eventDetails: { title: 'standup' } })
+    expect(res.ok).toBe(false)
+    expect(res.needsConfirmation?.kind).toBe('choice')
+    expect(res.needsConfirmation?.choices).toHaveLength(2)
+    expect(gcal.deleted).toEqual([])
+  })
+
+  it('deletes the event the user picked from the ambiguity list', async () => {
+    if (IS_MAC) return
+    gcal.found = [
+      { id: 'evt-1', summary: 'Standup', start: '2026-09-04T14:00:00Z', htmlLink: '' },
+      { id: 'evt-2', summary: 'Standup', start: '2026-09-11T14:00:00Z', htmlLink: '' }
+    ]
+    const res = await calendar({
+      action: 'delete',
+      eventDetails: { title: 'standup' },
+      resolvedContact: 'Standup - Fri 11 Sep 14:00 [evt-2]'
+    })
+    expect(res.ok).toBe(true)
+    expect(gcal.deleted).toEqual(['evt-2'])
+  })
+
+  it('REGRESSION: an approved-but-ambiguous match still asks, never picks the first', async () => {
+    // The bug this pins: disambiguation used to be gated on !sensitiveApproved,
+    // so once the user approved the action an ambiguous name fell through to
+    // candidates[0] and cancelled the FIRST of several same-named meetings
+    // without ever showing the picker. Identity and approval are independent.
+    if (IS_MAC) return
+    gcal.found = [
+      { id: 'evt-1', summary: 'Standup', start: '2026-09-04T14:00:00Z', htmlLink: '' },
+      { id: 'evt-2', summary: 'Standup', start: '2026-09-11T14:00:00Z', htmlLink: '' }
+    ]
+    // Approved, ambiguous, and NO pick supplied.
+    const res = await calendar({ action: 'delete', eventDetails: { title: 'standup' } })
+    expect(res.ok).toBe(false)
+    expect(gcal.deleted).toEqual([])
+  })
+
+  it('reports no match without deleting anything, and tells the model not to retry', async () => {
+    if (IS_MAC) return
+    gcal.found = []
+    const res = await calendar({ action: 'delete', eventDetails: { title: 'nonexistent' } })
+    expect(res.ok).toBe(false)
+    expect(res.error).toMatch(/No calendar event matching/)
+    expect(res.error).toMatch(/Do not retry/)
+    expect(gcal.deleted).toEqual([])
+  })
+
+  it('requires a name to search for', async () => {
+    if (IS_MAC) return
+    const res = await calendar({ action: 'delete', eventDetails: {} })
+    expect(res.ok).toBe(false)
+    expect(res.error).toMatch(/eventDetails\.title/)
+    expect(gcal.deleted).toEqual([])
+  })
+
+  it('reschedules a matched event, passing the new start through', async () => {
+    if (IS_MAC) return
+    gcal.found = [{ id: 'evt-9', summary: 'Dentist', start: '2026-09-04T09:00:00Z', htmlLink: '' }]
+    const res = await calendar({
+      action: 'update',
+      eventDetails: { title: 'dentist', start: 'next Wednesday 10:00' }
+    })
+    expect(res.ok).toBe(true)
+    expect(gcal.updated).toHaveLength(1)
+    expect(gcal.updated[0].id).toBe('evt-9')
+    expect((gcal.updated[0].patch as { start: string }).start).toBe('next Wednesday 10:00')
+  })
+
+  it('rejects an unknown action by name, listing the real ones', async () => {
+    if (IS_MAC) return
+    const res = await calendar({ action: 'purge' })
+    expect(res.ok).toBe(false)
+    expect(res.error).toMatch(/create/)
+    expect(res.error).toMatch(/delete/)
+  })
 })
 
 describe('control_calendar backend selection — no local calendar available', () => {

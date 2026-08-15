@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import type { AutonomyLevel, ConsentStatus, WhatsAppAutoReplyConfig } from '../env'
+import type { AutonomyLevel, ChannelMemory, ConsentStatus, WhatsAppAutoReplyConfig } from '../env'
 import type { UpdateStatus } from '../hooks/useUpdater'
 import { applyTheme, coerceThemePref, type ThemePref } from '../lib/theme'
 
@@ -29,6 +29,28 @@ const OCR_LANGUAGE_OPTIONS: { value: string; label: string }[] = [
   { value: 'jpn', label: 'Japanese' },
   { value: 'chi_sim', label: 'Chinese (Simplified)' }
 ]
+
+// Display names + accent colours for the four channels cross-channel memory
+// covers. Keys match MemoryChannel in src/main/channelMemory.ts.
+// (--ou-violet is folded onto the accent in index.css — purple is banned — so
+// the four colours are drawn from success / accent / warn / danger instead.)
+const MEMORY_CHANNELS: Record<string, { label: string; color: string }> = {
+  whatsapp: { label: 'WhatsApp', color: 'var(--ou-success)' },
+  telegram: { label: 'Telegram', color: 'var(--ou-accent-text)' },
+  slack: { label: 'Slack', color: 'var(--ou-warn)' },
+  gmail: { label: 'Gmail', color: 'var(--ou-danger-text)' }
+}
+
+/** "2h ago" from a unix-seconds timestamp, for the memory list. */
+function memoryAge(createdAt: number): string {
+  const seconds = Math.max(0, Math.floor(Date.now() / 1000) - createdAt)
+  if (seconds < 60) return 'just now'
+  const minutes = Math.floor(seconds / 60)
+  if (minutes < 60) return `${minutes}m ago`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return `${hours}h ago`
+  return `${Math.floor(hours / 24)}d ago`
+}
 
 // Launch switch for the bring-your-own-key Cloud AI section. OFF for the
 // Ollama-only launch — the shipped app shows no API-key field and no cloud
@@ -114,6 +136,13 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
   const [waSaved, setWaSaved] = useState(false)
   const [waNewName, setWaNewName] = useState('')
   const [waNewInstruction, setWaNewInstruction] = useState('')
+  // Cross-channel memory. Every stored line is listed here because the feature's
+  // whole risk is invisibility: carrying something said on WhatsApp into a Slack
+  // reply is only acceptable if the user can see exactly what is remembered and
+  // delete any of it. Read-only from the renderer — the agent loop is the sole
+  // writer (see channelMemory.ts).
+  const [memories, setMemories] = useState<ChannelMemory[]>([])
+  const [memoryConfirmClear, setMemoryConfirmClear] = useState(false)
 
   useEffect(() => {
     let cancelled = false
@@ -238,6 +267,13 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
       })
       .catch(() => {})
 
+    window.openui
+      .listMemories()
+      .then((rows) => {
+        if (!cancelled) setMemories(rows)
+      })
+      .catch(() => {})
+
     const off = window.openui.onConsentUpdated((status: ConsentStatus) => {
       setEnabled(status === 'granted')
     })
@@ -246,6 +282,42 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
       off()
     }
   }, [])
+
+  /**
+   * Forget one memory. Optimistic: the row disappears immediately and is put
+   * back only if the main process reports it did not actually delete it —
+   * a "Forget" that visibly does nothing for a second reads as a broken
+   * promise on exactly the control the user is here to trust.
+   */
+  const forgetMemory = (id: string): void => {
+    const prev = memories
+    setMemories((rows) => rows.filter((r) => r.id !== id))
+    void window.openui
+      .deleteMemory(id)
+      .then((ok) => {
+        if (!ok) setMemories(prev)
+      })
+      .catch(() => setMemories(prev))
+  }
+
+  /** Forget everything filed under one contact or topic. */
+  const forgetSubject = (subjectKey: string): void => {
+    const prev = memories
+    setMemories((rows) => rows.filter((r) => r.subject_key !== subjectKey))
+    void window.openui.clearMemorySubject(subjectKey).catch(() => setMemories(prev))
+  }
+
+  /** Forget all of it. Two-step, since it is not recoverable. */
+  const forgetAllMemories = (): void => {
+    if (!memoryConfirmClear) {
+      setMemoryConfirmClear(true)
+      return
+    }
+    const prev = memories
+    setMemories([])
+    setMemoryConfirmClear(false)
+    void window.openui.clearAllMemories().catch(() => setMemories(prev))
+  }
 
   const chooseAutonomy = (value: AutonomyLevel): void => {
     const prev = autonomy
@@ -744,6 +816,141 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
             </div>
           </div>
         )}
+
+        {/* Cross-channel memory. Listed in full and individually deletable by
+            design: the feature carries what happened on one channel into a
+            reply on another, and that is only acceptable if the user can see
+            every line of it. Nothing here writes memory — the agent loop is the
+            sole writer (channelMemory.ts). */}
+        <div className="ou-settings-section">
+          <div className="ou-settings-headrow">
+            <div className="ou-settings-label">Memory</div>
+            <span className="ou-settings-status">
+              {memories.length === 0
+                ? 'Nothing stored'
+                : `${memories.length} ${memories.length === 1 ? 'memory' : 'memories'}`}
+            </span>
+          </div>
+          <div className="ou-settings-desc" style={{ marginBottom: 10 }}>
+            After OpenUI sends or reads a message on WhatsApp, Telegram, Slack or Gmail, it keeps a
+            one-line note of what happened, filed under that contact or topic. Those notes are
+            offered back as context on later requests — including on a{' '}
+            <strong style={{ color: 'var(--ou-text)' }}>different channel</strong>, which is how
+            &ldquo;tell #eng what I promised Ashu&rdquo; works. Stored locally in this app&rsquo;s
+            database; never uploaded. Delete anything below and it stops being used immediately.
+          </div>
+
+          {memories.length === 0 ? (
+            <div className="ou-settings-desc" style={{ fontStyle: 'italic' }}>
+              Nothing remembered yet. Notes appear here after OpenUI acts on one of your messaging
+              channels.
+            </div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 10 }}>
+              {memories.map((m) => {
+                const chan = MEMORY_CHANNELS[m.channel] ?? {
+                  label: m.channel,
+                  color: 'var(--ou-text-faint)'
+                }
+                return (
+                  <div
+                    key={m.id}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'flex-start',
+                      gap: 10,
+                      padding: '8px 10px',
+                      border: '1px solid var(--ou-border)',
+                      borderRadius: 8,
+                      background: 'var(--ou-surface-2)'
+                    }}
+                  >
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 8,
+                          marginBottom: 3,
+                          flexWrap: 'wrap'
+                        }}
+                      >
+                        <span
+                          style={{
+                            fontSize: 10.5,
+                            fontWeight: 700,
+                            letterSpacing: 0.3,
+                            textTransform: 'uppercase',
+                            color: chan.color
+                          }}
+                        >
+                          {chan.label}
+                        </span>
+                        <span style={{ fontSize: 11, color: 'var(--ou-text)', fontWeight: 600 }}>
+                          {m.subject_label}
+                        </span>
+                        <span style={{ fontSize: 11, color: 'var(--ou-text-faint)' }}>
+                          {memoryAge(m.created_at)}
+                        </span>
+                      </div>
+                      <div style={{ fontSize: 12.5, color: 'var(--ou-text)', wordBreak: 'break-word' }}>
+                        {m.summary}
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => forgetMemory(m.id)}
+                      aria-label={`Forget: ${m.summary}`}
+                      title="Forget this"
+                      style={{
+                        flexShrink: 0,
+                        border: '1px solid var(--ou-border)',
+                        borderRadius: 6,
+                        padding: '4px 9px',
+                        fontSize: 11.5,
+                        fontWeight: 600,
+                        color: 'var(--ou-text-faint)',
+                        background: 'transparent',
+                        cursor: 'pointer'
+                      }}
+                    >
+                      Forget
+                    </button>
+                  </div>
+                )
+              })}
+            </div>
+          )}
+
+          {memories.length > 0 && (
+            <div className="ou-settings-btnrow" style={{ marginTop: 0, flexWrap: 'wrap' }}>
+              {/* Per-subject clear: "stop remembering this person" is a more
+                  common intent than clearing the whole store. */}
+              {[...new Map(memories.map((m) => [m.subject_key, m.subject_label])).entries()]
+                .slice(0, 6)
+                .map(([key, label]) => (
+                  <button
+                    key={key}
+                    type="button"
+                    className="ou-settings-btn"
+                    onClick={() => forgetSubject(key)}
+                    title={`Forget everything stored about ${label}`}
+                  >
+                    Forget all: {label}
+                  </button>
+                ))}
+              <button
+                type="button"
+                className="ou-settings-btn"
+                onClick={forgetAllMemories}
+                onBlur={() => setMemoryConfirmClear(false)}
+                style={memoryConfirmClear ? { color: 'var(--ou-danger-text)' } : undefined}
+              >
+                {memoryConfirmClear ? 'Click again to confirm' : 'Forget everything'}
+              </button>
+            </div>
+          )}
+        </div>
 
         {/* Cloud AI: bring-your-own-key frontier model (opt-in). Hidden for the
             Ollama-only launch; see CLOUD_TIER_ENABLED above. */}

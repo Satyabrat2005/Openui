@@ -360,6 +360,29 @@ export interface WhatsAppDraftReply {
   at: string
 }
 
+/**
+ * One stored cross-channel memory — a messaging action OpenUI took earlier,
+ * filed under the contact or topic it concerns. Shown in Settings → Memory so
+ * the user can see (and delete) anything that might be carried from one channel
+ * into a reply on another.
+ */
+export interface ChannelMemory {
+  id: string
+  /** Normalised lookup key for the contact/topic. */
+  subject_key: string
+  /** Display form, as the user would recognise it. */
+  subject_label: string
+  /** 'whatsapp' | 'telegram' | 'slack' | 'gmail'. */
+  channel: string
+  /** The tool that produced it, e.g. 'send_whatsapp_message'. */
+  action: string
+  /** 'sent' | 'read'. */
+  direction: string
+  summary: string
+  /** Unix seconds. */
+  created_at: number
+}
+
 export interface OpenUIApi {
   // Window
   hide: () => void
@@ -524,6 +547,12 @@ export interface OpenUIApi {
   recorderSaveMacro: (name: string, actions: RecorderAction[]) => Promise<RecorderMacro>
   recorderDeleteMacro: (name: string) => Promise<boolean>
   recorderIsRecording: () => Promise<boolean>
+
+  // Cross-channel memory — read + delete. Written only by the agent loop.
+  listMemories: () => Promise<ChannelMemory[]>
+  deleteMemory: (id: string) => Promise<boolean>
+  clearMemorySubject: (subjectKey: string) => Promise<number>
+  clearAllMemories: () => Promise<number>
 }
 
 declare global {
