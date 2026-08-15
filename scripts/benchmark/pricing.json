@@ -1,0 +1,55 @@
+{
+  "_README": [
+    "Per-token list prices used to compute cost-per-action. USD per 1,000,000 tokens.",
+    "",
+    "Every entry carries `verified`, `as_of` and `source`. run_benchmark.py REFUSES to",
+    "print a cost figure for any provider whose entry is not `verified: true` — it",
+    "prints the source URL to check instead. That is deliberate: a benchmark that",
+    "quotes a stale price is exactly the unreproducible claim this exercise is",
+    "supposed to avoid, and prices change more often than the harness does.",
+    "",
+    "To verify a provider: open its `source` URL, confirm (or correct) the numbers,",
+    "set `verified: true` and update `as_of` to today. Re-verify before publishing.",
+    "",
+    "Splen is priced at zero because it runs a local model on the user's own",
+    "hardware — there is no per-token charge. That is a real zero, not a placeholder;",
+    "the electricity and the up-front GPU are real costs but they are not per-action",
+    "and are not what an API bill measures. The report says so explicitly."
+  ],
+  "providers": {
+    "splen": {
+      "verified": true,
+      "as_of": "2026-08-15",
+      "source": "local execution — no metered API",
+      "models": {
+        "qwen3.5:latest": { "input_per_mtok": 0.0, "output_per_mtok": 0.0 },
+        "qwen2.5-coder:7b": { "input_per_mtok": 0.0, "output_per_mtok": 0.0 }
+      }
+    },
+    "claude": {
+      "verified": true,
+      "as_of": "2026-06-24",
+      "source": "https://platform.claude.com/docs/en/about-claude/models/overview",
+      "note": "claude-sonnet-5 has introductory pricing of $2.00/$10.00 through 2026-08-31; the standard $3.00/$15.00 is recorded here so the number does not silently expire mid-benchmark.",
+      "models": {
+        "claude-opus-5": { "input_per_mtok": 5.0, "output_per_mtok": 25.0 },
+        "claude-sonnet-5": { "input_per_mtok": 3.0, "output_per_mtok": 15.0 },
+        "claude-haiku-4-5": { "input_per_mtok": 1.0, "output_per_mtok": 5.0 }
+      }
+    },
+    "gpt": {
+      "verified": false,
+      "as_of": null,
+      "source": "https://openai.com/api/pricing/",
+      "note": "NOT VERIFIED. Fill in from the pricing page and set verified:true before quoting any GPT cost figure.",
+      "models": {}
+    },
+    "gemini": {
+      "verified": false,
+      "as_of": null,
+      "source": "https://ai.google.dev/gemini-api/docs/pricing",
+      "note": "NOT VERIFIED. Fill in from the pricing page and set verified:true before quoting any Gemini cost figure.",
+      "models": {}
+    }
+  }
+}

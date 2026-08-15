@@ -66,3 +66,7 @@ scripts/finetune/eval/captures*.jsonl
 scripts/finetune/data/
 scripts/finetune/**/adapter*/
 *.gguf
+
+# benchmark: never commit locally-generated per-case prompts or python cache
+scripts/benchmark/prompts/
+scripts/benchmark/__pycache__/

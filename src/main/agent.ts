@@ -14,6 +14,7 @@ import { deriveProjectSlug } from './projectName'
 import { armEditorAutoOpen } from './editor'
 import { generatePlan, looksLikeTask, type Plan } from './planner'
 import { getMcpToolSchemas, callMcpTool } from './mcp-client'
+import { recordChannelAction, memoryBlockForText } from './channelMemory'
 import { getGithubToken, githubToolSchemas } from './github'
 import { getFigmaToken, figmaToolSchemas } from './figma'
 import { figmaBuildToolSchemas } from './figmaBuild'
@@ -2087,13 +2088,22 @@ export async function handleChat(win: BrowserWindow, userMessage: string, tier: 
     })
   }
 
+  // Cross-channel memory READ hook: what OpenUI did on the user's messaging
+  // channels earlier, ranked against THIS message. Empty string when nothing is
+  // relevant, so prompts on unrelated turns are byte-identical to the
+  // pre-memory ones. Appended only to the general assistant prompt: the
+  // specialist prompts (PR review, designer, practice) drive non-messaging work
+  // where it would be pure prompt tax, and buildSystemPrompt() itself stays
+  // clean so the eval harness keeps capturing the real prompt.
+  const memoryBlock = memoryBlockForText(userMessage)
+
   const effectiveSystemPrompt = isPrReview
     ? PR_REVIEW_SYSTEM_PROMPT
     : isDesigner
       ? DESIGNER_SYSTEM_PROMPT
       : isPractice
         ? PRACTICE_SYSTEM_PROMPT
-        : buildSystemPrompt(classifierText(userMessage, history))
+        : buildSystemPrompt(classifierText(userMessage, history)) + memoryBlock
 
   // PR review needs more turns: list + diff×N + comment×N.
   // Designer needs more turns: get_file + export×N (with Vision calls) + comment×N.
@@ -2532,6 +2542,14 @@ export async function handleChat(win: BrowserWindow, userMessage: string, tier: 
         status: result.ok ? 'success' : 'error',
         durationMs: Date.now() - toolStart
       })
+
+      // Cross-channel memory WRITE hook: a messaging action that actually
+      // succeeded is filed under the contact or topic it concerns, so a later
+      // turn on a DIFFERENT channel can recall it (see channelMemory.ts).
+      // Gated on result.ok inside summarizeChannelAction — a denied or failed
+      // send did not happen, and storing it would let the model later report it
+      // as done. Best-effort: never allowed to break the turn.
+      recordChannelAction(toolCall.tool, toolCall.args, result)
 
       // Feed the result back so the model can take the next step.
       history.push({ role: 'user', content: formatToolResult(toolCall, result) })

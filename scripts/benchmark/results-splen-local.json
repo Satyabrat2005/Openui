@@ -1,0 +1,296 @@
+{
+  "label": "splen-local",
+  "generated": "2026-08-15T18:14:15",
+  "taskset_version": 1,
+  "scorer": "scripts/finetune/eval/run_eval.py::score_case (imported)",
+  "summaries": [
+    {
+      "system": "splen",
+      "model": "qwen3.5:latest",
+      "core_cases": 18,
+      "core_correct": 12,
+      "core_accuracy_pct": 66.7,
+      "memory_cases": 2,
+      "memory_correct": 0,
+      "latency_median_s": 13.649,
+      "latency_mean_s": 27.423,
+      "latency_max_s": 146.74,
+      "cost_total_usd": 0.0,
+      "cost_per_action_usd": 0.0,
+      "cost_note": null,
+      "errors": 0
+    }
+  ],
+  "results": {
+    "splen": [
+      {
+        "id": "mail-01",
+        "category": "gmail",
+        "model": "qwen3.5:latest",
+        "verdict": "correct",
+        "flags": [],
+        "latency_s": 18.509,
+        "input_tokens": 3538,
+        "output_tokens": 192,
+        "cost_usd": 0.0,
+        "tool": "create_email_draft",
+        "reply": "{\"tool\": \"create_email_draft\", \"args\": {\"to\": \"priya@example.com\", \"subject\": \"Tomorrow's Demo - Reminder & Details\", \"body\": \"Hi Priya,\\n\\nI hope you're having a great week!\\n\\nThis is a quick reminder about our demo scheduled for tomorrow. Please let me know if there are any specific topics or features you'd like us to focus on during the session.\\n\\nLooking forward to seeing you then!\\n\\nBest regards\"}}"
+      },
+      {
+        "id": "mail-02",
+        "category": "gmail",
+        "model": "qwen3.5:latest",
+        "verdict": "correct",
+        "flags": [],
+        "latency_s": 6.61,
+        "input_tokens": 3530,
+        "output_tokens": 55,
+        "cost_usd": 0.0,
+        "tool": "find_email_thread",
+        "reply": "{\"tool\": \"find_email_thread\", \"args\": {\"query\": \"\"}}"
+      },
+      {
+        "id": "mail-03",
+        "category": "gmail",
+        "model": "qwen3.5:latest",
+        "verdict": "no_tool_emitted",
+        "flags": [],
+        "latency_s": 146.74,
+        "input_tokens": 3539,
+        "output_tokens": 85,
+        "cost_usd": 0.0,
+        "tool": null,
+        "reply": "I'd be happy to help you send that email! However, I need your manager's email address to proceed. Could you please provide their email address?"
+      },
+      {
+        "id": "mail-04",
+        "category": "gmail",
+        "model": "qwen3.5:latest",
+        "verdict": "correct",
+        "flags": [],
+        "latency_s": 11.139,
+        "input_tokens": 5058,
+        "output_tokens": 64,
+        "cost_usd": 0.0,
+        "tool": "find_email_thread",
+        "reply": "{\"tool\": \"find_email_thread\", \"args\": {\"query\": \"invoice\"}}"
+      },
+      {
+        "id": "mail-05",
+        "category": "gmail",
+        "model": "qwen3.5:latest",
+        "verdict": "correct",
+        "flags": [],
+        "latency_s": 30.61,
+        "input_tokens": 3835,
+        "output_tokens": 150,
+        "cost_usd": 0.0,
+        "tool": "draft_refund_email",
+        "reply": "{\"tool\": \"draft_refund_email\", \"args\": {\"orderId\": \"4471\", \"reason\": \"item arrived broken\"}}"
+      },
+      {
+        "id": "mail-06",
+        "category": "gmail",
+        "model": "qwen3.5:latest",
+        "verdict": "wrong_tool",
+        "flags": [
+          "got_browser_navigate"
+        ],
+        "latency_s": 37.27,
+        "input_tokens": 3529,
+        "output_tokens": 109,
+        "cost_usd": 0.0,
+        "tool": "browser_navigate",
+        "reply": "{\"tool\": \"browser_navigate\", \"args\": {\"url\": \"https://gmail.com\"}}"
+      },
+      {
+        "id": "cal-01",
+        "category": "calendar",
+        "model": "qwen3.5:latest",
+        "verdict": "no_tool_emitted",
+        "flags": [],
+        "latency_s": 136.48,
+        "input_tokens": 4673,
+        "output_tokens": 3519,
+        "cost_usd": 0.0,
+        "tool": null,
+        "reply": ""
+      },
+      {
+        "id": "cal-02",
+        "category": "calendar",
+        "model": "qwen3.5:latest",
+        "verdict": "correct",
+        "flags": [],
+        "latency_s": 10.081,
+        "input_tokens": 3139,
+        "output_tokens": 86,
+        "cost_usd": 0.0,
+        "tool": "control_calendar",
+        "reply": "{\"tool\": \"control_calendar\", \"args\": {\"action\": \"list\", \"backend\": \"auto\"}}"
+      },
+      {
+        "id": "cal-03",
+        "category": "calendar",
+        "model": "qwen3.5:latest",
+        "verdict": "no_tool_emitted",
+        "flags": [],
+        "latency_s": 18.448,
+        "input_tokens": 3436,
+        "output_tokens": 369,
+        "cost_usd": 0.0,
+        "tool": null,
+        "reply": "I'm sorry, but I don't currently have access to a feature that allows me to delete or cancel calendar events. The control_calendar tool available to me supports creating new events and listing today's events, but not deleting existing ones.\n\nTo cancel your 2pm standup on Friday, you'll need to:\n- Open Calendar.app (macOS) or Outlook/Calendar app directly\n- Find the event in your calendar view for that day/time\n- Delete it from there\n\nAlternatively, if this is a recurring meeting with other attendees, you might want to send them an email notification about the cancellation. Would you like me to help draft such an email instead?"
+      },
+      {
+        "id": "cal-04",
+        "category": "calendar",
+        "model": "qwen3.5:latest",
+        "verdict": "correct",
+        "flags": [],
+        "latency_s": 29.546,
+        "input_tokens": 3145,
+        "output_tokens": 624,
+        "cost_usd": 0.0,
+        "tool": "control_calendar",
+        "reply": "{\"tool\": \"control_calendar\", \"args\": {\"action\": \"create\", \"eventDetails\": {\"title\": \"Focus Time\", \"start\": \"2025-06-30T09:00:00\", \"end\": \"2025-06-30T11:00:00\"}}}"
+      },
+      {
+        "id": "cal-05",
+        "category": "calendar",
+        "model": "qwen3.5:latest",
+        "verdict": "correct",
+        "flags": [],
+        "latency_s": 10.538,
+        "input_tokens": 3139,
+        "output_tokens": 147,
+        "cost_usd": 0.0,
+        "tool": "control_calendar",
+        "reply": "{\"tool\": \"control_calendar\", \"args\": {\"action\": \"list\"}}"
+      },
+      {
+        "id": "wa-01",
+        "category": "whatsapp",
+        "model": "qwen3.5:latest",
+        "verdict": "correct",
+        "flags": [],
+        "latency_s": 13.837,
+        "input_tokens": 3730,
+        "output_tokens": 115,
+        "cost_usd": 0.0,
+        "tool": "send_whatsapp_message",
+        "reply": "{\"tool\": \"send_whatsapp_message\", \"args\": {\"contact\": \"Ashu\", \"message\": \"I'll be 10 minutes late\"}}"
+      },
+      {
+        "id": "wa-02",
+        "category": "whatsapp",
+        "model": "qwen3.5:latest",
+        "verdict": "correct",
+        "flags": [],
+        "latency_s": 6.228,
+        "input_tokens": 3722,
+        "output_tokens": 70,
+        "cost_usd": 0.0,
+        "tool": "open_whatsapp_chat",
+        "reply": "{\"tool\": \"open_whatsapp_chat\", \"args\": {\"contact\": \"Mom\"}}"
+      },
+      {
+        "id": "slack-01",
+        "category": "slack",
+        "model": "qwen3.5:latest",
+        "verdict": "wrong_tool",
+        "flags": [
+          "got_list_slack_channels"
+        ],
+        "latency_s": 15.295,
+        "input_tokens": 3359,
+        "output_tokens": 78,
+        "cost_usd": 0.0,
+        "tool": "list_slack_channels",
+        "reply": "{\"tool\": \"list_slack_channels\", \"args\": {}}"
+      },
+      {
+        "id": "slack-02",
+        "category": "slack",
+        "model": "qwen3.5:latest",
+        "verdict": "correct",
+        "flags": [],
+        "latency_s": 13.462,
+        "input_tokens": 3194,
+        "output_tokens": 65,
+        "cost_usd": 0.0,
+        "tool": "read_slack_channel",
+        "reply": "{\"tool\": \"read_slack_channel\", \"args\": {\"channel\": \"general\"}}"
+      },
+      {
+        "id": "tg-01",
+        "category": "telegram",
+        "model": "qwen3.5:latest",
+        "verdict": "no_tool_emitted",
+        "flags": [],
+        "latency_s": 14.96,
+        "input_tokens": 3273,
+        "output_tokens": 198,
+        "cost_usd": 0.0,
+        "tool": null,
+        "reply": "I'll send that Telegram message for you - just confirming: should I send \"I am on my way\" to chat 123456789?"
+      },
+      {
+        "id": "tg-02",
+        "category": "telegram",
+        "model": "qwen3.5:latest",
+        "verdict": "correct",
+        "flags": [],
+        "latency_s": 4.122,
+        "input_tokens": 3258,
+        "output_tokens": 68,
+        "cost_usd": 0.0,
+        "tool": "list_telegram_chats",
+        "reply": "{\"tool\": \"list_telegram_chats\", \"args\": {}}"
+      },
+      {
+        "id": "wa-03",
+        "category": "whatsapp",
+        "model": "qwen3.5:latest",
+        "verdict": "correct",
+        "flags": [],
+        "latency_s": 11.543,
+        "input_tokens": 3731,
+        "output_tokens": 270,
+        "cost_usd": 0.0,
+        "tool": "create_whatsapp_group",
+        "reply": "{\"tool\": \"create_whatsapp_group\", \"args\": {\"name\": \"Trip Planning\", \"members\": [\"Ashu\", \"Mom\", \"Ravi\"]}}"
+      },
+      {
+        "id": "mem-01",
+        "category": "memory",
+        "model": "qwen3.5:latest",
+        "verdict": "wrong_tool",
+        "flags": [
+          "got_list_slack_channels"
+        ],
+        "latency_s": 7.595,
+        "input_tokens": 4850,
+        "output_tokens": 156,
+        "cost_usd": 0.0,
+        "tool": "list_slack_channels",
+        "reply": "{\"tool\": \"list_slack_channels\", \"args\": {}}"
+      },
+      {
+        "id": "mem-02",
+        "category": "memory",
+        "model": "qwen3.5:latest",
+        "verdict": "wrong_tool",
+        "flags": [
+          "called_find_email_thread_when_none_expected"
+        ],
+        "latency_s": 5.447,
+        "input_tokens": 3822,
+        "output_tokens": 100,
+        "cost_usd": 0.0,
+        "tool": "find_email_thread",
+        "reply": "{\"tool\": \"find_email_thread\", \"args\": {\"query\": \"Priya interview\"}}"
+      }
+    ]
+  }
+}

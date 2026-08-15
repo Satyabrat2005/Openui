@@ -67,8 +67,12 @@ describe('real SQLite — 001_conversations_add_archived', () => {
 
     expect(columnExists(db as MigrationDb, 'conversations', 'archived')).toBe(true)
 
+    // Assert against the real list rather than a literal: the property under
+    // test is "every migration ran, in order, exactly once", and hardcoding the
+    // names here makes an unrelated red appear every time one is appended.
     const rows = db.prepare('SELECT name FROM _migrations').all() as Array<{ name: string }>
-    expect(rows.map((r) => r.name)).toEqual(['001_conversations_add_archived'])
+    expect(rows.map((r) => r.name)).toEqual(migrations.map((m) => m.name))
+    expect(rows.filter((r) => r.name === '001_conversations_add_archived')).toHaveLength(1)
   })
 
   it('backfills existing rows with 0 when upgrading an old database', () => {
@@ -166,5 +170,67 @@ describe('real SQLite — runner invariants', () => {
     for (const m of migrations) {
       expect(() => m.up(db as MigrationDb), `${m.name} is not replay-safe`).not.toThrow()
     }
+  })
+})
+
+describe('real SQLite — 002_channel_memory', () => {
+  /** Rows of PRAGMA table_info for `table`, or [] when it does not exist. */
+  function columnsOf(table: string): string[] {
+    return (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map(
+      (c) => c.name
+    )
+  }
+
+  it('baseline schema does not create channel_memory (the migration owns it)', () => {
+    applyBaseline()
+    expect(columnsOf('channel_memory')).toEqual([])
+  })
+
+  it('creates the table with the columns the repository queries', () => {
+    applyBaseline()
+    applyMigrations(db as MigrationDb)
+
+    // Named explicitly: memoryRepo's SQL selects and filters on each of these,
+    // so a typo in the migration would only surface at runtime otherwise.
+    expect(columnsOf('channel_memory').sort()).toEqual(
+      [
+        'action',
+        'channel',
+        'created_at',
+        'direction',
+        'id',
+        'subject_key',
+        'subject_label',
+        'summary'
+      ].sort()
+    )
+  })
+
+  it('brings forward an OLD install that already carries conversations', () => {
+    // The upgrade path CREATE TABLE IF NOT EXISTS in schema.ts cannot cover:
+    // a database made before the feature existed, with real data in it.
+    applyBaseline()
+    const id = createConversation(null, 'chat from before memory shipped')
+
+    applyMigrations(db as MigrationDb)
+
+    expect(columnsOf('channel_memory')).toContain('subject_key')
+    // The pre-existing data is untouched.
+    expect(getConversationById(id)?.title).toBe('chat from before memory shipped')
+  })
+
+  it('defaults created_at so the repository never has to supply it', () => {
+    applyBaseline()
+    applyMigrations(db as MigrationDb)
+
+    db.prepare(
+      `INSERT INTO channel_memory (id, subject_key, subject_label, channel, action, direction, summary)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`
+    ).run('m1', 'ashu', 'Ashu', 'whatsapp', 'send_whatsapp_message', 'sent', 'hello')
+
+    const row = db.prepare('SELECT created_at FROM channel_memory WHERE id = ?').get('m1') as {
+      created_at: number
+    }
+    expect(row.created_at).toBeGreaterThan(0)
   })
 })

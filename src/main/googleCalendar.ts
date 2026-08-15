@@ -374,6 +374,141 @@ export async function googleListToday(): Promise<CalendarResult> {
   }
 }
 
+/** One candidate event, as returned to the caller for disambiguation. */
+export interface CalendarEventMatch {
+  id: string
+  summary: string
+  /** ISO datetime (or plain date for all-day events); '' when Google omits it. */
+  start: string
+  htmlLink: string
+}
+
+/** How far around "now" a search for an event to change or cancel looks. */
+export const SEARCH_WINDOW_DAYS = 60
+
+/**
+ * Find events on the primary calendar matching a free-text query.
+ *
+ * Deliberately a SEARCH, not a delete-by-name: cancelling the wrong meeting is
+ * not undoable from the user's point of view (the attendees have already been
+ * notified), so the tool layer resolves an ambiguous match with the user before
+ * anything is changed. The window is bounded because Google's `q` search
+ * otherwise reaches years of history and surfaces long-past events as
+ * candidates for "cancel my standup".
+ */
+export async function googleFindEvents(
+  query: string,
+  windowDays = SEARCH_WINDOW_DAYS
+): Promise<{ ok: boolean; events?: CalendarEventMatch[]; error?: string }> {
+  if (!query.trim()) return { ok: false, error: 'A search term is required to find the event.' }
+  const now = Date.now()
+  const params = new URLSearchParams({
+    q: query,
+    // Look a little way back as well as forward: "cancel this morning's
+    // standup" is a perfectly ordinary request an hour after it started.
+    timeMin: new Date(now - 24 * 60 * 60 * 1000).toISOString(),
+    timeMax: new Date(now + windowDays * 24 * 60 * 60 * 1000).toISOString(),
+    singleEvents: 'true',
+    orderBy: 'startTime',
+    maxResults: '10'
+  }).toString()
+  try {
+    const { status, json } = await apiJson('GET', '/calendars/primary/events', params)
+    if (status >= 400) {
+      const msg = (json.error as { message?: string } | undefined)?.message || `HTTP ${status}`
+      return { ok: false, error: `Google Calendar search failed: ${msg}` }
+    }
+    const items = Array.isArray(json.items) ? (json.items as Array<Record<string, unknown>>) : []
+    const events = items
+      .filter((ev) => typeof ev.id === 'string')
+      .map((ev) => {
+        const startObj = ev.start as { dateTime?: string; date?: string } | undefined
+        return {
+          id: ev.id as string,
+          summary: typeof ev.summary === 'string' ? ev.summary : '(no title)',
+          start: startObj?.dateTime || startObj?.date || '',
+          htmlLink: typeof ev.htmlLink === 'string' ? ev.htmlLink : ''
+        }
+      })
+    return { ok: true, events }
+  } catch (e) {
+    return { ok: false, error: `control_calendar (Google) failed: ${errText(e)}` }
+  }
+}
+
+/**
+ * Cancel one event by its Google event id.
+ *
+ * `sendUpdates: 'all'` so the other attendees actually learn the meeting is
+ * off — a cancellation only they can't see is worse than no cancellation.
+ */
+export async function googleDeleteEvent(eventId: string): Promise<CalendarResult> {
+  if (!eventId.trim()) return { ok: false, error: 'control_calendar "delete" requires an event id.' }
+  try {
+    const { status, json } = await apiJson(
+      'DELETE',
+      `/calendars/primary/events/${encodeURIComponent(eventId)}`,
+      'sendUpdates=all'
+    )
+    // A already-cancelled event returns 410; treat it as success — the user's
+    // intent ("this meeting should not be on my calendar") already holds.
+    if (status === 410) return { ok: true, output: 'That event was already cancelled.' }
+    if (status >= 400) {
+      const msg = (json.error as { message?: string } | undefined)?.message || `HTTP ${status}`
+      return { ok: false, error: `Google Calendar could not cancel the event: ${msg}` }
+    }
+    return { ok: true, output: 'Cancelled the event and notified the attendees.' }
+  } catch (e) {
+    return { ok: false, error: `control_calendar (Google) failed: ${errText(e)}` }
+  }
+}
+
+/**
+ * Move or retitle one event. Only the supplied fields are sent (PATCH), so an
+ * update that changes just the time cannot blank out the description or drop
+ * the attendee list.
+ */
+export async function googleUpdateEvent(
+  eventId: string,
+  patch: { title?: string; start?: string; end?: string; notes?: string }
+): Promise<CalendarResult> {
+  if (!eventId.trim()) return { ok: false, error: 'control_calendar "update" requires an event id.' }
+  const body: Record<string, unknown> = {}
+  if (patch.title) body.summary = patch.title
+  if (patch.notes) body.description = patch.notes
+  if (patch.start) {
+    const startDate = new Date(patch.start)
+    if (Number.isNaN(startDate.getTime()))
+      return { ok: false, error: `control_calendar: could not read the new start time "${patch.start}".` }
+    body.start = { dateTime: startDate.toISOString() }
+    // Google rejects a start past the existing end, so when only the start
+    // moves, carry the default hour with it rather than failing the call.
+    const endDate = patch.end ? new Date(patch.end) : new Date(startDate.getTime() + 60 * 60 * 1000)
+    if (Number.isNaN(endDate.getTime()))
+      return { ok: false, error: `control_calendar: could not read the new end time "${patch.end}".` }
+    body.end = { dateTime: endDate.toISOString() }
+  }
+  if (Object.keys(body).length === 0)
+    return { ok: false, error: 'control_calendar "update" needs something to change (a new time or title).' }
+
+  try {
+    const { status, json } = await apiJson(
+      'PATCH',
+      `/calendars/primary/events/${encodeURIComponent(eventId)}`,
+      'sendUpdates=all',
+      body
+    )
+    if (status >= 400) {
+      const msg = (json.error as { message?: string } | undefined)?.message || `HTTP ${status}`
+      return { ok: false, error: `Google Calendar could not update the event: ${msg}` }
+    }
+    const link = typeof json.htmlLink === 'string' ? json.htmlLink : ''
+    return { ok: true, output: `Updated the event and notified the attendees.${link ? `\n${link}` : ''}` }
+  } catch (e) {
+    return { ok: false, error: `control_calendar (Google) failed: ${errText(e)}` }
+  }
+}
+
 /** Validate + cap a raw attendees value (array or comma/semicolon string). */
 export function normalizeAttendees(raw: unknown): string[] {
   const list = Array.isArray(raw)

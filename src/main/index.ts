@@ -512,6 +512,25 @@ app.whenReady().then(async () => {
 
   ipcMain.handle('openui:os-consent:audit-path', () => auditLogPath())
 
+  // ── Cross-channel memory: review and clear ──────────────────────────────────
+  // Same principle as the consent grants above: memory that silently carries a
+  // contact's WhatsApp message into a Slack reply is only trustworthy if the
+  // user can see every stored line and delete any of it. Read + delete only —
+  // nothing here can write memory, which is the agent loop's job alone.
+  ipcMain.handle('openui:memory:list', () => database.memory.listMemories())
+
+  ipcMain.handle('openui:memory:delete', (_event, id: unknown) => {
+    if (typeof id !== 'string' || !id.trim()) return false
+    return database.memory.deleteMemory(id)
+  })
+
+  ipcMain.handle('openui:memory:clear-subject', (_event, subjectKey: unknown) => {
+    if (typeof subjectKey !== 'string' || !subjectKey.trim()) return 0
+    return database.memory.clearSubject(subjectKey)
+  })
+
+  ipcMain.handle('openui:memory:clear-all', () => database.memory.clearAllMemories())
+
   ipcMain.handle('openui:get-app-version', () => app.getVersion())
   ipcMain.handle('openui:check-for-updates', async () => {
     await checkForUpdates()

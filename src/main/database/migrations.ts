@@ -44,6 +44,30 @@ export const migrations: Migration[] = [
         db.exec('ALTER TABLE conversations ADD COLUMN archived INTEGER DEFAULT 0')
       }
     }
+  },
+  {
+    // Cross-channel memory: one row per completed messaging action, keyed by
+    // the contact or topic it concerns rather than by conversation, so recall
+    // before a Slack reply can surface what happened on WhatsApp. Ships as a
+    // migration (not schema.ts) so existing installs get the table too.
+    // See database/repositories/memoryRepo.ts and channelMemory.ts.
+    name: '002_channel_memory',
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS channel_memory (
+          id TEXT PRIMARY KEY,
+          subject_key TEXT NOT NULL,
+          subject_label TEXT NOT NULL,
+          channel TEXT NOT NULL,
+          action TEXT NOT NULL,
+          direction TEXT NOT NULL DEFAULT 'sent',
+          summary TEXT NOT NULL,
+          created_at INTEGER DEFAULT (strftime('%s','now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_channel_memory_subject ON channel_memory(subject_key);
+        CREATE INDEX IF NOT EXISTS idx_channel_memory_created ON channel_memory(created_at);
+      `)
+    }
   }
 ]
 
