@@ -149,7 +149,19 @@ describe('selectToolGroups — the expected tool is always in the loaded surface
     },
     // ...while a plain LaTeX request with no Overleaf project stays on the local
     // authoring tool, which needs no browser and no account.
-    { prompt: 'write me a research paper in LaTeX about solar cells', expected: 'write_latex' }
+    { prompt: 'write me a research paper in LaTeX about solar cells', expected: 'write_latex' },
+    // unified inbox — these name NO channel, so nothing else in the trigger
+    // table can fire for them. Without the inbox trigger they fall through to
+    // FALLBACK_GROUPS and summarize_inbox is simply not in the prompt, which
+    // looks exactly like the model refusing a feature that shipped.
+    { prompt: "what's my summary", expected: 'summarize_inbox' },
+    { prompt: 'is there anything from him?', expected: 'summarize_inbox' },
+    { prompt: 'catch me up', expected: 'summarize_inbox' },
+    { prompt: 'any messages from Ashu today?', expected: 'summarize_inbox' },
+    { prompt: 'summarise everything across my channels', expected: 'summarize_inbox' },
+    { prompt: 'the telegram chat 123456789 is Ashu', expected: 'link_contact' },
+    { prompt: 'who are my contacts?', expected: 'list_contacts' },
+    { prompt: 'mail that summary to Priya', expected: 'send_summary_email' }
   ]
 
   for (const { prompt, expected } of cases) {

@@ -60,6 +60,8 @@ import { mailMergeToolSchemas, mailMergeRegistry } from './mailmerge'
 import { telegramToolSchemas, telegramRegistry } from './telegram'
 import { overleafToolSchemas, overleafRegistry } from './overleaf'
 import { paperResearchToolSchemas, paperResearchRegistry } from './paperResearch'
+import { contactToolSchemas, contactRegistry } from './contacts'
+import { inboxToolSchemas, inboxRegistry } from './inboxSummary'
 import { runInteractivePython, writeSandboxFile } from './sandbox'
 import {
   isGoogleCalendarConnected,
@@ -274,6 +276,11 @@ export const STATE_CHANGING_TOOLS = new Set<string>([
   // Sends an email to another person — outward-facing and irreversible, so it
   // is ALSO in DESTRUCTIVE_TOOLS below (always confirms, never runs on autopilot).
   'send_email',
+  // Mails a cross-channel summary to someone — the same outward-facing boundary
+  // as send_email, and additionally in DESTRUCTIVE_TOOLS. summarize_inbox and the
+  // contact tools are absent: the first only reads, the others only write to the
+  // local contact database.
+  'send_summary_email',
   // Filesystem + clipboard mutations. Reads (list_directory, read_file,
   // read_clipboard) are intentionally absent — they observe, never change state.
   'write_file',
@@ -408,6 +415,9 @@ export const DESTRUCTIVE_TOOLS = new Set<string>([
   // Sends an email to another person — outward-facing and cannot be unsent,
   // so it always confirms and never runs under any autonomy mode.
   'send_email',
+  // Mails a summary of the user's own messages to someone else. Cannot be
+  // unsent, and the content is private by nature, so it always confirms.
+  'send_summary_email',
   // Sends a Telegram message via the user's bot — outward-facing and cannot be
   // unsent, same treatment as send_email / send_whatsapp_message.
   'send_telegram_message',
@@ -6285,6 +6295,8 @@ export const toolSchemas: ToolSchema[] = [
   ...telegramToolSchemas,
   ...overleafToolSchemas,
   ...paperResearchToolSchemas,
+  ...contactToolSchemas,
+  ...inboxToolSchemas,
   {
     name: 'run_python',
     description:
@@ -7393,7 +7405,14 @@ const registry: Record<string, Executor> = {
   ...mailMergeRegistry,
   ...telegramRegistry,
   ...overleafRegistry,
-  ...paperResearchRegistry
+  ...paperResearchRegistry,
+  ...contactRegistry,
+  // WhatsApp's readers are screen automation defined in this file, so the
+  // unified-inbox registry is built here with them injected.
+  ...inboxRegistry({
+    unreadSenders: readWhatsAppUnreadSenders,
+    readChat: readWhatsAppChatText
+  })
 }
 
 /**
@@ -7530,6 +7549,16 @@ export function describeToolCall(name: string, args: Record<string, unknown>): s
       const to = Array.isArray(args.to) ? args.to.map((v) => String(v)).join(', ') : String(args.to ?? '')
       const subject = String(args.subject ?? '')
       return `Send email to ${to}${subject ? `: "${subject}"` : ''}`
+    }
+    case 'send_summary_email': {
+      // The dialog is the user's last chance to catch a summary going to the
+      // wrong person, so it shows WHO it resolved to and the opening of what
+      // will actually be sent — not just the tool name.
+      const to = String(args.recipient ?? '')
+      const subject = String(args.subject ?? 'Summary')
+      const body = String(args.summary ?? '')
+      const preview = body.length > 80 ? `${body.slice(0, 80)}…` : body
+      return `Email summary to ${to} — "${subject}": ${preview}`
     }
     case 'create_email_draft': {
       const to = Array.isArray(args.to) ? args.to.map((v) => String(v)).join(', ') : String(args.to ?? '')

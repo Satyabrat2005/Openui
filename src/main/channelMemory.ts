@@ -128,6 +128,13 @@ export const CHANNEL_ACTIONS: Record<string, ChannelAction> = {
     contentArg: 'body',
     summarize: (s, c) => `Sent an email to ${s}: "${c}"`
   },
+  send_summary_email: {
+    channel: 'gmail',
+    direction: 'sent',
+    subjectArg: 'recipient',
+    contentArg: 'summary',
+    summarize: (s, c) => `Emailed a cross-channel summary to ${s}: "${c}"`
+  },
   create_email_draft: {
     channel: 'gmail',
     direction: 'sent',

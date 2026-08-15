@@ -57,6 +57,7 @@ export type ToolGroup =
   | 'whatsapp'
   | 'telegram'
   | 'slack'
+  | 'inbox'
   | 'overleaf'
   | 'github'
   | 'figma'
@@ -151,6 +152,17 @@ export const GROUP_TOOLS: Record<ToolGroup, readonly string[]> = {
   ],
   telegram: ['send_telegram_message', 'list_telegram_chats', 'read_telegram_messages'],
   slack: ['send_slack_message', 'list_slack_channels', 'read_slack_channel', 'search_slack'],
+  // The cross-channel surface: who a person is, and what arrived from them
+  // anywhere. Contact tools sit here rather than in `core` because they are only
+  // ever needed alongside a messaging question, and `core` is paid for on every
+  // turn.
+  inbox: [
+    'summarize_inbox',
+    'send_summary_email',
+    'link_contact',
+    'list_contacts',
+    'unlink_contact'
+  ],
   // Overleaf drives the user's own signed-in browser session, so this group is
   // only useful alongside the browser group (connect_browser must run first).
   overleaf: [
@@ -245,6 +257,7 @@ export const GROUP_SUMMARY: Record<ToolGroup, string> = {
   whatsapp: 'WhatsApp messages and groups',
   telegram: 'Telegram messages',
   slack: 'Slack messages and channels',
+  inbox: 'one summary across WhatsApp/Telegram/Slack/Gmail, and who contacts are',
   overleaf: 'Write LaTeX live into the user’s own Overleaf project',
   github: 'GitHub repos, pushes and pull requests',
   figma: 'Figma files, design systems and builds',
@@ -286,6 +299,17 @@ const GROUP_TRIGGERS: Partial<Record<ToolGroup, RegExp>> = {
   whatsapp: /\bwhats\s?app\b|\bwa\b/i,
   telegram: /\btelegram\b/i,
   slack: /\bslack\b/i,
+  // Person-scoped and whole-inbox questions. "is there anything from him" and
+  // "what's my summary" name no channel at all, so nothing else in this table
+  // can fire for them — without this trigger the request reaches FALLBACK_GROUPS
+  // and the tool it needs is not in the prompt.
+  //
+  // The last two alternatives cover TEACHING an identity, which is phrased as a
+  // statement rather than a command: "the telegram chat 123456789 is Ashu",
+  // "Ashu's email is ashu@acme.com", "that handle belongs to Priya". None of
+  // those contain the word "link", so a verb-shaped trigger missed all of them.
+  inbox:
+    /\b(summar(y|ies|ise[sd]?|ize[sd]?|ising|izing)|catch me up|catch.?up|what'?s new|anything new|anything from|any (news|updates?|messages?) from|heard from|all my (messages|chats|channels)|across (all |my )?(channels|apps|platforms)|unified inbox|my inbox|contacts?|belongs to|(chat|thread|handle|id|number|address|email)( \S{1,40})? is)\b/i,
   // Deliberately narrow: only the word "overleaf" (or an overleaf.com URL) pulls
   // this group in. It does NOT claim bare "latex"/"tex"/"paper" — those belong to
   // write_latex, which authors a local file and needs neither a browser nor an

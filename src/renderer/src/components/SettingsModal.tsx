@@ -123,6 +123,7 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
   // a real calendar app — a mistake there cancels or moves a real meeting.
   // Absent setting ⇒ off, the inverse of most toggles here.
   const [localCalendarEnabled, setLocalCalendarEnabled] = useState(false)
+  const [unifiedInboxEnabled, setUnifiedInboxEnabled] = useState(false)
   // Gmail — shares the Google Calendar OAuth client id/secret above (one
   // Google Cloud client, multiple scopes) but has its own refresh token and
   // Connect button, since it's a separate OAuth grant.
@@ -262,6 +263,13 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
       .getSetting('local_calendar_backend_enabled')
       .then((value) => {
         if (!cancelled) setLocalCalendarEnabled(value === true) // absent/null/undefined ⇒ off
+      })
+      .catch(() => {})
+
+    window.openui
+      .getSetting('unified_inbox_enabled')
+      .then((value) => {
+        if (!cancelled) setUnifiedInboxEnabled(value === true) // absent/null/undefined ⇒ off
       })
       .catch(() => {})
 
@@ -475,6 +483,14 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
     void window.openui
       .setSetting('local_calendar_backend_enabled', next)
       .catch(() => setLocalCalendarEnabled(!next))
+  }
+
+  const toggleUnifiedInbox = (): void => {
+    const next = !unifiedInboxEnabled
+    setUnifiedInboxEnabled(next)
+    void window.openui
+      .setSetting('unified_inbox_enabled', next)
+      .catch(() => setUnifiedInboxEnabled(!next))
   }
 
   const saveGcalClientId = (): void => {
@@ -1156,6 +1172,31 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
             disabled={false}
             label="Local calendar automation"
             onClick={toggleLocalCalendar}
+          />
+        </div>
+
+        {/* Unified inbox. Default OFF for the same reason as the row above: the
+            cross-channel read and the summary-to-email action have never run
+            against a real Slack workspace, Telegram bot or Gmail account, and
+            the failure modes are reading the wrong person's messages or mailing
+            a summary to the wrong address. Contact linking is unaffected — it
+            only writes to the local database. */}
+        <div className="ou-settings-row ou-settings-section">
+          <div className="ou-settings-grow">
+            <div className="ou-settings-label">Unified inbox</div>
+            <div className="ou-settings-desc">
+              Lets OpenUI answer “what’s my summary” and “is there anything from him” by reading
+              WhatsApp, Telegram, Slack and Gmail in one pass, and email that summary on.{' '}
+              <strong style={{ color: 'var(--ou-text)' }}>Off by default</strong> — the cross-channel
+              read has not been verified against real accounts yet. Teaching OpenUI who your contacts
+              are still works with this off.
+            </div>
+          </div>
+          <Switch
+            on={unifiedInboxEnabled}
+            disabled={false}
+            label="Unified inbox"
+            onClick={toggleUnifiedInbox}
           />
         </div>
 

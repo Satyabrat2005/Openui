@@ -155,6 +155,11 @@ export function getTelegramToken(): string {
   return process.env.TELEGRAM_BOT_TOKEN?.trim() ?? ''
 }
 
+/** True when a bot token is configured at all (mirrors slack's isSlackConnected). */
+export function isTelegramConnected(): boolean {
+  return getTelegramToken() !== ''
+}
+
 /** True when a string is a well-formed BotFather token. */
 export function isValidBotToken(token: string): boolean {
   return TELEGRAM_TOKEN_RE.test(token)
@@ -488,6 +493,66 @@ export async function read_telegram_messages(args: Record<string, unknown>): Pro
       ok: false,
       error: `read_telegram_messages failed: ${err instanceof Error ? err.message : String(err)}`
     }
+  }
+}
+
+/**
+ * One Telegram message as structured data, for callers that need to reason over
+ * it rather than show it (the unified-inbox summary).
+ */
+export interface TelegramInboxMessage {
+  /** Numeric chat id as a string — the handle a contact link stores. */
+  chatId: string
+  /** Human-readable chat label ("Ashu", a group title, or "@channel"). */
+  chatLabel: string
+  sender: string
+  text: string
+  /** ISO-ish local time, same format the formatted tools print. */
+  at: string
+}
+
+/**
+ * Read the bot's recent messages as structured data, optionally narrowed to one
+ * chat. Read-only, and non-destructive in exactly the same way the two formatted
+ * read tools are — it goes through the same TAIL_UPDATES_PARAMS getUpdates call,
+ * so it never advances the offset or consumes the bot's update queue.
+ *
+ * This exists rather than the summary re-parsing formatMessages' output: the
+ * formatted text is built for a human to read and re-deriving fields from it
+ * would break silently the first time that wording changed.
+ */
+export async function readTelegramInbox(opts: {
+  chatId?: string
+  limit?: number
+}): Promise<{ ok: true; messages: TelegramInboxMessage[] } | { ok: false; error: string }> {
+  const limit = Math.max(1, Math.min(MAX_READ_LIMIT, Math.floor(opts.limit ?? DEFAULT_READ_LIMIT)))
+  const wanted = opts.chatId?.trim()
+  if (wanted && !isValidChatId(wanted)) {
+    return { ok: false, error: `invalid chat_id "${wanted}".` }
+  }
+
+  try {
+    const resp = await telegramCall<TgUpdate[]>('getUpdates', { ...TAIL_UPDATES_PARAMS })
+    if (!resp.ok) return { ok: false, error: apiError('read_telegram_messages', resp) }
+    const messages: TelegramInboxMessage[] = []
+    for (const update of resp.result ?? []) {
+      const msg = extractMessage(update)
+      if (!msg?.chat) continue
+      if (wanted && !chatMatches(msg.chat, wanted)) continue
+      messages.push({
+        chatId: String(msg.chat.id),
+        chatLabel: describeChat(msg.chat),
+        sender: describeSender(msg.from, msg.chat),
+        text: msg.text ?? msg.caption ?? '(non-text message)',
+        at: fmtTime(msg.date)
+      })
+    }
+    // Oldest first, then keep the newest `limit` — same ordering formatMessages
+    // presents, so the two reads never disagree about what "recent" means.
+    messages.sort((a, b) => a.at.localeCompare(b.at))
+    return { ok: true, messages: messages.slice(-limit) }
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) }
   }
 }
 

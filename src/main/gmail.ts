@@ -84,6 +84,10 @@ export interface EmailThreadCandidate {
   subject: string
   to: string
   date: string
+  /** Sender header, e.g. `Ashu Kumar <ashu@acme.com>`. */
+  from: string
+  /** Gmail's own short preview of the message body. */
+  snippet: string
 }
 export interface FindThreadResult {
   ok: boolean
@@ -452,12 +456,19 @@ export async function createGmailDraft(input: CreateDraftInput): Promise<EmailRe
   }
 }
 
-/** Search recent messages for a thread to reply into. Read-only. */
-export async function findEmailThread(query: string): Promise<FindThreadResult> {
+/**
+ * Search recent messages. Read-only.
+ *
+ * `maxResults` is a parameter rather than a constant because the unified-inbox
+ * summary asks the same question with a wider net ("everything unread this
+ * week") than find_email_thread's "which thread do I reply into?".
+ */
+export async function findEmailThread(query: string, maxResults = 5): Promise<FindThreadResult> {
   const q = query?.trim()
   if (!q) return { ok: false, error: 'find_email_thread requires a non-empty "query".' }
   try {
-    const listQuery = new URLSearchParams({ q, maxResults: '5' }).toString()
+    const capped = Math.max(1, Math.min(25, Math.floor(maxResults)))
+    const listQuery = new URLSearchParams({ q, maxResults: String(capped) }).toString()
     const { status, json } = await apiJson('GET', '/users/me/messages', listQuery)
     if (status >= 400) {
       const msg = (json.error as { message?: string } | undefined)?.message || `HTTP ${status}`
@@ -472,7 +483,7 @@ export async function findEmailThread(query: string): Promise<FindThreadResult> 
         format: 'metadata',
         metadataHeaders: 'Subject'
       }).toString()
-      const metaQuery2 = `${metaQuery}&metadataHeaders=To&metadataHeaders=Date`
+      const metaQuery2 = `${metaQuery}&metadataHeaders=To&metadataHeaders=Date&metadataHeaders=From`
       const { status: mStatus, json: mJson } = await apiJson(
         'GET',
         `/users/me/messages/${item.id}`,
@@ -488,7 +499,9 @@ export async function findEmailThread(query: string): Promise<FindThreadResult> 
         messageId: item.id,
         subject: get('Subject'),
         to: get('To'),
-        date: get('Date')
+        date: get('Date'),
+        from: get('From'),
+        snippet: typeof mJson.snippet === 'string' ? mJson.snippet : ''
       })
     }
     return { ok: true, candidates }
