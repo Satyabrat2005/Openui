@@ -2297,6 +2297,29 @@ export function resetOutlookProbeForTests(value: boolean | null = null): void {
   outlookComAvailable = value
 }
 
+/** Persisted setting key: see isLocalCalendarBackendEnabled. */
+const LOCAL_CALENDAR_BACKEND_SETTING_KEY = 'local_calendar_backend_enabled'
+
+/**
+ * Master switch for Calendar.app (macOS) / Outlook COM (Windows) automation.
+ *
+ * DELETE and UPDATE on these backends are new this sprint, unit-tested only,
+ * and have never run against a real Calendar.app or Outlook host — the
+ * failure mode is cancelling or moving the wrong person's real meeting, not a
+ * cosmetic bug. Off by default (absent/undefined ⇒ false — the inverse of
+ * most toggles in this file) so that risk cannot reach a real calendar until
+ * someone explicitly turns it on having understood it. Google Calendar has no
+ * such gate: it needs no OS dependency and its delete/update path is exercised
+ * the same way regardless of platform.
+ */
+function isLocalCalendarBackendEnabled(): boolean {
+  try {
+    return database.settings.getSetting(LOCAL_CALENDAR_BACKEND_SETTING_KEY) === true
+  } catch {
+    return false
+  }
+}
+
 /**
  * Create an event in, or list today's events from, a calendar.
  * macOS:   AppleScript against Calendar.app
@@ -2384,11 +2407,16 @@ async function control_calendar(
   // attendees/Meet before it would consider Google, so a plain "schedule a
   // meeting tomorrow at 3pm" on Windows went straight to Outlook COM and died
   // with REGDB_E_CLASSNOTREG even with Google Calendar connected and working.
+  // A physically-present local backend that the user hasn't opted into (see
+  // isLocalCalendarBackendEnabled) counts as "no local backend" for routing
+  // purposes, so a Google-connected user gets seamless behaviour instead of an
+  // error — the gate below only fires when Google isn't a usable fallback.
+  const localCalendarEnabled = isLocalCalendarBackendEnabled()
   const wantGoogle =
     backend === 'google' ||
     (backend !== 'system' &&
       isGoogleCalendarConnected() &&
-      (attendees.length > 0 || addMeetLink || !hasLocalCalendar))
+      (attendees.length > 0 || addMeetLink || !hasLocalCalendar || !localCalendarEnabled))
   if (wantGoogle) {
     if (!isGoogleCalendarConnected()) {
       return {
@@ -2711,6 +2739,26 @@ async function control_calendar(
     return {
       ok: false,
       error: `Unknown calendar action "${action}". Use "create", "list", "delete" or "update".`
+    }
+  }
+
+  // SAFETY GATE, checked before backend:"system" can force a way in: a local
+  // backend genuinely exists but the user has not opted into it (see
+  // isLocalCalendarBackendEnabled) — refuse rather than run unverified
+  // destructive code against a real calendar. This must run before the
+  // hasLocalCalendar branch below so an explicit backend:"system" cannot
+  // bypass it.
+  if (hasLocalCalendar && !localCalendarEnabled) {
+    return {
+      ok: false,
+      error:
+        'Local calendar automation (Calendar.app on macOS / Outlook on Windows) is turned off by ' +
+        'default in this build — its delete/reschedule path has not yet been verified against a ' +
+        'real calendar app, and a mistake there could cancel or move the wrong meeting. ' +
+        (isGoogleCalendarConnected()
+          ? 'Use Google Calendar instead (pass backend:"google"), or '
+          : 'Connect Google Calendar in Settings → Google Calendar, or ') +
+        'turn on "Local calendar automation" in Settings → Calendar if you want to use it anyway.'
     }
   }
 
@@ -6512,7 +6560,10 @@ export const toolSchemas: ToolSchema[] = [
       'DELETE (cancel) an event, or UPDATE (move / reschedule / rename) one. ' +
       'Use this for "schedule…", "what\'s on my calendar", "cancel my 2pm standup", ' +
       'and "move my dentist appointment to Wednesday". ' +
-      'Uses Calendar.app on macOS and Microsoft Outlook (via COM) on Windows. ' +
+      'Uses Google Calendar when connected. Calendar.app (macOS) / Outlook (Windows) automation ' +
+      'is available too but OFF by default until the user turns on "Local calendar automation" ' +
+      'in Settings → Calendar — without it and without Google connected, this returns an error ' +
+      'explaining the two options rather than acting. ' +
       'To email invites to other people or attach a video-call (Meet) link, connect ' +
       'Google Calendar in Settings and pass eventDetails.attendees — that routes ' +
       'through the Google Calendar API automatically. Sending invites asks the user to confirm. ' +
@@ -6544,8 +6595,9 @@ export const toolSchemas: ToolSchema[] = [
           type: 'string',
           description:
             'Optional. "auto" (default) picks Google when connected and invites/Meet are needed, ' +
-            'else the local OS calendar. "google" forces the Google Calendar API; "system" forces ' +
-            'the local calendar (Calendar.app / Outlook).',
+            'else the local OS calendar if the user has enabled it. "google" forces the Google ' +
+            'Calendar API; "system" forces the local calendar (Calendar.app / Outlook) and still ' +
+            'fails with a clear error if the user has not enabled it in Settings.',
           enum: ['auto', 'google', 'system']
         }
       },
