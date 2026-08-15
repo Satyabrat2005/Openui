@@ -2528,6 +2528,27 @@ async function control_calendar(
     }
   }
 
+  // SAFETY GATE, checked before the macOS/Windows blocks below AND before
+  // backend:"system" can force a way in: a local backend genuinely exists but
+  // the user has not opted into it (see isLocalCalendarBackendEnabled) —
+  // refuse rather than run unverified destructive code against a real
+  // calendar. This MUST sit above both platform blocks: each one owns its own
+  // create/list/delete/update handling and returns unconditionally on its
+  // platform, so a gate placed after either of them would never run there.
+  if (hasLocalCalendar && !localCalendarEnabled) {
+    return {
+      ok: false,
+      error:
+        'Local calendar automation (Calendar.app on macOS / Outlook on Windows) is turned off by ' +
+        'default in this build — its delete/reschedule path has not yet been verified against a ' +
+        'real calendar app, and a mistake there could cancel or move the wrong meeting. ' +
+        (isGoogleCalendarConnected()
+          ? 'Use Google Calendar instead (pass backend:"google"), or '
+          : 'Connect Google Calendar in Settings → Google Calendar, or ') +
+        'turn on "Local calendar automation" in Settings → Calendar if you want to use it anyway.'
+    }
+  }
+
   // ── macOS path (AppleScript / Calendar.app) ─────────────────────────────────
   if (IS_MAC) {
     if (action === 'create') {
@@ -2739,26 +2760,6 @@ async function control_calendar(
     return {
       ok: false,
       error: `Unknown calendar action "${action}". Use "create", "list", "delete" or "update".`
-    }
-  }
-
-  // SAFETY GATE, checked before backend:"system" can force a way in: a local
-  // backend genuinely exists but the user has not opted into it (see
-  // isLocalCalendarBackendEnabled) — refuse rather than run unverified
-  // destructive code against a real calendar. This must run before the
-  // hasLocalCalendar branch below so an explicit backend:"system" cannot
-  // bypass it.
-  if (hasLocalCalendar && !localCalendarEnabled) {
-    return {
-      ok: false,
-      error:
-        'Local calendar automation (Calendar.app on macOS / Outlook on Windows) is turned off by ' +
-        'default in this build — its delete/reschedule path has not yet been verified against a ' +
-        'real calendar app, and a mistake there could cancel or move the wrong meeting. ' +
-        (isGoogleCalendarConnected()
-          ? 'Use Google Calendar instead (pass backend:"google"), or '
-          : 'Connect Google Calendar in Settings → Google Calendar, or ') +
-        'turn on "Local calendar automation" in Settings → Calendar if you want to use it anyway.'
     }
   }
 
