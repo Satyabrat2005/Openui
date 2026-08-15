@@ -9,6 +9,7 @@ import * as subscriptions from './repositories/subscriptionRepo'
 import * as feedback from './repositories/feedbackRepo'
 import * as training from './repositories/trainingRepo'
 import * as memory from './repositories/memoryRepo'
+import * as contacts from './repositories/contactRepo'
 
 export function initDatabase(): void {
   initDb()
@@ -24,7 +25,8 @@ export const database = {
   subscriptions,
   feedback,
   training,
-  memory
+  memory,
+  contacts
 }
 
 export type { UserRow, UserData } from './repositories/userRepo'
@@ -33,6 +35,11 @@ export type { MessageRow } from './repositories/messageRepo'
 export type { SubscriptionRow } from './repositories/subscriptionRepo'
 export type { FeedbackRow } from './repositories/feedbackRepo'
 export type { MemoryRow, MemoryInput } from './repositories/memoryRepo'
+export type {
+  ContactRow,
+  ContactIdentityRow,
+  ContactWithIdentities
+} from './repositories/contactRepo'
 export type {
   TrainingExampleRow,
   TrainingStepRow,

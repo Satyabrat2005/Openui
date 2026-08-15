@@ -354,6 +354,116 @@ async function search_slack(args: Record<string, unknown>): Promise<ToolResult> 
   }
 }
 
+// ── structured read for the unified-inbox summary ───────────────────────────
+
+/** One Slack message as structured data, for callers that reason over it. */
+export interface SlackInboxMessage {
+  /** "#eng" — the channel it was posted in. */
+  channel: string
+  channelId: string
+  /** The raw Slack user id, e.g. "U024BE7LH". Always present when Slack gave one. */
+  userId: string
+  /** Display name when the workspace let us look it up, else the raw user id. */
+  sender: string
+  text: string
+}
+
+/** Channels read per summary, and messages per channel. Slack rate-limits hard. */
+const INBOX_CHANNEL_LIMIT = 5
+const INBOX_MESSAGES_PER_CHANNEL = 10
+
+/**
+ * Map Slack user ids to display names via users.list.
+ *
+ * Slack's conversations.history returns only a user ID — so without this step a
+ * Slack message cannot be attributed to a named person at all, and Slack would
+ * need an explicit contact link exactly like Telegram does. The lookup is what
+ * makes Slack a name-bearing channel (see contacts.ts NAME_BEARING_CHANNELS).
+ *
+ * Degrades rather than fails: users.list needs the `users:read` scope, which a
+ * minimal bot token may not have. On any failure this returns an empty map and
+ * the caller falls back to raw user ids, which still work for a contact whose
+ * Slack user id was explicitly linked.
+ */
+async function fetchUserNames(): Promise<Map<string, string>> {
+  const names = new Map<string, string>()
+  try {
+    const res = await slackApi('users.list', 'GET', { limit: 200 })
+    if (!res.ok || !Array.isArray(res.members)) return names
+    for (const raw of res.members as Array<Record<string, unknown>>) {
+      const id = String(raw.id ?? '')
+      if (!id) continue
+      const profile = (raw.profile as Record<string, unknown> | undefined) ?? {}
+      const label =
+        String(profile.real_name ?? '') || String(raw.real_name ?? '') || String(raw.name ?? '')
+      if (label) names.set(id, label)
+    }
+  } catch {
+    /* no scope / transport failure — fall back to raw ids */
+  }
+  return names
+}
+
+/**
+ * Read recent messages across the channels the token is a member of, as
+ * structured data. Read-only.
+ *
+ * Scoped to member channels and capped at INBOX_CHANNEL_LIMIT: "summarise my
+ * Slack" over a 200-channel workspace is both a rate-limit problem and a
+ * relevance problem, and the cap is reported to the caller so the summary can
+ * say it looked at a subset rather than implying it saw everything.
+ */
+export async function readSlackInbox(opts: { limit?: number }): Promise<
+  | { ok: true; messages: SlackInboxMessage[]; channelsRead: string[]; truncated: boolean }
+  | { ok: false; error: string }
+> {
+  const perChannel = Math.max(
+    1,
+    Math.min(MAX_READ_LIMIT, Math.floor(opts.limit ?? INBOX_MESSAGES_PER_CHANNEL))
+  )
+  try {
+    const listed = await fetchAllChannels()
+    if ('error' in listed) return { ok: false, error: listed.error }
+
+    const member = listed.channels.filter((c) => c.is_member !== false)
+    const picked = member.slice(0, INBOX_CHANNEL_LIMIT)
+    const names = await fetchUserNames()
+
+    const messages: SlackInboxMessage[] = []
+    const channelsRead: string[] = []
+    for (const channel of picked) {
+      const id = String(channel.id ?? '')
+      const name = `#${String(channel.name ?? '?')}`
+      if (!id) continue
+      const res = await slackApi('conversations.history', 'GET', { channel: id, limit: perChannel })
+      if (!res.ok) continue
+      channelsRead.push(name)
+      const history = Array.isArray(res.messages)
+        ? (res.messages as Array<Record<string, unknown>>)
+        : []
+      // Newest-first from Slack; reverse so the transcript reads chronologically.
+      for (const m of history.slice().reverse()) {
+        const userId = String(m.user ?? m.bot_id ?? '')
+        messages.push({
+          channel: name,
+          channelId: id,
+          userId,
+          sender: names.get(userId) || String(m.username ?? '') || userId || 'unknown',
+          text: String(m.text ?? '').replace(/\s+/g, ' ').trim()
+        })
+      }
+    }
+    return {
+      ok: true,
+      messages,
+      channelsRead,
+      truncated: listed.truncated || member.length > picked.length
+    }
+  } catch (e) {
+    return { ok: false, error: errText(e) }
+  }
+}
+
 // ── schemas (LLM-facing surface) ─────────────────────────────────────────────
 
 export const slackToolSchemas: ToolSchema[] = [

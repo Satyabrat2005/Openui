@@ -68,6 +68,39 @@ export const migrations: Migration[] = [
         CREATE INDEX IF NOT EXISTS idx_channel_memory_created ON channel_memory(created_at);
       `)
     }
+  },
+  {
+    // Contact identity: one canonical person, many per-channel handles. Without
+    // it "is there anything from him" cannot match a Telegram thread at all —
+    // Telegram exposes only a numeric chat_id, so there is nothing to match a
+    // name against. See database/repositories/contactRepo.ts and contacts.ts.
+    //
+    // The UNIQUE on (channel, handle_key) is the load-bearing constraint: one
+    // handle belongs to at most one person, so a relink is an explicit move
+    // rather than a silent second owner that makes resolution ambiguous.
+    name: '003_contacts',
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS contacts (
+          id TEXT PRIMARY KEY,
+          display_name TEXT NOT NULL,
+          name_key TEXT NOT NULL UNIQUE,
+          created_at INTEGER DEFAULT (strftime('%s','now'))
+        );
+        CREATE TABLE IF NOT EXISTS contact_identities (
+          id TEXT PRIMARY KEY,
+          contact_id TEXT NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+          channel TEXT NOT NULL,
+          handle TEXT NOT NULL,
+          handle_key TEXT NOT NULL,
+          source TEXT NOT NULL DEFAULT 'user',
+          created_at INTEGER DEFAULT (strftime('%s','now')),
+          UNIQUE (channel, handle_key)
+        );
+        CREATE INDEX IF NOT EXISTS idx_contact_identities_contact
+          ON contact_identities(contact_id);
+      `)
+    }
   }
 ]
 
