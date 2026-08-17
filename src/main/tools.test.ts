@@ -47,7 +47,8 @@ import {
   resolveServices,
   SUBSCRIPTION_SERVICES,
   parseKeyCombo,
-  pickWhatsAppWindowSource
+  pickWhatsAppWindowSource,
+  isWhatsAppChrome
 } from './tools'
 import {
   grantApp,
@@ -986,5 +987,76 @@ describe('computer_use — per-app consent gate', () => {
 
     // A revoked grant must fall back to asking again, never to running.
     expect(r).toMatchObject({ needsConfirmation: { kind: 'app-consent' } })
+  })
+})
+
+/**
+ * Regression: WhatsApp's own UI chrome was being returned as unread senders.
+ *
+ * The fixture below is the VERBATIM candidate list from a live read against a
+ * real linked WhatsApp account (2026-08-17) — 6 of these 10 "senders" were
+ * furniture, which is what made the feature close to useless at a 10-item cap.
+ */
+describe('isWhatsAppChrome — WhatsApp UI chrome must not read as senders', () => {
+  const LIVE_OCR_CANDIDATES = [
+    '(©) WhatsApp',
+    'B Chats',
+    'A Q_ Search or start a new',
+    'oe',
+    '= All Unread 207 v',
+    'oF',
+    'SoFTWARE X',
+    'oo LF SOFT... XN @',
+    '~Ankit Kumar: [J]',
+    'ud © GTBACEC Stude...'
+  ]
+
+  it('filters exactly the six chrome lines out of the real live capture', () => {
+    const kept = LIVE_OCR_CANDIDATES.filter((l) => !isWhatsAppChrome(l))
+
+    expect(kept).toEqual([
+      'SoFTWARE X',
+      'oo LF SOFT... XN @',
+      '~Ankit Kumar: [J]',
+      'ud © GTBACEC Stude...'
+    ])
+    // The specific numbers the live run produced: 10 in, 6 chrome, 4 real.
+    expect(LIVE_OCR_CANDIDATES.length - kept.length).toBe(6)
+  })
+
+  it('keeps the one cleanly-OCRd real contact from that capture', () => {
+    // The single line that came through undamaged — if this ever starts being
+    // filtered, the denylist has grown teeth it should not have.
+    expect(isWhatsAppChrome('~Ankit Kumar: [J]')).toBe(false)
+  })
+
+  it.each([
+    ['(©) WhatsApp', 'window title'],
+    ['B Chats', 'nav label behind icon noise'],
+    ['A Q_ Search or start a new', 'search placeholder, crop-truncated'],
+    ['= All Unread 207 v', 'unread filter bar with a count'],
+    ['oe', 'two-character OCR debris'],
+    ['oF', 'two-character OCR debris']
+  ])('treats %s as chrome (%s)', (line) => {
+    expect(isWhatsAppChrome(line)).toBe(true)
+  })
+
+  it.each([
+    'Chats with Mom',
+    'WhatsApp Support Team',
+    'Unread Book Club',
+    'All Hands',
+    'Ankit Kumar',
+    'Status Meeting Group'
+  ])('does NOT drop the real contact %s', (name) => {
+    // Tight matching, not containment: these all embed a chrome word and must
+    // survive. A loose substring denylist would silently eat every one of them.
+    expect(isWhatsAppChrome(name)).toBe(false)
+  })
+
+  it('matches bare nav labels but not longer names built on them', () => {
+    expect(isWhatsAppChrome('Chats')).toBe(true)
+    expect(isWhatsAppChrome('Archived')).toBe(true)
+    expect(isWhatsAppChrome('Archived Projects')).toBe(false)
   })
 })
