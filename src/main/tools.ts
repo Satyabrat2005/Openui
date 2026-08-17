@@ -2072,6 +2072,71 @@ async function leave_whatsapp_group(args: Record<string, unknown>): Promise<Tool
 }
 
 /**
+ * WhatsApp's own UI chrome, as OCR actually renders it. These lines sit inside
+ * the chat-list crop and were being returned as if they were senders: in a live
+ * read against a real account, 6 of 10 "unread senders" were furniture — the
+ * window title, the "Chats" nav label, the search placeholder and the unread
+ * filter bar — which spends the result cap on chrome instead of people.
+ *
+ * Matching is deliberately tight: exact labels after normalisation, or anchored
+ * patterns, never loose substring tests. "Chats with Mom" therefore survives
+ * while the bare "Chats" nav label does not. The accepted cost is that a contact
+ * whose entire name IS a UI label ("WhatsApp", "Chats") is dropped — that is the
+ * intended trade, and it is precisely why nothing here matches on containment.
+ */
+const WA_CHROME_LABELS = new Set([
+  'whatsapp',
+  'chats',
+  'status',
+  'channels',
+  'communities',
+  'archived',
+  'settings',
+  'groups',
+  'unread',
+  'favourites',
+  'favorites',
+  'new chat',
+  'starred messages'
+])
+
+/** Anchored chrome patterns that carry variable text (counts, crop truncation). */
+const WA_CHROME_PATTERNS: RegExp[] = [
+  // Search box: "Search or start a new chat", routinely truncated by the crop
+  // and prefixed with icon noise — observed live as "A Q_ Search or start a new".
+  /^(?:[a-z0-9]{1,2} ){0,2}search or start a new(?: chat)?$/,
+  // Filter bar: "All", "Unread", "= All Unread 207 v".
+  /^(?:all )?unread(?: \d+)?(?: [a-z])?$/,
+  /^all(?: \d+)?(?: [a-z])?$/
+]
+
+/** Strip OCR garnish (©, ~, [], punctuation) so labels compare on their words. */
+function normalizeWhatsAppLine(line: string): string {
+  return line
+    .replace(/[^\p{L}\p{N} ]+/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase()
+}
+
+/** True when an OCR'd chat-list line is WhatsApp's UI, not a person. */
+export function isWhatsAppChrome(line: string): boolean {
+  const norm = normalizeWhatsAppLine(line)
+  if (!norm) return true
+  // Pure OCR debris — nothing this short is a usable sender name ("oe", "oF").
+  // This does drop a real two-letter contact ("Jo"); a name that short is not
+  // separable from noise at this fidelity, and guessing wrong is the worse half.
+  if (norm.replace(/ /g, '').length < 3) return true
+  if (WA_CHROME_LABELS.has(norm)) return true
+  if (WA_CHROME_PATTERNS.some((re) => re.test(norm))) return true
+  // A single leading 1-2 char token is icon/badge noise ("B Chats"). Retest once
+  // without it — never twice, since repeated stripping would start eating names.
+  const stripped = norm.replace(/^[a-z0-9]{1,2} /, '')
+  if (stripped !== norm && WA_CHROME_LABELS.has(stripped)) return true
+  return false
+}
+
+/**
  * Best-effort read of WhatsApp's chat list for the background auto-reply watcher
  * (whatsappWatcher.ts). Focuses WhatsApp and OCRs the visible chat names.
  *
@@ -2093,7 +2158,11 @@ export async function readWhatsAppUnreadSenders(): Promise<string[]> {
     // Measured over a 20-poll / 5-minute window on a deliberately busy screen:
     // whole screen 617 spurious candidates, whole WhatsApp window 78, chat-list
     // column 10 (~0.5 per poll). See docs/post-v7.2.0-fixes-2026-08.md.
-    return await ocrWhatsAppCandidates(WA_CHAT_LIST_REGION)
+    // Drop WhatsApp's own chrome before it reaches the caller: the crop contains
+    // the title, nav, search box and filter bar, and each one otherwise occupies
+    // a slot that a real unread chat needed. See isWhatsAppChrome.
+    const lines = await ocrWhatsAppCandidates(WA_CHAT_LIST_REGION)
+    return lines.filter((line) => !isWhatsAppChrome(line))
   } catch {
     return []
   }
