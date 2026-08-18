@@ -381,22 +381,43 @@ const INBOX_MESSAGES_PER_CHANNEL = 10
  * makes Slack a name-bearing channel (see contacts.ts NAME_BEARING_CHANNELS).
  *
  * Degrades rather than fails: users.list needs the `users:read` scope, which a
- * minimal bot token may not have. On any failure this returns an empty map and
- * the caller falls back to raw user ids, which still work for a contact whose
+ * minimal bot token may not have. On any failure this returns whatever it has
+ * and the caller falls back to raw user ids, which still work for a contact whose
  * Slack user id was explicitly linked.
+ *
+ * users.list is cursor-paginated exactly like conversations.list — `limit` is a
+ * per-page maximum, NOT a total. A single call therefore sees only the first
+ * page, and on a workspace with more members than that every person beyond it
+ * silently resolves to a raw `U0123ABCD` id: messages stop being attributable to
+ * a name, which is the entire reason this lookup exists. Same bounded-walk
+ * discipline as fetchAllChannels (users.list is rate-limited tier 2, so the walk
+ * is capped rather than followed forever).
  */
+const USER_PAGE_SIZE = 200
+const MAX_USER_PAGES = 10
+
 async function fetchUserNames(): Promise<Map<string, string>> {
   const names = new Map<string, string>()
   try {
-    const res = await slackApi('users.list', 'GET', { limit: 200 })
-    if (!res.ok || !Array.isArray(res.members)) return names
-    for (const raw of res.members as Array<Record<string, unknown>>) {
-      const id = String(raw.id ?? '')
-      if (!id) continue
-      const profile = (raw.profile as Record<string, unknown> | undefined) ?? {}
-      const label =
-        String(profile.real_name ?? '') || String(raw.real_name ?? '') || String(raw.name ?? '')
-      if (label) names.set(id, label)
+    let cursor = ''
+    for (let page = 0; page < MAX_USER_PAGES; page++) {
+      const params: Record<string, string | number> = { limit: USER_PAGE_SIZE }
+      if (cursor) params.cursor = cursor
+      const res = await slackApi('users.list', 'GET', params)
+      // Keep what earlier pages produced rather than discarding it: a partial
+      // id→name map still names most people, which beats raw ids for everyone.
+      if (!res.ok || !Array.isArray(res.members)) return names
+      for (const raw of res.members as Array<Record<string, unknown>>) {
+        const id = String(raw.id ?? '')
+        if (!id) continue
+        const profile = (raw.profile as Record<string, unknown> | undefined) ?? {}
+        const label =
+          String(profile.real_name ?? '') || String(raw.real_name ?? '') || String(raw.name ?? '')
+        if (label) names.set(id, label)
+      }
+      const meta = res.response_metadata as Record<string, unknown> | undefined
+      cursor = typeof meta?.next_cursor === 'string' ? meta.next_cursor : ''
+      if (!cursor) break
     }
   } catch {
     /* no scope / transport failure — fall back to raw ids */
@@ -412,9 +433,23 @@ async function fetchUserNames(): Promise<Map<string, string>> {
  * Slack" over a 200-channel workspace is both a rate-limit problem and a
  * relevance problem, and the cap is reported to the caller so the summary can
  * say it looked at a subset rather than implying it saw everything.
+ *
+ * A channel whose history call fails is reported in `skipped`, never dropped in
+ * silence. slackApi RESOLVES on Slack's `ok:false` (see its doc comment), so a
+ * rate-limited channel used to fall through a bare `continue` and vanish: it left
+ * `channelsRead`, and `truncated` is derived only from the page cap and
+ * INBOX_CHANNEL_LIMIT, so a partial read was returned labelled complete. "Nothing
+ * from #eng" and "#eng could not be read" are opposite answers and must never
+ * collapse into each other.
  */
 export async function readSlackInbox(opts: { limit?: number }): Promise<
-  | { ok: true; messages: SlackInboxMessage[]; channelsRead: string[]; truncated: boolean }
+  | {
+      ok: true
+      messages: SlackInboxMessage[]
+      channelsRead: string[]
+      skipped: Array<{ channel: string; reason: string }>
+      truncated: boolean
+    }
   | { ok: false; error: string }
 > {
   const perChannel = Math.max(
@@ -431,12 +466,24 @@ export async function readSlackInbox(opts: { limit?: number }): Promise<
 
     const messages: SlackInboxMessage[] = []
     const channelsRead: string[] = []
+    const skipped: Array<{ channel: string; reason: string }> = []
     for (const channel of picked) {
       const id = String(channel.id ?? '')
       const name = `#${String(channel.name ?? '?')}`
       if (!id) continue
-      const res = await slackApi('conversations.history', 'GET', { channel: id, limit: perChannel })
-      if (!res.ok) continue
+      let res: SlackResponse
+      try {
+        res = await slackApi('conversations.history', 'GET', { channel: id, limit: perChannel })
+      } catch (e) {
+        // One unreachable channel must not abandon the whole summary — but it
+        // must not disappear from it either.
+        skipped.push({ channel: name, reason: errText(e) })
+        continue
+      }
+      if (!res.ok) {
+        skipped.push({ channel: name, reason: explainSlackError(String(res.error ?? 'unknown')) })
+        continue
+      }
       channelsRead.push(name)
       const history = Array.isArray(res.messages)
         ? (res.messages as Array<Record<string, unknown>>)
@@ -453,10 +500,22 @@ export async function readSlackInbox(opts: { limit?: number }): Promise<
         })
       }
     }
+    // Every channel failing is not an empty inbox, and must not be returned as
+    // one: "no messages" would be read as a real answer about a quiet workspace.
+    if (channelsRead.length === 0 && skipped.length > 0) {
+      return {
+        ok: false,
+        error: `No Slack channel could be read (${skipped
+          .map((s) => `${s.channel}: ${s.reason}`)
+          .join('; ')})`
+      }
+    }
+
     return {
       ok: true,
       messages,
       channelsRead,
+      skipped,
       truncated: listed.truncated || member.length > picked.length
     }
   } catch (e) {
