@@ -6,7 +6,8 @@ import {
   looksLikeChannelId,
   normalizeChannelName,
   explainSlackError,
-  isSlackConnected
+  isSlackConnected,
+  readSlackInbox
 } from './slack'
 
 // node:https is mocked so the pagination tests can drive a multi-page
@@ -180,5 +181,157 @@ describe('slack channel pagination', () => {
     await slackRegistry.send_slack_message({ channel: 'C0123ABCD', text: 'hi' })
     expect(paths.filter((p) => p.includes('conversations.list'))).toHaveLength(0)
     expect(paths.some((p) => p.includes('chat.postMessage'))).toBe(true)
+  })
+})
+
+// ── readSlackInbox: user pagination + unreadable channels ────────────────────
+//
+// readSlackInbox fans out across three different Slack methods, so these tests
+// route responses BY METHOD rather than by call order — an order-keyed queue
+// would keep passing if the code started making its calls in a different
+// sequence, which is exactly the kind of silent drift being guarded against.
+
+describe('readSlackInbox', () => {
+  /** Serve a per-method queue of JSON bodies; later calls reuse the last one. */
+  function route(byMethod: Record<string, string[]>): { paths: string[] } {
+    const paths: string[] = []
+    const seen: Record<string, number> = {}
+    httpsRequestMock.mockImplementation(
+      (opts: { path?: string }, cb: (res: EventEmitter) => void) => {
+        const path = opts.path ?? ''
+        paths.push(path)
+        const method = Object.keys(byMethod).find((m) => path.includes(m)) ?? ''
+        const bodies = byMethod[method] ?? [JSON.stringify({ ok: false, error: 'unknown_method' })]
+        const i = seen[method] ?? 0
+        seen[method] = i + 1
+        const body = bodies[Math.min(i, bodies.length - 1)]
+        const req = Object.assign(new EventEmitter(), {
+          write: (): void => {},
+          destroy: (): void => {},
+          setTimeout: (): void => {},
+          end: (): void => {
+            setImmediate(() => {
+              const res = Object.assign(new EventEmitter(), { statusCode: 200, headers: {} })
+              cb(res)
+              setImmediate(() => {
+                res.emit('data', Buffer.from(body))
+                res.emit('end')
+              })
+            })
+          }
+        })
+        return req
+      }
+    )
+    return { paths }
+  }
+
+  const oneChannel = JSON.stringify({
+    ok: true,
+    channels: [{ id: 'C111', name: 'general', is_member: true }],
+    response_metadata: { next_cursor: '' }
+  })
+  const twoChannels = JSON.stringify({
+    ok: true,
+    channels: [
+      { id: 'C111', name: 'general', is_member: true },
+      { id: 'C222', name: 'eng', is_member: true }
+    ],
+    response_metadata: { next_cursor: '' }
+  })
+
+  beforeEach(() => {
+    httpsRequestMock.mockReset()
+    process.env.SLACK_TOKEN = 'xoxb-test-token'
+  })
+
+  // Bug 1: users.list was called once with limit:200 and its next_cursor ignored,
+  // so on a workspace bigger than one page every member past it lost their name
+  // and messages came back attributed to a raw "U…" id.
+  it('follows next_cursor on users.list and names a member from the SECOND page', async () => {
+    const { paths } = route({
+      'conversations.list': [oneChannel],
+      'users.list': [
+        JSON.stringify({
+          ok: true,
+          members: [{ id: 'U111', profile: { real_name: 'Alice First' } }],
+          response_metadata: { next_cursor: 'UCURSOR2' }
+        }),
+        JSON.stringify({
+          ok: true,
+          members: [{ id: 'U222', profile: { real_name: 'Bob Secondpage' } }],
+          response_metadata: { next_cursor: '' }
+        })
+      ],
+      'conversations.history': [
+        JSON.stringify({ ok: true, messages: [{ user: 'U222', text: 'hello from page two' }] })
+      ]
+    })
+
+    const r = await readSlackInbox({ limit: 5 })
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+
+    // The point of the fix: a page-2 member is a NAME, not a raw id.
+    expect(r.messages[0].sender).toBe('Bob Secondpage')
+    expect(r.messages[0].sender).not.toBe('U222')
+
+    const userCalls = paths.filter((p) => p.includes('users.list'))
+    expect(userCalls).toHaveLength(2)
+    expect(userCalls[1]).toContain('cursor=UCURSOR2')
+  })
+
+  // Bug 2: slackApi RESOLVES on Slack's ok:false, so a rate-limited channel hit a
+  // bare `continue` and vanished — absent from channelsRead, with truncated:false.
+  it('reports a rate-limited channel as skipped instead of dropping it silently', async () => {
+    route({
+      'conversations.list': [twoChannels],
+      'users.list': [JSON.stringify({ ok: true, members: [] })],
+      'conversations.history': [
+        JSON.stringify({ ok: true, messages: [{ user: 'U111', text: 'only real message' }] }),
+        JSON.stringify({ ok: false, error: 'ratelimited' })
+      ]
+    })
+
+    const r = await readSlackInbox({ limit: 5 })
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+
+    expect(r.channelsRead).toEqual(['#general'])
+    // The channel is accounted for rather than absent from the result entirely.
+    expect(r.skipped).toHaveLength(1)
+    expect(r.skipped[0].channel).toBe('#eng')
+    expect(r.skipped[0].reason).toMatch(/rate-limited/i)
+  })
+
+  // The worst shape of the same bug: every channel fails, so the old code
+  // returned ok with zero messages — indistinguishable from a quiet workspace.
+  it('fails outright when NO channel could be read, rather than reporting empty', async () => {
+    route({
+      'conversations.list': [twoChannels],
+      'users.list': [JSON.stringify({ ok: true, members: [] })],
+      'conversations.history': [JSON.stringify({ ok: false, error: 'ratelimited' })]
+    })
+
+    const r = await readSlackInbox({ limit: 5 })
+    expect(r.ok).toBe(false)
+    if (r.ok) return
+    expect(r.error).toMatch(/no slack channel could be read/i)
+    expect(r.error).toContain('#general')
+    expect(r.error).toContain('#eng')
+  })
+
+  it('reports no skipped channels when every channel reads cleanly', async () => {
+    route({
+      'conversations.list': [twoChannels],
+      'users.list': [JSON.stringify({ ok: true, members: [] })],
+      'conversations.history': [JSON.stringify({ ok: true, messages: [{ user: 'U1', text: 'hi' }] })]
+    })
+
+    const r = await readSlackInbox({ limit: 5 })
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    expect(r.skipped).toEqual([])
+    expect(r.channelsRead).toEqual(['#general', '#eng'])
   })
 })

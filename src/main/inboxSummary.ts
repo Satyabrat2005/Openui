@@ -277,6 +277,14 @@ export function defaultInboxDeps(whatsapp: WhatsAppReaders): InboxDeps {
         : res.messages
 
       const read = res.channelsRead.length > 0 ? res.channelsRead.join(', ') : 'no channels'
+      // A channel that could not be read (rate limit, missing scope, transport)
+      // is stated outright: its silence is not evidence that nobody posted in it.
+      const skippedNote =
+        res.skipped.length > 0
+          ? ` Could NOT read ${res.skipped
+              .map((s) => `${s.channel} (${s.reason})`)
+              .join(', ')} — messages there are NOT included and this is not evidence they are empty.`
+          : ''
       return {
         status: 'ok',
         items: matching.slice(-scope.limit).map((m) => ({
@@ -287,7 +295,8 @@ export function defaultInboxDeps(whatsapp: WhatsAppReaders): InboxDeps {
         })),
         detail:
           `Read ${read}.` +
-          (res.truncated ? ' More channels exist than were read — this is a partial view.' : '')
+          (res.truncated ? ' More channels exist than were read — this is a partial view.' : '') +
+          skippedNote
       }
     },
 
