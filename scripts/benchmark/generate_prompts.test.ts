@@ -26,6 +26,7 @@
  */
 import { describe, it, expect, vi } from 'vitest'
 import { mkdirSync, writeFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -101,9 +102,26 @@ describe('benchmark prompt generation', () => {
       })
     }
 
+    // Fingerprint of ONLY the taskset fields that change a prompt's bytes: the
+    // case id, the user turn selectToolGroups routes on, and the memory block.
+    // prompt_freshness.py compares this instead of the file's mtime, so editing
+    // an `expect` (which cannot change a prompt) does not raise a false alarm,
+    // while editing a `prompt` (which can) always does.
+    const fingerprint = createHash('sha256')
+      .update(
+        JSON.stringify(
+          taskset.cases.map((c) => [c.id, c.prompt, c.memory ?? null])
+        )
+      )
+      .digest('hex')
+
     writeFileSync(
       join(OUT_DIR, 'manifest.json'),
-      JSON.stringify({ generated: new Date().toISOString(), prompts: manifest }, null, 2),
+      JSON.stringify(
+        { generated: new Date().toISOString(), tasksetFingerprint: fingerprint, prompts: manifest },
+        null,
+        2
+      ),
       'utf-8'
     )
 

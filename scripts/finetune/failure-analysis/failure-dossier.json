@@ -1,0 +1,353 @@
+{
+  "source_run": {
+    "file": "results-bigday-splen.json",
+    "generated": "2026-08-18T12:34:06",
+    "model": "qwen3.5:latest",
+    "scorer": "scripts/finetune/eval/run_eval.py::score_case (imported)",
+    "taskset_version": 1
+  },
+  "cases": [
+    {
+      "id": "mail-03",
+      "category": "gmail",
+      "verdict": "no_tool_emitted",
+      "flags": [],
+      "tool_emitted": null,
+      "user_turn": "send an email to my manager saying I'll be out sick today",
+      "expect": {
+        "kind": "tool",
+        "tool": "send_email",
+        "alt_tools": [
+          "create_email_draft"
+        ],
+        "args_required": [
+          "to"
+        ]
+      },
+      "taskset_note": "send vs draft both defensible; must not be open_app",
+      "system_prompt_file": "scripts/benchmark/prompts/mail-03.txt",
+      "system_prompt_chars": 15503,
+      "tool_groups_selected": [
+        "core",
+        "email"
+      ],
+      "tool_count": 19,
+      "tool_names": [
+        "open_app",
+        "open_folder_in_editor",
+        "send_email",
+        "create_email_draft",
+        "find_email_thread",
+        "list_apps",
+        "search_files",
+        "computer_use",
+        "search_local_files",
+        "run_workflow",
+        "list_directory",
+        "read_file",
+        "write_file",
+        "create_folder",
+        "move_file",
+        "copy_file",
+        "delete_file",
+        "read_clipboard",
+        "write_clipboard"
+      ],
+      "relevant_tool_schemas": [
+        {
+          "name": "send_email",
+          "signature": "to: string, subject?: string, body: string, attachmentPath?: string, threadId?: string, inReplyTo?: string",
+          "description": "Compose and SEND an email via Gmail. Use this whenever the user wants to email someone — e.g. \"email my resume to these recruiters\", \"send a follow-up to Jane\". If \"subject\" is omitted, one is derived automatically from the body. To attach a file, use the exact path from a \"[Attached file path: ...]\" line in the conversation as \"attachmentPath\" — never ask the user to re-share a file that is already attached. To reply into an existing conversation, first call find_email_thread to get a threadId, then pass that threadId (and the original message-id as inReplyTo) here. This ALWAYS asks the user to confirm before sending, since it emails another person."
+        },
+        {
+          "name": "create_email_draft",
+          "signature": "to: string, subject?: string, body: string, draft_id?: string",
+          "description": "Save an email DRAFT in the user's Gmail without sending it — use when the user wants to prepare or stage an email for later review rather than send it now (e.g. \"draft a reply to Jane I can look over first\"). A draft is a distinct object that stays in the mailbox and is never delivered, so this does NOT ask for confirmation the way send_email does. If \"subject\" is omitted, one is derived from the body. To revise an existing draft in place, pass its \"draft_id\" (returned as draftId=... when the draft was created); omit it to create a new one. To actually send, use send_email (which pauses for the user's confirmation)."
+        }
+      ],
+      "memory_block": null,
+      "raw_model_output": "I'd be happy to help you send that email! To do this properly, I'll need a couple of details:\n\n1. What is your manager's email address?\n2. Would you like me to include anything specific about why you're out (just \"sick\" or more detail)?\n3. Do you want any particular tone or additional information in the message?\n\nOnce you provide these, I'll compose and send it for confirmation before delivery.",
+      "input_tokens": 3627,
+      "output_tokens": 282,
+      "reproduces_across_runs": [
+        {
+          "file": "results-bigday-splen.json",
+          "generated": "2026-08-18T12:34:06",
+          "verdict": "no_tool_emitted",
+          "tool": null,
+          "flags": []
+        },
+        {
+          "file": "results-splen-after-fixes.json",
+          "generated": "2026-08-15T18:28:15",
+          "verdict": "no_tool_emitted",
+          "tool": null,
+          "flags": []
+        },
+        {
+          "file": "results-splen-local.json",
+          "generated": "2026-08-15T18:14:15",
+          "verdict": "no_tool_emitted",
+          "tool": null,
+          "flags": []
+        },
+        {
+          "file": "results-splen-prep-night.json",
+          "generated": "2026-08-18T11:49:08",
+          "verdict": "no_tool_emitted",
+          "tool": null,
+          "flags": []
+        },
+        {
+          "file": "results-splen-repeat.json",
+          "generated": "2026-08-15T18:31:02",
+          "verdict": "no_tool_emitted",
+          "tool": null,
+          "flags": []
+        },
+        {
+          "file": "results-splen-run1.json",
+          "generated": "2026-08-15T18:34:56",
+          "verdict": "no_tool_emitted",
+          "tool": null,
+          "flags": []
+        },
+        {
+          "file": "results-splen-run2.json",
+          "generated": "2026-08-15T18:38:18",
+          "verdict": "no_tool_emitted",
+          "tool": null,
+          "flags": []
+        }
+      ]
+    },
+    {
+      "id": "tg-01",
+      "category": "telegram",
+      "verdict": "no_tool_emitted",
+      "flags": [],
+      "tool_emitted": null,
+      "user_turn": "send a telegram message to chat 123456789 saying I am on my way",
+      "expect": {
+        "kind": "tool",
+        "tool": "send_telegram_message",
+        "args_required": [
+          "chat_id",
+          "text"
+        ]
+      },
+      "taskset_note": "Telegram send with an explicit numeric chat_id.",
+      "system_prompt_file": "scripts/benchmark/prompts/tg-01.txt",
+      "system_prompt_chars": 14498,
+      "tool_groups_selected": [
+        "core",
+        "telegram"
+      ],
+      "tool_count": 19,
+      "tool_names": [
+        "send_telegram_message",
+        "list_telegram_chats",
+        "read_telegram_messages",
+        "open_app",
+        "open_folder_in_editor",
+        "list_apps",
+        "search_files",
+        "computer_use",
+        "search_local_files",
+        "run_workflow",
+        "list_directory",
+        "read_file",
+        "write_file",
+        "create_folder",
+        "move_file",
+        "copy_file",
+        "delete_file",
+        "read_clipboard",
+        "write_clipboard"
+      ],
+      "relevant_tool_schemas": [
+        {
+          "name": "send_telegram_message",
+          "signature": "chat_id: string, text: string, reply_to_message_id?: number",
+          "description": "Send a text message to a Telegram chat using the user’s bot (configured in Settings → Telegram). IMPORTANT: a bot can only message a person who has ALREADY started a conversation with it (pressed Start), or a group/channel the bot is a member of — it cannot cold-message an arbitrary person by phone or handle. Get valid chat_ids from list_telegram_chats. This sends a real, un-sendable message and always asks for confirmation."
+        }
+      ],
+      "memory_block": null,
+      "raw_model_output": "This is a sensitive action (sending a message). I need your confirmation before proceeding.\n\nWould you like me to send the Telegram message with \"I am on my way\" to chat 123456789? Please reply **yes** or **no**.",
+      "input_tokens": 3361,
+      "output_tokens": 183,
+      "reproduces_across_runs": [
+        {
+          "file": "results-bigday-splen.json",
+          "generated": "2026-08-18T12:34:06",
+          "verdict": "no_tool_emitted",
+          "tool": null,
+          "flags": []
+        },
+        {
+          "file": "results-splen-after-fixes.json",
+          "generated": "2026-08-15T18:28:15",
+          "verdict": "no_tool_emitted",
+          "tool": null,
+          "flags": []
+        },
+        {
+          "file": "results-splen-local.json",
+          "generated": "2026-08-15T18:14:15",
+          "verdict": "no_tool_emitted",
+          "tool": null,
+          "flags": []
+        },
+        {
+          "file": "results-splen-prep-night.json",
+          "generated": "2026-08-18T11:49:08",
+          "verdict": "no_tool_emitted",
+          "tool": null,
+          "flags": []
+        },
+        {
+          "file": "results-splen-repeat.json",
+          "generated": "2026-08-15T18:31:02",
+          "verdict": "no_tool_emitted",
+          "tool": null,
+          "flags": []
+        },
+        {
+          "file": "results-splen-run1.json",
+          "generated": "2026-08-15T18:34:56",
+          "verdict": "no_tool_emitted",
+          "tool": null,
+          "flags": []
+        },
+        {
+          "file": "results-splen-run2.json",
+          "generated": "2026-08-15T18:38:18",
+          "verdict": "no_tool_emitted",
+          "tool": null,
+          "flags": []
+        }
+      ]
+    },
+    {
+      "id": "mem-02",
+      "category": "memory",
+      "verdict": "wrong_tool",
+      "flags": [
+        "called_find_email_thread_when_none_expected"
+      ],
+      "tool_emitted": "find_email_thread",
+      "user_turn": "what time did I tell Priya her interview is?",
+      "expect": {
+        "kind": "no_tool",
+        "must_not_match": "\b\\d{1,2}\\s*(am|pm|:\\d{2})"
+      },
+      "taskset_note": "Negative control: memory present but silent on Priya. Inventing a time is the failure.",
+      "system_prompt_file": "scripts/benchmark/prompts/mem-02.txt",
+      "system_prompt_chars": 17056,
+      "tool_groups_selected": [
+        "calendar",
+        "core",
+        "email"
+      ],
+      "tool_count": 20,
+      "tool_names": [
+        "open_app",
+        "open_folder_in_editor",
+        "send_email",
+        "create_email_draft",
+        "find_email_thread",
+        "list_apps",
+        "search_files",
+        "control_calendar",
+        "computer_use",
+        "search_local_files",
+        "run_workflow",
+        "list_directory",
+        "read_file",
+        "write_file",
+        "create_folder",
+        "move_file",
+        "copy_file",
+        "delete_file",
+        "read_clipboard",
+        "write_clipboard"
+      ],
+      "relevant_tool_schemas": [
+        {
+          "name": "find_email_thread",
+          "signature": "query: string",
+          "description": "Search recent Gmail messages for a thread to follow up on, e.g. \"find my email to the recruiter at Acme\" before sending a follow-up. Returns up to 5 candidate threads with their threadId, subject, recipient, and date — pass the right threadId into send_email to reply into that same conversation. Read-only; does not send anything."
+        }
+      ],
+      "memory_block": "Earlier activity on the user's messaging channels, recorded from real actions you already took. These may be from a different\nchannel than the one in use now:\n- [WhatsApp · 1h ago] Sent a WhatsApp message to Ashu: \"The design review moved to Thursday 4pm\"\nThese are notes, not tools — never emit one as a tool call.\nUse them when they answer the request, but do NOT treat them as permission\nto guess about anything else.\nIf a fact is not listed here, say you do not have it rather than inventing it.\n",
+      "raw_model_output": "{\"tool\": \"find_email_thread\", \"args\": {\"query\": \"Priya interview\"}}",
+      "input_tokens": 4007,
+      "output_tokens": 115,
+      "reproduces_across_runs": [
+        {
+          "file": "results-bigday-splen.json",
+          "generated": "2026-08-18T12:34:06",
+          "verdict": "wrong_tool",
+          "tool": "find_email_thread",
+          "flags": [
+            "called_find_email_thread_when_none_expected"
+          ]
+        },
+        {
+          "file": "results-splen-after-fixes.json",
+          "generated": "2026-08-15T18:28:15",
+          "verdict": "wrong_tool",
+          "tool": "find_email_thread",
+          "flags": [
+            "called_find_email_thread_when_none_expected"
+          ]
+        },
+        {
+          "file": "results-splen-local.json",
+          "generated": "2026-08-15T18:14:15",
+          "verdict": "wrong_tool",
+          "tool": "find_email_thread",
+          "flags": [
+            "called_find_email_thread_when_none_expected"
+          ]
+        },
+        {
+          "file": "results-splen-prep-night.json",
+          "generated": "2026-08-18T11:49:08",
+          "verdict": "wrong_tool",
+          "tool": "find_email_thread",
+          "flags": [
+            "called_find_email_thread_when_none_expected"
+          ]
+        },
+        {
+          "file": "results-splen-repeat.json",
+          "generated": "2026-08-15T18:31:02",
+          "verdict": "wrong_tool",
+          "tool": "find_email_thread",
+          "flags": [
+            "called_find_email_thread_when_none_expected"
+          ]
+        },
+        {
+          "file": "results-splen-run1.json",
+          "generated": "2026-08-15T18:34:56",
+          "verdict": "wrong_tool",
+          "tool": "find_email_thread",
+          "flags": [
+            "called_find_email_thread_when_none_expected"
+          ]
+        },
+        {
+          "file": "results-splen-run2.json",
+          "generated": "2026-08-15T18:38:18",
+          "verdict": "wrong_tool",
+          "tool": "find_email_thread",
+          "flags": [
+            "called_find_email_thread_when_none_expected"
+          ]
+        }
+      ]
+    }
+  ]
+}

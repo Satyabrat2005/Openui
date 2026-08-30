@@ -68,6 +68,9 @@ except ImportError as exc:  # pragma: no cover - surfaced to the operator
     )
     raise SystemExit(2)
 
+sys.path.insert(0, HERE)
+import prompt_freshness  # noqa: E402
+
 PROMPT_DIR = os.path.join(HERE, "prompts")
 DEFAULT_OLLAMA = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434")
 
@@ -393,17 +396,32 @@ def main():
     ap.add_argument("--label", default="run")
     ap.add_argument("--limit", type=int, default=0, help="first N cases only (smoke test)")
     ap.add_argument("--out", default=None)
+    ap.add_argument(
+        "--allow-stale-prompts",
+        action="store_true",
+        help="score against prompts that predate the builder anyway. Only for "
+             "reproducing an OLD run; the staleness is recorded in the results file.",
+    )
     for name, default in DEFAULT_MODELS.items():
         ap.add_argument("--model-%s" % name, default=default)
     args = ap.parse_args()
 
-    if not os.path.isdir(PROMPT_DIR):
+    # A stale prompts/ directory does not corrupt one case, it corrupts the whole
+    # comparison: every system would be scored on a prompt the app no longer
+    # sends. Found the hard way on 2026-08-30 - see prompt_freshness.py.
+    fresh_ok, fresh_msg = prompt_freshness.check(PROMPT_DIR)
+    if not fresh_ok:
+        print(fresh_msg, file=sys.stderr)
+        if not args.allow_stale_prompts:
+            return 2
         print(
-            "prompts/ missing — generate them first:\n"
-            "  npx vitest run --config scripts/benchmark/vitest.gen.config.ts",
+            "--allow-stale-prompts given: continuing anyway. The results file "
+            "records that the prompts were stale.",
             file=sys.stderr,
         )
-        return 2
+
+    with open(os.path.join(PROMPT_DIR, "manifest.json"), encoding="utf-8") as fh:
+        prompts_generated = json.load(fh).get("generated")
 
     with open(os.path.join(HERE, "taskset.json"), encoding="utf-8") as fh:
         taskset = json.load(fh)
@@ -432,6 +450,8 @@ def main():
                 "label": args.label,
                 "generated": time.strftime("%Y-%m-%dT%H:%M:%S"),
                 "taskset_version": taskset["version"],
+                "prompts_generated": prompts_generated,
+                "prompts_stale": bool(args.allow_stale_prompts and not fresh_ok),
                 "scorer": "scripts/finetune/eval/run_eval.py::score_case (imported)",
                 "summaries": summaries,
                 "results": all_results,

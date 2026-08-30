@@ -69,4 +69,13 @@ scripts/finetune/**/adapter*/
 
 # benchmark: never commit locally-generated per-case prompts or python cache
 scripts/benchmark/prompts/
+
+# failure analysis + safety gate: same policy as the benchmark's prompts/ above -
+# the per-case prompts are generated locally from the app's own builder, and
+# pattern-dataset.jsonl embeds those prompts verbatim as training examples.
+# Regenerate with the vitest configs in each directory, then collect.py.
+scripts/finetune/failure-analysis/prompts/
+scripts/finetune/failure-analysis/pattern-dataset.jsonl
+scripts/finetune/safety-gate/prompts/
+scripts/finetune/**/__pycache__/
 scripts/benchmark/__pycache__/
