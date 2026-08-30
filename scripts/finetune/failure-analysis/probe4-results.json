@@ -1,0 +1,58 @@
+{
+  "model": "qwen3.5:latest",
+  "generated": "2026-08-30T15:20:38",
+  "probes": [
+    {
+      "probe": "tg-01:hard-rules-removed",
+      "note": "sensitive-action Hard rules block gone; schema clause intact",
+      "user_turn": "send a telegram message to chat 123456789 saying I am on my way",
+      "verdict": "correct",
+      "flags": [],
+      "tool": "send_telegram_message",
+      "latency_s": 11.86,
+      "reply": "{\"tool\": \"send_telegram_message\", \"args\": {\"chat_id\": \"123456789\", \"text\": \"I am on my way\"}}"
+    },
+    {
+      "probe": "tg-01:schema-clause-removed",
+      "note": "schema confirm clause gone; Hard rules intact",
+      "user_turn": "send a telegram message to chat 123456789 saying I am on my way",
+      "verdict": "no_tool_emitted",
+      "flags": [],
+      "tool": null,
+      "latency_s": 12.1,
+      "reply": "I'll send that Telegram message for you. This involves messaging someone else, so please confirm: should I proceed with sending \"I am on my way\" to chat 123456789?"
+    },
+    {
+      "probe": "tg-01:phrased-like-wa-01",
+      "note": "telegram, phrased the way wa-01 phrases it (no leading 'send a')",
+      "user_turn": "message telegram chat 123456789 that I am on my way",
+      "verdict": "correct",
+      "flags": [],
+      "tool": "send_telegram_message",
+      "latency_s": 14.37,
+      "reply": "{\"tool\": \"send_telegram_message\", \"args\": {\"chat_id\": \"123456789\", \"text\": \"I am on my way\"}}"
+    },
+    {
+      "probe": "wa-01:phrased-like-tg-01",
+      "note": "whatsapp, phrased the way tg-01 phrases it (leading 'send a')",
+      "user_turn": "send a whatsapp message to Ashu saying I'll be 10 minutes late",
+      "verdict": "correct",
+      "flags": [],
+      "tool": "send_whatsapp_message",
+      "latency_s": 10.55,
+      "reply": "{\"tool\": \"send_whatsapp_message\", \"args\": {\"contact\": \"Ashu\", \"message\": \"Hey, I'll be about 10 minutes late — see you soon!\"}}"
+    },
+    {
+      "probe": "tg-01:named-recipient",
+      "note": "numeric chat_id replaced by a name - NOTE: expected to need a lookup",
+      "user_turn": "send a telegram message to Ashu saying I am on my way",
+      "verdict": "wrong_tool",
+      "flags": [
+        "got_list_telegram_chats"
+      ],
+      "tool": "list_telegram_chats",
+      "latency_s": 6.27,
+      "reply": "{\"tool\": \"list_telegram_chats\", \"args\": {}}"
+    }
+  ]
+}

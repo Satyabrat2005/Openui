@@ -1,0 +1,18 @@
+{
+  "when": "2026-08-30",
+  "reason": "HALLUCINATION_RE contraction fix (see run_eval.py)",
+  "method": "re-scored the STORED model replies; models were not re-run, so the baselines stay comparable to each other",
+  "files_scanned": [
+    "results-AFTER-coder7b.json",
+    "results-AFTER-qwen3.5.json",
+    "results-BASELINE-coder3b.json",
+    "results-BASELINE-coder7b.json",
+    "results-BASELINE-qwen3.5.json",
+    "results-TUNED-v1.json",
+    "results-builder-routing.json"
+  ],
+  "replies_scanned": 210,
+  "verdicts_moved": [],
+  "known_false_positive_negated_has_been": 0,
+  "applied": false
+}

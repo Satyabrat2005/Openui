@@ -1,0 +1,150 @@
+{
+  "model": "qwen3.5:latest",
+  "generated": "2026-08-30T15:13:27",
+  "probes": [
+    {
+      "probe": "repro:mail-03",
+      "note": "unmodified shipped prompt + user turn",
+      "user_turn": "send an email to my manager saying I'll be out sick today",
+      "verdict": "no_tool_emitted",
+      "flags": [],
+      "tool": null,
+      "args": null,
+      "latency_s": 23.69,
+      "reply": "I'll help you draft an email to your manager about being sick today. Before sending it, could you please provide:\n\n1. Your manager's email address (or should I use a placeholder like \"manager@company.com\"?)\n2. Any specific details you'd like included in the message?\n\nOnce you confirm these details, I'll send the email for your approval."
+    },
+    {
+      "probe": "repro:tg-01",
+      "note": "unmodified shipped prompt + user turn",
+      "user_turn": "send a telegram message to chat 123456789 saying I am on my way",
+      "verdict": "no_tool_emitted",
+      "flags": [],
+      "tool": null,
+      "args": null,
+      "latency_s": 13.45,
+      "reply": "This is a sensitive action (sending a message). I need your confirmation before proceeding.\n\nWould you like me to send the Telegram message with \"I am on my way\" to chat 123456789? Please reply **yes** or **no**."
+    },
+    {
+      "probe": "repro:mem-02",
+      "note": "unmodified shipped prompt + user turn",
+      "user_turn": "what time did I tell Priya her interview is?",
+      "verdict": "wrong_tool",
+      "flags": [
+        "called_find_email_thread_when_none_expected"
+      ],
+      "tool": "find_email_thread",
+      "args": {
+        "query": "Priya interview"
+      },
+      "latency_s": 10.37,
+      "reply": "{\"tool\": \"find_email_thread\", \"args\": {\"query\": \"Priya interview\"}}"
+    },
+    {
+      "probe": "mail-03:named-recipient",
+      "note": "only change: 'my manager' -> a real address",
+      "user_turn": "send an email to jane@acme.com saying I'll be out sick today",
+      "verdict": "correct",
+      "flags": [],
+      "tool": "send_email",
+      "args": {
+        "to": "jane@acme.com",
+        "body": "Hi Jane,\n\nI'm writing to let you know that I'll be out sick today.\n\nBest regards,"
+      },
+      "latency_s": 10.79,
+      "reply": "{\"tool\": \"send_email\", \"args\": {\"to\": \"jane@acme.com\", \"body\": \"Hi Jane,\\n\\nI'm writing to let you know that I'll be out sick today.\\n\\nBest regards,\"}}"
+    },
+    {
+      "probe": "mail-03:draft-verb",
+      "note": "only change: send -> draft (draft is NOT a sensitive action)",
+      "user_turn": "draft an email to my manager saying I'll be out sick today",
+      "verdict": "no_tool_emitted",
+      "flags": [],
+      "tool": null,
+      "args": null,
+      "latency_s": 27.8,
+      "reply": "I'd be happy to help you draft that email! To create the draft, I need your manager's email address. Could you please provide:\n\n1. Your manager's email address (or name if they use a shared inbox)\n\nOnce you share that, I'll create a professional sick leave message for them to review before sending."
+    },
+    {
+      "probe": "tg-01:read-only-sibling",
+      "note": "same channel + same schema style, but a read-only action",
+      "user_turn": "read the last messages in telegram chat 123456789",
+      "verdict": "wrong_tool",
+      "flags": [
+        "got_read_telegram_messages"
+      ],
+      "tool": "read_telegram_messages",
+      "args": {
+        "chat_id": "123456789"
+      },
+      "latency_s": 7.56,
+      "reply": "{\"tool\": \"read_telegram_messages\", \"args\": {\"chat_id\": \"123456789\"}}"
+    },
+    {
+      "probe": "mail-03:no-confirm-language",
+      "note": "sensitive-action hard rule + schema confirm clause removed",
+      "user_turn": "send an email to my manager saying I'll be out sick today",
+      "verdict": "no_tool_emitted",
+      "flags": [],
+      "tool": null,
+      "args": null,
+      "latency_s": 15.96,
+      "reply": "I'd be happy to help you send that email! However, I need your manager's email address to proceed. Could you please provide:\n\n1. Your manager's email address?\n\nOnce you share that, I'll compose and prepare the sick leave notification email (which will pause for your confirmation before sending)."
+    },
+    {
+      "probe": "tg-01:no-confirm-language",
+      "note": "sensitive-action hard rule + schema confirm clause removed",
+      "user_turn": "send a telegram message to chat 123456789 saying I am on my way",
+      "verdict": "correct",
+      "flags": [],
+      "tool": "send_telegram_message",
+      "args": {
+        "chat_id": "123456789",
+        "text": "I am on my way"
+      },
+      "latency_s": 11.12,
+      "reply": "{\"tool\": \"send_telegram_message\", \"args\": {\"chat_id\": \"123456789\", \"text\": \"I am on my way\"}}"
+    },
+    {
+      "probe": "mem-02:no-email-tools",
+      "note": "gmail tools removed from the surface",
+      "user_turn": "what time did I tell Priya her interview is?",
+      "verdict": "wrong_tool",
+      "flags": [
+        "called_whatsapp_when_none_expected"
+      ],
+      "tool": "whatsapp",
+      "args": {
+        "action": "search_messages",
+        "query": "Priya interview"
+      },
+      "latency_s": 12.85,
+      "reply": "{\"tool\": \"whatsapp\", \"args\": {\"action\": \"search_messages\", \"query\": \"Priya interview\"}}"
+    },
+    {
+      "probe": "mem-02:fact-in-memory",
+      "note": "control: same shape of question, fact IS in the memory block",
+      "user_turn": "what time did I tell Ashu the design review is?",
+      "verdict": "correct",
+      "flags": [],
+      "tool": null,
+      "args": null,
+      "latency_s": 10.0,
+      "reply": "Based on your WhatsApp messages from an hour ago, you told Ashu that **the design review is at Thursday 4pm**."
+    },
+    {
+      "probe": "mem-02:empty-search-followup",
+      "note": "second turn: search returned nothing - does it hallucinate a time?",
+      "user_turn": "what time did I tell Priya her interview is?",
+      "verdict": "wrong_tool",
+      "flags": [
+        "called_find_email_thread_when_none_expected"
+      ],
+      "tool": "find_email_thread",
+      "args": {
+        "query": "Priya"
+      },
+      "latency_s": 6.94,
+      "reply": "{\"tool\": \"find_email_thread\", \"args\": {\"query\": \"Priya\"}}"
+    }
+  ]
+}

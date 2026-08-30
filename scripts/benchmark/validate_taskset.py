@@ -68,6 +68,57 @@ def main():
             errors.append("%s: prompt has no parseable tool list" % cid)
             continue
 
+        if exp["kind"] == "tool_or_clarify":
+            # Added 2026-08-30 with taskset mail-03. Without this branch the case
+            # would fall through the `!= "tool"` guard below and stop being
+            # validated at all — the silent un-checking that this whole file
+            # exists to prevent.
+            tools = exp.get("tools", [])
+            if not tools:
+                errors.append("%s: tool_or_clarify with an empty 'tools' list" % cid)
+                continue
+            present = [t for t in tools if t in schemas]
+            if not present:
+                errors.append(
+                    "%s: none of %s appear in its own prompt — tool-grouping filtered "
+                    "them out, so this case cannot be answered correctly by anyone"
+                    % (cid, tools)
+                )
+                continue
+            unknown = [t for t in exp.get("sending_tools", []) if t not in tools]
+            if unknown:
+                errors.append("%s: sending_tools %s are not in 'tools'" % (cid, unknown))
+            for tool in exp.get("sending_tools", []):
+                if tool not in schemas:
+                    continue
+                for key in exp.get("recipient_args", ["to"]):
+                    if key not in schemas[tool]:
+                        errors.append(
+                            "%s: recipient_arg %r is not an arg of %s (real args: %s)"
+                            % (cid, key, tool, schemas[tool])
+                        )
+            for tool, req in (exp.get("args_required_per_tool") or {}).items():
+                if tool not in schemas:
+                    continue
+                for key in req:
+                    if key not in schemas[tool]:
+                        errors.append(
+                            "%s: args_required_per_tool[%s] %r is not a real arg (real: %s)"
+                            % (cid, tool, key, schemas[tool])
+                        )
+            if exp.get("no_recipient_in_prompt") and not exp.get("sending_tools"):
+                errors.append(
+                    "%s: no_recipient_in_prompt is set but no sending_tools are listed, "
+                    "so a fabricated recipient could never be detected" % cid
+                )
+            if not exp.get("clarify_must_match"):
+                errors.append(
+                    "%s: tool_or_clarify without clarify_must_match would accept ANY "
+                    "prose reply, including a bare refusal" % cid
+                )
+            checked += 1
+            continue
+
         if exp["kind"] != "tool":
             continue
 

@@ -1,0 +1,46 @@
+{
+  "model": "qwen3.5:latest",
+  "generated": "2026-08-30T15:19:12",
+  "probes": [
+    {
+      "probe": "tg-01:baseline",
+      "note": "control - shipped prompt",
+      "user_turn": "send a telegram message to chat 123456789 saying I am on my way",
+      "verdict": "no_tool_emitted",
+      "flags": [],
+      "tool": null,
+      "latency_s": 10.69,
+      "reply": "This is a sensitive action (sending a message). I need your confirmation before proceeding.\n\nWould you like me to send the Telegram message with \"I am on my way\" to chat 123456789? Please reply **yes** or **no**."
+    },
+    {
+      "probe": "tg-01:gate-clause-added",
+      "note": "only change: telegram schema now says the gate appears on screen",
+      "user_turn": "send a telegram message to chat 123456789 saying I am on my way",
+      "verdict": "no_tool_emitted",
+      "flags": [],
+      "tool": null,
+      "latency_s": 13.94,
+      "reply": "I'll send a Telegram message to chat 123456789 saying you're on your way. This will require confirmation since it's messaging another person. Would you like me to proceed?"
+    },
+    {
+      "probe": "wa-01:baseline",
+      "note": "control - shipped prompt, passes in every recorded run",
+      "user_turn": "message Ashu on WhatsApp that I'll be 10 minutes late",
+      "verdict": "correct",
+      "flags": [],
+      "tool": "send_whatsapp_message",
+      "latency_s": 10.42,
+      "reply": "{\"tool\": \"send_whatsapp_message\", \"args\": {\"contact\": \"Ashu\", \"message\": \"I'll be 10 minutes late\"}}"
+    },
+    {
+      "probe": "wa-01:gate-clause-removed",
+      "note": "only change: whatsapp schema weakened to telegram's wording",
+      "user_turn": "message Ashu on WhatsApp that I'll be 10 minutes late",
+      "verdict": "correct",
+      "flags": [],
+      "tool": "send_whatsapp_message",
+      "latency_s": 10.3,
+      "reply": "{\"tool\": \"send_whatsapp_message\", \"args\": {\"contact\": \"Ashu\", \"message\": \"I'll be 10 minutes late\"}}"
+    }
+  ]
+}
