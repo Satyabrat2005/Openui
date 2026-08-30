@@ -28,12 +28,12 @@
     },
     "claude": {
       "verified": true,
-      "as_of": "2026-06-24",
+      "as_of": "2026-08-30",
       "source": "https://platform.claude.com/docs/en/about-claude/models/overview",
-      "note": "claude-sonnet-5 has introductory pricing of $2.00/$10.00 through 2026-08-31; the standard $3.00/$15.00 is recorded here so the number does not silently expire mid-benchmark.",
+      "note": "Re-checked 2026-08-30 against the sourced pricing page. CHANGED SINCE 2026-06-24: claude-sonnet-5 is now $2.00/$10.00 as the STANDARD price — the launch introductory rate was made permanent and the previously scheduled 2026-09-01 increase to $3.00/$15.00 will not occur (see the claude-sonnet-5-introductory-pricing note on https://platform.claude.com/docs/en/about-claude/pricing). The old $3.00/$15.00 figure recorded here would have overstated Sonnet 5 cost by 50%. claude-opus-5 ($5/$25) and claude-haiku-4-5 ($1/$5) are unchanged. Base (non-batch, non-cached, global inference_geo) rates only.",
       "models": {
         "claude-opus-5": { "input_per_mtok": 5.0, "output_per_mtok": 25.0 },
-        "claude-sonnet-5": { "input_per_mtok": 3.0, "output_per_mtok": 15.0 },
+        "claude-sonnet-5": { "input_per_mtok": 2.0, "output_per_mtok": 10.0 },
         "claude-haiku-4-5": { "input_per_mtok": 1.0, "output_per_mtok": 5.0 }
       }
     },
