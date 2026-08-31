@@ -5,6 +5,26 @@ the newest work lands under **Unreleased** until the next version bump.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Slack sender names past the first page (`slack.ts`)** — `users.list` is
+  cursor-paginated and `limit` is a per-page maximum, not a total, so a single
+  call saw only the first 200 members and everyone beyond that resolved to a raw
+  `U0123ABCD` id — defeating the lookup's whole purpose. Now walks the cursor.
+  **Known ceiling: 2000 members** (200 x 10 pages). Past that the name map is
+  silently partial and those senders fall back to raw ids again; the cap bounds
+  a tier-2 rate-limited call and raising it is not the fix, so the limit is
+  documented at the constant rather than papered over. Pagination and the
+  boundary are covered by mocked-HTTP tests only — **neither has run against a
+  real workspace of that size.** (#171)
+- **Rate-limited Slack channels no longer vanish from a summary (`slack.ts`,
+  `inboxSummary.ts`)** — `slackApi` resolves on Slack's `ok: false`, so a
+  throttled channel hit a bare `continue` and disappeared: absent from
+  `channelsRead`, with `truncated: false`. It now lands in `skipped` with a
+  reason, and the all-channels-failed case returns an error instead of an empty
+  inbox that would read as a quiet workspace. Reproduced against mocked
+  responses; **not yet reproduced against a real rate limit.** (#171)
+
 ## v7.2.0 — 2026-08-12
 
 The local-model release. Every prior version shipped a system prompt that
