@@ -10,7 +10,8 @@ import WhatsAppAutoReplyBanner from './components/WhatsAppAutoReplyBanner'
 import { useAssistantAnimations } from './hooks/useAssistantAnimations'
 import { useOnboarding } from './hooks/useOnboarding'
 import { applyTheme, coerceThemePref, watchSystemTheme } from './lib/theme'
-import { AuthProvider } from './context/AuthContext'
+import { AuthProvider, useAuth } from './context/AuthContext'
+import AuthScreen from './components/AuthScreen'
 import { TaskActivityProvider, useTaskActivity } from './context/TaskActivityContext'
 import type { PermissionTarget, HitlRequestPayload, PlanRequestPayload } from './env'
 
@@ -58,9 +59,29 @@ function Chevron(): JSX.Element {
  * The minimize / maximize / close IPC and the isMac / hiddenInset handling are
  * unchanged — only the visual chrome differs.
  */
-function TitleBar({ variant, onWorkspaceClick }: { variant: 'setup' | 'console'; onWorkspaceClick?: () => void }): JSX.Element {
-  const [maximized, setMaximized] = useState(false)
+/**
+ * The live run counters. Split out of TitleBar because it is the only part that
+ * reads TaskActivityContext, and the title bar also has to render on the
+ * signed-out screen — which sits OUTSIDE the provider (useTaskActivity throws
+ * there). Rendering it only for the console variant keeps that legal.
+ */
+function RunCounters(): JSX.Element {
   const { runningCount, waitingCount } = useTaskActivity()
+  return (
+    <div className="ou-tb-counters" aria-live="polite">
+      <span className="ou-tb-count-running">{runningCount} running</span>
+      {waitingCount > 0 && (
+        <>
+          <span className="ou-tb-count-sep">/</span>
+          <span className="ou-tb-count-waiting">{waitingCount} waiting on you</span>
+        </>
+      )}
+    </div>
+  )
+}
+
+function TitleBar({ variant, onWorkspaceClick }: { variant: 'setup' | 'console' | 'auth'; onWorkspaceClick?: () => void }): JSX.Element {
+  const [maximized, setMaximized] = useState(false)
 
   useEffect(() => {
     window.openui.isMaximized().then(setMaximized).catch(() => {})
@@ -69,11 +90,11 @@ function TitleBar({ variant, onWorkspaceClick }: { variant: 'setup' | 'console';
 
   return (
     <div className={isMac ? 'ou-titlebar ou-titlebar-mac' : 'ou-titlebar'}>
-      {variant === 'setup' ? (
+      {variant !== 'console' ? (
         <div className="ou-tb-setup">
           <div className="ou-tb-mark" aria-hidden="true" />
           <span className="ou-tb-wordmark">OpenUI</span>
-          <span className="ou-tb-setup-tag">SETUP</span>
+          {variant === 'setup' && <span className="ou-tb-setup-tag">SETUP</span>}
         </div>
       ) : (
         <div className="ou-tb-console">
@@ -87,17 +108,7 @@ function TitleBar({ variant, onWorkspaceClick }: { variant: 'setup' | 'console';
           </button>
           <div className="ou-tb-divider" aria-hidden="true" />
           {/* Live run counters — real, from TaskActivityContext. */}
-          <div className="ou-tb-counters" aria-live="polite">
-            <span className="ou-tb-count-running">{runningCount} running</span>
-            {waitingCount > 0 && (
-              <>
-                <span className="ou-tb-count-sep">/</span>
-                <span className="ou-tb-count-waiting">
-                  {waitingCount} waiting on you
-                </span>
-              </>
-            )}
-          </div>
+          <RunCounters />
         </div>
       )}
       <div
@@ -382,13 +393,50 @@ function AppShell(): JSX.Element {
   )
 }
 
+/**
+ * The access gate. Nothing that talks to a model — the Run Console, the chat
+ * pipeline, the onboarding wizard, the model-download control — is rendered
+ * until the main process confirms a registered account is signed in.
+ *
+ * The check is a MOUNT gate, not a disabled state: on `unauthenticated` the
+ * whole authenticated tree is absent from the DOM, so there is no degraded
+ * surface left behind for someone to poke at. `loading` shows the splash rather
+ * than the sign-in screen so an already-signed-in user never sees a flash of it.
+ *
+ * Worth being precise about what this is: gating the UI is a UX boundary, not
+ * enforcement. It guarantees OpenUI never offers a way to reach a model without
+ * an account; it cannot stop someone who administers their own machine from
+ * installing one outside the app.
+ */
+function AuthGate(): JSX.Element {
+  const { status } = useAuth()
+
+  // The window is frameless, so the signed-out screen needs the same custom
+  // chrome as the rest of the app — without it there is no way to move,
+  // minimize or close the window before signing in.
+  if (status === 'loading' || status === 'unauthenticated') {
+    return (
+      <div className="openui-overlay">
+        <TitleBar variant="auth" />
+        <div className="ou-content">
+          {status === 'loading' ? <LoadingScreen /> : <AuthScreen />}
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <TaskActivityProvider>
+      <AppShell />
+    </TaskActivityProvider>
+  )
+}
+
 export default function App(): JSX.Element {
   return (
     <ErrorBoundary label="OpenUI">
       <AuthProvider>
-        <TaskActivityProvider>
-          <AppShell />
-        </TaskActivityProvider>
+        <AuthGate />
       </AuthProvider>
     </ErrorBoundary>
   )

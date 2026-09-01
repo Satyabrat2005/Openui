@@ -21,7 +21,9 @@ import { initDatabase, database } from './database'
 import { registerWhatsAppAutoReplyIpc } from './whatsappWatcherService'
 import { registerDeepLinkProtocol, setupDeepLinkHandlers } from './auth/deeplink'
 import { openAuthWindow, isAuthWebContents } from './auth/authWindow'
-import { logout, getCurrentUser, getUserTier, startTokenRefreshLoop, stopTokenRefreshLoop, ensureGuestSession } from './auth/sessionManager'
+import { logout, getCurrentUser, getUserTier, startTokenRefreshLoop, stopTokenRefreshLoop, hasAccountSession } from './auth/sessionManager'
+import { registerWithEmail, signInWithEmail } from './auth/emailAuth'
+import { downloadModel, listModelStatus } from './modelDownload'
 import { initTelemetry, enableTelemetryAfterConsent, shutdownTelemetry, setTelemetryOptOut, isTelemetryActive, trackEvent } from './telemetry/posthog'
 import { initSentry, enableSentryAfterConsent, setSentryOptOut } from './telemetry/sentry'
 import { grantConsent, denyConsent, getConsentStatus, recordPendingEvent, ConsentStatus } from './telemetry/consent'
@@ -389,11 +391,12 @@ app.whenReady().then(async () => {
   setupDeepLinkHandlers(win)
   startTokenRefreshLoop(win)
 
-  // Zero-setup guarantee: if nobody is signed in, mint a silent anonymous cloud
-  // session so OpenUI works the instant it launches — no account screen, no local
-  // model to download. Best-effort and non-blocking; if it can't (offline / dev
-  // without Supabase) the app still launches and the user is never shown an error.
-  void ensureGuestSession(win)
+  // NO SILENT GUEST SESSION. This used to mint an anonymous Supabase session at
+  // launch so the app worked with no account at all. Access to the model is now
+  // gated on a registered account, and a session the app can mint for itself
+  // would satisfy that gate without anyone ever registering — i.e. it would gate
+  // nothing. `ensureGuestSession` is left in sessionManager for the (currently
+  // disabled) cloud free tier, but it is deliberately not called on startup.
 
   ipcMain.on('openui:hide', () => hideWindow())
   ipcMain.on('openui:quit', () => app.quit())
@@ -437,6 +440,26 @@ app.whenReady().then(async () => {
   ipcMain.handle('openui:get-user', () => getCurrentUser())
   // Cached subscription tier ('free' when unknown/expired).
   ipcMain.handle('openui:get-tier', () => getUserTier())
+
+  // Email + password registration / sign-in. Credentials are handled ONLY here
+  // in the main process; the renderer sends them once and receives back a
+  // profile or a typed error code — never a token.
+  ipcMain.handle('openui:auth:register', (_event, email: unknown, password: unknown) =>
+    registerWithEmail(win, String(email ?? ''), String(password ?? ''))
+  )
+  ipcMain.handle('openui:auth:sign-in', (_event, email: unknown, password: unknown) =>
+    signInWithEmail(win, String(email ?? ''), String(password ?? ''))
+  )
+  // Whether a REGISTERED account is signed in right now. This is what the
+  // renderer's gate reads: it is false for an anonymous/guest session, so the
+  // model UI cannot mount on a session nobody registered for.
+  ipcMain.handle('openui:auth:has-session', () => hasAccountSession())
+
+  // ── Local model download (session-gated) ────────────────────────────────────
+  // The in-app path to getting a model. Progress streams separately over
+  // 'openui:model:pull'; these handlers return the terminal outcome only.
+  ipcMain.handle('openui:model:list', () => listModelStatus())
+  ipcMain.handle('openui:model:download', (_event, model: unknown) => downloadModel(win, model))
 
   // ── Telemetry IPC ────────────────────────────────────────────────────────────
   ipcMain.handle('openui:set-telemetry-opt-out', (_event, optOut: unknown) => {

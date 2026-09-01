@@ -216,6 +216,50 @@ export interface ModelPullProgress {
   done: boolean
   error?: string
 }
+/**
+ * Why an email/password register or sign-in attempt failed. The UI switches on
+ * the code so each failure gets its own message (see main/auth/emailAuth.ts).
+ */
+export type AuthErrorCode =
+  | 'not_configured'
+  | 'invalid_email'
+  | 'weak_password'
+  | 'invalid_credentials'
+  | 'email_not_confirmed'
+  | 'email_taken'
+  | 'rate_limited'
+  | 'network'
+  | 'unknown'
+
+export type AuthOutcome =
+  | { ok: true; profile: AuthUser; needsEmailConfirmation?: boolean }
+  | { ok: false; code: AuthErrorCode; message: string }
+
+/** One row of the in-app local-model list (main/modelDownload.ts). */
+export interface ModelStatus {
+  id: string
+  label: string
+  purpose: string
+  approxSize: string
+  installed: boolean
+  downloading: boolean
+}
+
+/** Why a user-initiated model download could not start or did not finish. */
+export type ModelDownloadErrorCode =
+  | 'unauthenticated'
+  | 'unknown_model'
+  | 'already_in_progress'
+  | 'engine_unavailable'
+  | 'disk_space'
+  | 'network'
+  | 'model_not_found'
+  | 'failed'
+
+export type ModelDownloadResult =
+  | { ok: true; model: string }
+  | { ok: false; code: ModelDownloadErrorCode; message: string; installUrl?: string }
+
 /** One sub-agent as announced when a parallel group spawns. */
 export interface SubagentInfo {
   subId: string
@@ -455,6 +499,14 @@ export interface OpenUIApi {
   logout: () => Promise<void>
   getUser: () => Promise<AuthUser | null>
   getTier: () => Promise<string>
+  // Email + password accounts (main/auth/emailAuth.ts). Credentials go straight
+  // to the main process; no token is ever exposed to the renderer.
+  registerWithEmail: (email: string, password: string) => Promise<AuthOutcome>
+  signInWithEmail: (email: string, password: string) => Promise<AuthOutcome>
+  hasAccountSession: () => Promise<boolean>
+  // In-app local model download (main/modelDownload.ts).
+  listLocalModels: () => Promise<ModelStatus[]>
+  downloadModel: (model: string) => Promise<ModelDownloadResult>
   // Pro-tier waitlist (Mailchimp proxy via Edge Function).
   joinWaitlist: (email: string) => Promise<WaitlistResult>
   onAuthSuccess: (cb: (user: AuthUser) => void) => () => void

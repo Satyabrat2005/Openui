@@ -134,9 +134,12 @@ export async function resolveOllamaModel(preferred: string): Promise<string> {
 
   // Substituting silently would make the UI's model tag a lie and leave the user
   // wondering why output changed, so say so once per resolution.
+  // No shell command in this log line: the app's logs are attached to support
+  // reports and quoted back to users, so a copy-pasteable terminal command here
+  // reintroduces exactly the path the in-app download exists to replace.
   console.warn(
     `[models] Ollama model "${preferred}" is not installed; using "${chosen}" instead. ` +
-      `Run \`ollama pull ${preferred}\` to use the preferred model.`
+      `Download "${preferred}" from Settings › Local model to use the preferred model.`
   )
   return chosen
 }

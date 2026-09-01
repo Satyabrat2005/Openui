@@ -222,6 +222,13 @@ export async function ensureGuestSession(win?: BrowserWindow | null): Promise<bo
 /**
  * Return the cached user profile, refreshing the session first when the access
  * token is at/near expiry. Returns null when nobody is signed in.
+ *
+ * An EXPIRED session that cannot be refreshed resolves to null rather than to
+ * the stale profile. This used to return the profile either way, which is
+ * invisible while sign-in is optional but becomes a real hole once the app is
+ * gated on a session: the renderer would keep the AI UI mounted on a session
+ * that no longer authorises anything. The dead session is cleared here so the
+ * next read is consistent and the user lands back on the sign-in screen.
  */
 export async function getCurrentUser(): Promise<UserProfile | null> {
   const id = getActiveUserId()
@@ -230,10 +237,33 @@ export async function getCurrentUser(): Promise<UserProfile | null> {
   if (!row) return null
 
   if (row.token_expires_at && row.token_expires_at <= nowSeconds() + EXPIRY_SKEW_SEC) {
-    await refreshSession() // best effort; profile is still returned either way
+    const refreshed = await refreshSession()
+    if (!refreshed && !database.users.getValidToken(id)) {
+      // The access token is past its expiry and the refresh token is dead.
+      database.users.updateAuthTokens(id, '', '', 0)
+      database.settings.deleteSetting(ACTIVE_USER_KEY)
+      return null
+    }
   }
   const fresh = database.users.getUserById(id)
   return rowToProfile(fresh ?? row)
+}
+
+/**
+ * True when a REGISTERED account is signed in — a live access token belonging to
+ * a user with an email address.
+ *
+ * The email requirement is what separates a real account from an anonymous
+ * guest session (`ensureGuestSession` mints users with no email). The gate that
+ * decides whether the model UI mounts must not be satisfiable by a session the
+ * app can silently mint for itself, or it gates nothing at all.
+ */
+export function hasAccountSession(): boolean {
+  const id = getActiveUserId()
+  if (!id) return false
+  if (database.users.getValidToken(id) === null) return false
+  const row = database.users.getUserById(id)
+  return Boolean(row?.email)
 }
 
 /**

@@ -7,6 +7,7 @@ import ConnectAppsModal, {
   type ConnectableApp
 } from '../ConnectAppsModal'
 import SignInStep from './SignInStep'
+import ModelManager from '../ModelManager'
 
 /**
  * First Run — splash + 4-step setup wizard + launch, per the Run Console handoff
@@ -346,6 +347,15 @@ export default function OnboardingWizard({
                   />
                 ))}
               </div>
+              {/* First-run download. The local engine is useless without a
+                  model, and this is the only place the app ever tells anyone how
+                  to get one — no terminal step is documented anywhere. Shown for
+                  the local engine only; it can be revisited in Settings. */}
+              {engine === 'local' && (
+                <div className="ou-fr-models">
+                  <ModelManager />
+                </div>
+              )}
             </WizardHeader>
           )}
 
