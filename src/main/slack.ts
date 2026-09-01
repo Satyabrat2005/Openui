@@ -392,6 +392,21 @@ const INBOX_MESSAGES_PER_CHANNEL = 10
  * a name, which is the entire reason this lookup exists. Same bounded-walk
  * discipline as fetchAllChannels (users.list is rate-limited tier 2, so the walk
  * is capped rather than followed forever).
+ *
+ * KNOWN CEILING: 200 x 10 = 2000 members. That cap is what makes the walk
+ * bounded, and it is a real limit rather than a theoretical one — on a
+ * workspace with more than 2000 members the map comes back PARTIAL and the
+ * members past the cap resolve to raw ids again, which is the exact symptom
+ * the pagination fix was written to remove. The failure is silent by design:
+ * a partial map still names most people, which beats naming nobody, so it is
+ * deliberately not treated as an error. It is recorded here because "we
+ * paginate users.list now" reads as "sender names are solved" and, past 2000
+ * members, it is not. Raising MAX_USER_PAGES is NOT the automatic fix — the
+ * cap exists to bound a tier-2 rate-limited call, and a workspace that large
+ * wants a different strategy (resolve ids on demand for the senders actually
+ * seen, rather than pre-fetching the whole directory). Neither the 2000-member
+ * boundary nor the pagination itself has been exercised against a real
+ * workspace of that size; both are covered by mocked-HTTP tests only.
  */
 const USER_PAGE_SIZE = 200
 const MAX_USER_PAGES = 10
