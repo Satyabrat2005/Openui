@@ -159,6 +159,15 @@ describe('selectToolGroups — the expected tool is always in the loaded surface
     { prompt: 'catch me up', expected: 'summarize_inbox' },
     { prompt: 'any messages from Ashu today?', expected: 'summarize_inbox' },
     { prompt: 'summarise everything across my channels', expected: 'summarize_inbox' },
+    // broadcast — the outbound half. None of these name a channel, so without
+    // the inbox trigger covering them the turn falls back to core+email+calendar
+    // and broadcast_message is simply absent from the prompt.
+    { prompt: "tell everyone I'm running late", expected: 'broadcast_message' },
+    { prompt: 'send this to Ashu everywhere', expected: 'broadcast_message' },
+    { prompt: 'broadcast the release note to the team', expected: 'broadcast_message' },
+    { prompt: 'let everybody know the deploy is done', expected: 'broadcast_message' },
+    { prompt: 'post this on every platform', expected: 'broadcast_message' },
+    { prompt: 'notify the team about the outage', expected: 'broadcast_message' },
     { prompt: 'the telegram chat 123456789 is Ashu', expected: 'link_contact' },
     { prompt: 'who are my contacts?', expected: 'list_contacts' },
     { prompt: 'mail that summary to Priya', expected: 'send_summary_email' }

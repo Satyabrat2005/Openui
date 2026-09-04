@@ -270,7 +270,9 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
     window.openui
       .getSetting('unified_inbox_enabled')
       .then((value) => {
-        if (!cancelled) setUnifiedInboxEnabled(value === true) // absent/null/undefined ⇒ off
+        // Absent/null/undefined ⇒ ON. Mirrors isUnifiedInboxEnabled in
+        // src/main/inboxSummary.ts — only an explicit `false` turns it off.
+        if (!cancelled) setUnifiedInboxEnabled(value !== false)
       })
       .catch(() => {})
 
@@ -1183,21 +1185,21 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
           />
         </div>
 
-        {/* Unified inbox. Default OFF for the same reason as the row above: the
-            cross-channel read and the summary-to-email action have never run
-            against a real Slack workspace, Telegram bot or Gmail account, and
-            the failure modes are reading the wrong person's messages or mailing
-            a summary to the wrong address. Contact linking is unaffected — it
-            only writes to the local database. */}
+        {/* Unified inbox — now ON by default (see isUnifiedInboxEnabled). What
+            keeps it safe is not this switch: every channel reports its own
+            read status, a person-scoped read refuses an unresolved name rather
+            than widening, and every outbound action confirms with the resolved
+            recipients shown. Contact linking is unaffected either way — it only
+            writes to the local database. */}
         <div className="ou-settings-row ou-settings-section">
           <div className="ou-settings-grow">
             <div className="ou-settings-label">Unified inbox</div>
             <div className="ou-settings-desc">
               Lets OpenUI answer “what’s my summary” and “is there anything from him” by reading
-              WhatsApp, Telegram, Slack and Gmail in one pass, and email that summary on.{' '}
-              <strong style={{ color: 'var(--ou-text)' }}>Off by default</strong> — the cross-channel
-              read has not been verified against real accounts yet. Teaching OpenUI who your contacts
-              are still works with this off.
+              WhatsApp, Telegram, Slack and Gmail in one pass, send one message to everyone across
+              all of them, and email a summary on. Every channel reports whether it could actually
+              be read, and anything outbound asks you to confirm the exact recipients first.
+              Teaching OpenUI who your contacts are still works with this off.
             </div>
           </div>
           <Switch

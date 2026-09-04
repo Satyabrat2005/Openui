@@ -85,6 +85,11 @@ function enableInbox(): void {
   database.settings.setSetting(UNIFIED_INBOX_SETTING_KEY, true)
 }
 
+/** Only an explicit `false` turns the unified inbox off — see isUnifiedInboxEnabled. */
+function disableInbox(): void {
+  database.settings.setSetting(UNIFIED_INBOX_SETTING_KEY, false)
+}
+
 // ── seeded channel data ─────────────────────────────────────────────────────
 //
 // One person — Ashu — who has said something on all four surfaces, each keyed
@@ -171,12 +176,30 @@ function linkAshuEverywhere(): void {
 
 // ── the gate ────────────────────────────────────────────────────────────────
 
-describe('the off-by-default gate', () => {
-  it('is off when the setting was never written', () => {
-    expect(isUnifiedInboxEnabled()).toBe(false)
+describe('the gate', () => {
+  // The default flipped to ON: reading every channel at once is the core of the
+  // product, and a feature the user must hunt for a toggle to enable is a broken
+  // first run, not a safety measure. What still carries the safety is per-channel
+  // status honesty and the confirmation on every outbound action — so the tests
+  // that matter are the ones proving the gate still HARD-STOPS when switched off.
+  it('is on when the setting was never written', () => {
+    expect(isUnifiedInboxEnabled()).toBe(true)
   })
 
-  it('refuses both tools until it is turned on', async () => {
+  it('runs out of the box, with no setting written', async () => {
+    const summary = await summarize({})
+    expect(summary.totals.items).toBeGreaterThan(0)
+  })
+
+  it('is off only when explicitly set to false', () => {
+    disableInbox()
+    expect(isUnifiedInboxEnabled()).toBe(false)
+    enableInbox()
+    expect(isUnifiedInboxEnabled()).toBe(true)
+  })
+
+  it('refuses both tools once it is explicitly turned off', async () => {
+    disableInbox()
     const read = await summarizeInbox({}, seededDeps())
     expect(read.ok).toBe(false)
     expect(read.error).toBe(GATE_MESSAGE)
@@ -189,16 +212,10 @@ describe('the off-by-default gate', () => {
   })
 
   it('reads nothing at all while gated — not even the connected channels', async () => {
+    disableInbox()
     const spy = vi.fn(async (): Promise<ChannelRead> => ({ status: 'ok', items: [] }))
     await summarizeInbox({}, seededDeps({ slack: spy, gmail: spy, telegram: spy, whatsapp: spy }))
     expect(spy).not.toHaveBeenCalled()
-  })
-
-  it('runs once the setting is on', async () => {
-    enableInbox()
-    expect(isUnifiedInboxEnabled()).toBe(true)
-    const summary = await summarize({})
-    expect(summary.totals.items).toBeGreaterThan(0)
   })
 })
 

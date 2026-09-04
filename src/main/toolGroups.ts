@@ -158,6 +158,11 @@ export const GROUP_TOOLS: Record<ToolGroup, readonly string[]> = {
   // turn.
   inbox: [
     'summarize_inbox',
+    // The outbound half of the same surface: one message to the same people
+    // across every channel they are reachable on. It belongs here rather than in
+    // any single channel's group because it needs the contact layer, and it is
+    // only ever wanted alongside a cross-channel question.
+    'broadcast_message',
     'send_summary_email',
     'link_contact',
     'list_contacts',
@@ -309,7 +314,7 @@ const GROUP_TRIGGERS: Partial<Record<ToolGroup, RegExp>> = {
   // "Ashu's email is ashu@acme.com", "that handle belongs to Priya". None of
   // those contain the word "link", so a verb-shaped trigger missed all of them.
   inbox:
-    /\b(summar(y|ies|ise[sd]?|ize[sd]?|ising|izing)|catch me up|catch.?up|what'?s new|anything new|anything from|any (news|updates?|messages?) from|heard from|all my (messages|chats|channels)|across (all |my )?(channels|apps|platforms)|unified inbox|my inbox|contacts?|belongs to|(chat|thread|handle|id|number|address|email)( \S{1,40})? is)\b/i,
+    /\b(summar(y|ies|ise[sd]?|ize[sd]?|ising|izing)|catch me up|catch.?up|what'?s new|anything new|anything from|any (news|updates?|messages?) from|heard from|all my (messages|chats|channels)|across (all |my )?(channels|apps|platforms)|unified inbox|my inbox|contacts?|belongs to|broadcast|everywhere|every (platform|channel|app)|all (platforms|channels|apps)|(tell|notify|inform|message|ping|let) (everyone|everybody|the team)|(chat|thread|handle|id|number|address|email)( \S{1,40})? is)\b/i,
   // Deliberately narrow: only the word "overleaf" (or an overleaf.com URL) pulls
   // this group in. It does NOT claim bare "latex"/"tex"/"paper" — those belong to
   // write_latex, which authors a local file and needs neither a browser nor an

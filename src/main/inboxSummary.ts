@@ -43,34 +43,45 @@ import type { ExecutorContext, ToolResult, ToolSchema } from './tools'
 export const UNIFIED_INBOX_SETTING_KEY = 'unified_inbox_enabled'
 
 /**
- * Master switch for the unified inbox, OFF by default.
+ * Master switch for the unified inbox, now ON by default.
  *
- * Reason, stated plainly: the cross-channel read and the summary-to-email action
- * have never run against a real Slack workspace, a real Telegram bot, or a real
- * Gmail account in this environment — there are no credentials here to run them
- * with. Their unit tests are thorough and their gaps are reported honestly, but
- * "thoroughly tested against fakes" is not "known to work", and the failure mode
- * is reading the wrong person's messages into a summary or mailing a summary to
- * the wrong address. Absent/undefined ⇒ false, the same inverted default the
- * local calendar backend uses and for the same reason.
+ * WHY THE DEFAULT FLIPPED. This shipped OFF because the cross-channel read had
+ * never run against a real Slack workspace, Telegram bot or Gmail account. Be
+ * clear about what changed: that is a PRODUCT decision, not a verification
+ * result. Reading every channel at once is the core of the app now, and a
+ * feature the user must find a toggle for before the product works at all is not
+ * a safety measure — it is a broken first run.
  *
- * The contact tools (link_contact / list_contacts / unlink_contact) are NOT
- * behind this gate: they only write to the local database, they never touch an
- * account, and their behaviour is fully covered by contacts.test.ts.
+ * What actually carries the safety, and must not be weakened:
+ *   • Every channel reports its OWN status. A channel that could not be read
+ *     says so; its silence never reads as "nothing arrived" (see ChannelReport).
+ *   • A person-scoped read REFUSES on an unresolved name rather than widening
+ *     the net (summarizeInbox), so it cannot surface the wrong person's messages.
+ *   • Every outbound action — send_summary_email, broadcast_message — is in
+ *     DESTRUCTIVE_TOOLS and always confirms with the resolved recipients shown.
+ *
+ * The remaining risk is unchanged and belongs in the release notes, not in a
+ * default: these read paths still have not been exercised against real accounts.
+ * Absent/undefined ⇒ true; only an explicit `false` turns it off.
+ *
+ * The contact tools (link_contact / list_contacts / unlink_contact) were never
+ * behind this gate: they only write to the local database.
  */
 export function isUnifiedInboxEnabled(): boolean {
   try {
-    return database.settings.getSetting(UNIFIED_INBOX_SETTING_KEY) === true
+    return database.settings.getSetting(UNIFIED_INBOX_SETTING_KEY) !== false
   } catch {
-    return false
+    // A settings read that throws must not silently disable the core feature;
+    // the outbound confirmations are what stand between a bad read and a bad
+    // send, and they are unaffected by this switch.
+    return true
   }
 }
 
 /** The message shown for every gated call, naming the exact toggle. */
 export const GATE_MESSAGE =
   'The unified inbox is turned off. It reads across WhatsApp, Telegram, Slack and Gmail at ' +
-  'once, and has not been verified against real accounts, so it ships off by default. Turn on ' +
-  '"Unified inbox" in Settings to enable it.'
+  'once. Turn "Unified inbox" back on in Settings to enable it.'
 
 // ── the shape a channel read returns ────────────────────────────────────────
 
