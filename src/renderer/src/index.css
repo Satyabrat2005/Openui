@@ -4840,3 +4840,217 @@ body {
   overflow-y: auto;
   padding: 12px;
 }
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   Sign-in / register screen (AuthScreen.tsx)
+
+   This is the entire app while signed out, so it owns the full content area
+   rather than sitting in a modal. Colours come from the same token scale as the
+   rest of the app, so it follows light/dark with everything else.
+   ───────────────────────────────────────────────────────────────────────────*/
+.ou-auth {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 32px 24px;
+  background: var(--ou-bg-app);
+  overflow-y: auto;
+}
+.ou-auth-card {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-width: 360px;
+  padding: 28px 26px 22px;
+  gap: 0;
+  background: var(--ou-bg-card);
+  border: 1px solid var(--ou-border-card);
+  border-radius: 14px;
+  box-shadow: var(--ou-shadow-md);
+}
+.ou-auth-mark {
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
+  background: var(--ou-accent);
+  box-shadow: var(--ou-shadow-mark);
+  margin-bottom: 16px;
+}
+.ou-auth-title {
+  margin: 0;
+  font-size: 19px;
+  font-weight: 600;
+  color: var(--ou-text-max);
+  letter-spacing: -0.01em;
+}
+.ou-auth-sub {
+  margin: 7px 0 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--ou-text-soft);
+}
+.ou-auth-tabs {
+  display: flex;
+  gap: 2px;
+  margin: 20px 0 16px;
+  padding: 2px;
+  background: var(--ou-bg-inset);
+  border-radius: 9px;
+}
+.ou-auth-tab {
+  flex: 1;
+  padding: 7px 10px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--ou-text-meta);
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.ou-auth-tab.active {
+  background: var(--ou-bg-card-hover);
+  color: var(--ou-text-high);
+}
+.ou-auth-field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
+.ou-auth-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--ou-text-label);
+  letter-spacing: 0.02em;
+}
+.ou-auth-input {
+  padding: 9px 11px;
+  background: var(--ou-bg-sunken);
+  border: 1px solid var(--ou-border-control);
+  border-radius: 8px;
+  color: var(--ou-text-high);
+  font-size: 13px;
+  font-family: inherit;
+  outline: none;
+}
+.ou-auth-input::placeholder { color: var(--ou-text-meta); }
+.ou-auth-input:focus { border-color: var(--ou-accent); }
+.ou-auth-input:disabled { opacity: 0.6; }
+.ou-auth-error {
+  margin: 2px 0 10px;
+  padding: 8px 10px;
+  background: var(--ou-danger-soft);
+  border: 1px solid var(--ou-status-danger);
+  border-radius: 8px;
+  color: var(--ou-status-danger-text);
+  font-size: 12px;
+  line-height: 1.45;
+}
+.ou-auth-primary {
+  margin-top: 4px;
+  padding: 10px 14px;
+  border: none;
+  border-radius: 9px;
+  background: var(--ou-accent);
+  color: var(--ou-accent-on);
+  font-size: 13px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+}
+.ou-auth-primary:hover:not(:disabled) { background: var(--ou-accent-hover); }
+.ou-auth-primary:disabled { opacity: 0.6; cursor: default; }
+.ou-auth-legal {
+  margin: 16px 0 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--ou-text-meta);
+  text-align: center;
+}
+.ou-auth-link {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--ou-accent-text);
+  font: inherit;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   In-app model download (ModelManager.tsx)
+   ───────────────────────────────────────────────────────────────────────────*/
+.ou-models { display: flex; flex-direction: column; }
+.ou-model-row {
+  padding: 10px 0;
+  border-top: 1px solid var(--ou-hairline);
+}
+.ou-model-row:first-of-type { border-top: none; }
+.ou-model-head { display: flex; align-items: center; gap: 12px; }
+.ou-model-grow { flex: 1; min-width: 0; }
+.ou-model-name { font-size: 13px; font-weight: 500; color: var(--ou-text-high); }
+.ou-model-purpose { margin-top: 2px; font-size: 11.5px; line-height: 1.45; color: var(--ou-text-soft); }
+.ou-model-btn {
+  flex-shrink: 0;
+  padding: 7px 12px;
+  border: 1px solid var(--ou-border-control);
+  border-radius: 8px;
+  background: var(--ou-bg-chip);
+  color: var(--ou-text-high);
+  font-size: 12px;
+  font-weight: 500;
+  font-family: inherit;
+  cursor: pointer;
+}
+.ou-model-btn:hover:not(:disabled) { background: var(--ou-bg-chip-2); border-color: var(--ou-border-hover); }
+.ou-model-btn:disabled { opacity: 0.6; cursor: default; }
+.ou-model-ready {
+  flex-shrink: 0;
+  padding: 4px 9px;
+  border-radius: 999px;
+  background: var(--ou-success-soft);
+  color: var(--ou-status-running);
+  font-size: 11px;
+  font-weight: 600;
+}
+.ou-model-progress { margin-top: 9px; }
+.ou-model-bar {
+  height: 4px;
+  border-radius: 999px;
+  background: var(--ou-fill-neutral);
+  overflow: hidden;
+}
+.ou-model-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--ou-accent);
+  transition: width 200ms linear;
+}
+/* A phase Ollama reports with no byte counts gets a moving bar rather than a
+   0%-wide one, which reads as a frozen download. */
+.ou-model-fill.indeterminate {
+  width: 35%;
+  animation: ou-model-slide 1.2s ease-in-out infinite;
+}
+@keyframes ou-model-slide {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(300%); }
+}
+.ou-model-phase {
+  margin-top: 5px;
+  font-size: 11px;
+  color: var(--ou-text-meta);
+  font-variant-numeric: tabular-nums;
+}
+.ou-model-error {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: flex-start;
+  margin-top: 9px;
+  padding: 8px 10px;
+  background: var(--ou-danger-soft);
+  border: 1px solid var(--ou-status-danger);
+  border-radius: 8px;
+  color: var(--ou-status-danger-text);
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+.ou-fr-models { margin-top: 22px; }

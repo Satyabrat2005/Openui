@@ -1,12 +1,19 @@
 /**
  * ollamaPull.ts — download a missing local model, with real progress.
  *
- * WHY THIS EXISTS. A user who installs OpenUI and Ollama but has never run
- * `ollama pull` had no working path through the app at all: the first turn
+ * WHY THIS EXISTS. A user who installs OpenUI and Ollama but has never
+ * downloaded a model had no working path through the app at all: the first turn
  * resolved to a model that isn't there, Ollama answered 404, and the chat showed
- * a raw error. The only fix was to leave the app, open a terminal, and wait out a
+ * a raw error. The only fix was to leave the app entirely and wait out a
  * multi-gigabyte download with no indication that was even required. The app has
  * never called /api/pull anywhere — there was no code for this.
+ *
+ * NO TERMINAL, EVER. Nothing in this module — including its failure messages —
+ * may tell the user to run a command. The app is the only documented way to get
+ * a model, so an error that ends in "…or run it in a terminal" would undo the
+ * whole point of the download UI. Downloading is an HTTP call to the Ollama
+ * daemon (/api/pull), not a shelled-out binary, so there is also no console
+ * window to flash on Windows.
  *
  * Two things make this worth its own module rather than a few lines inline:
  *
@@ -117,6 +124,19 @@ export function clearInFlightPullsForTests(): void {
   inFlight.clear()
 }
 
+/**
+ * True while `model` is already downloading.
+ *
+ * `pullModel` deliberately JOINS a concurrent caller onto the existing download
+ * (several turns can discover the same missing model at once). A person pressing
+ * "Download" a second time needs the opposite answer — a message saying it is
+ * already running — so the UI path checks this first rather than silently
+ * attaching to a download it can't distinguish from a fresh one.
+ */
+export function isPullInFlight(model: string): boolean {
+  return inFlight.has(model)
+}
+
 function emit(win: BrowserWindow | null, channel: string, payload: unknown): void {
   try {
     if (win && !win.isDestroyed()) win.webContents.send(channel, payload)
@@ -154,8 +174,8 @@ export function pullModel(win: BrowserWindow | null, model: string): Promise<voi
 
     if (!res.ok || !res.body) {
       throw new Error(
-        `Could not start downloading "${model}" (Ollama replied ${res.status}). ` +
-          `Check the model name, or run \`ollama pull ${model}\` in a terminal.`
+        `Could not start downloading "${model}" — the local AI engine replied ${res.status}. ` +
+          `Check that the model name is correct and try again.`
       )
     }
 
@@ -186,8 +206,8 @@ export function pullModel(win: BrowserWindow | null, model: string): Promise<voi
       // The stream ended without Ollama saying "success" — treat as a failure
       // rather than reporting a model we cannot prove is usable.
       throw new Error(
-        `The download of "${model}" ended before completing. Check your connection and try again, ` +
-          `or run \`ollama pull ${model}\` in a terminal.`
+        `The download of "${model}" ended before completing. Check your internet connection ` +
+          `and start the download again.`
       )
     }
 

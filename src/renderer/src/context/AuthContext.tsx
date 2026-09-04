@@ -2,16 +2,31 @@ import { createContext, useContext, useEffect, useState, type ReactNode } from '
 import type { User, Tier, TierUpgradePayload } from '../env'
 import TierUpgradeModal from '../components/TierUpgradeModal'
 
+/**
+ * Whether the app has a REGISTERED account signed in.
+ *
+ * `loading` is a distinct state on purpose: the answer comes from the main
+ * process over IPC, and rendering "signed out" for one frame while that call is
+ * in flight would flash the sign-in screen at an already-signed-in user on every
+ * launch.
+ */
+export type AuthStatus = 'loading' | 'authenticated' | 'unauthenticated'
+
 interface AuthContextValue {
   user: User | null
   tier: Tier
   isAnonymous: boolean
+  /** Drives the gate in App.tsx — see AuthGate. */
+  status: AuthStatus
+  signOut: () => Promise<void>
 }
 
 const AuthContext = createContext<AuthContextValue>({
   user: null,
   tier: 'free',
-  isAnonymous: true
+  isAnonymous: true,
+  status: 'loading',
+  signOut: async () => {}
 })
 
 // ── Payments temporarily disabled for the demo ────────────────────────────────
@@ -24,20 +39,42 @@ const PAYMENTS_ENABLED: boolean = false
 
 export function AuthProvider({ children }: { children: ReactNode }): JSX.Element {
   const [user, setUser] = useState<User | null>(null)
+  const [status, setStatus] = useState<AuthStatus>('loading')
   const [upgradePayload, setUpgradePayload] = useState<TierUpgradePayload | null>(null)
 
   useEffect(() => {
-    // Fetch the current user state from main on mount.
+    // Resolve the gate from the main process, which is the only place a session
+    // lives. `hasAccountSession` is authoritative: it is false for an anonymous
+    // session and false for one whose token has expired beyond refresh.
+    let cancelled = false
+    window.openui
+      .hasAccountSession()
+      .then((has) => {
+        if (!cancelled) setStatus(has ? 'authenticated' : 'unauthenticated')
+      })
+      // A failed status check must fail CLOSED — the sign-in screen is the safe
+      // thing to show when we can't prove there is a session.
+      .catch(() => {
+        if (!cancelled) setStatus('unauthenticated')
+      })
+
     // getUser returns AuthUser (display_name); map to our User shape.
     window.openui.getUser().then((u) => {
-      if (u) setUser({ id: u.id, email: u.email, name: u.display_name, avatar_url: u.avatar_url, tier: (u.tier as Tier) ?? 'free' })
+      if (cancelled || !u) return
+      setUser({ id: u.id, email: u.email, name: u.display_name, avatar_url: u.avatar_url, tier: (u.tier as Tier) ?? 'free' })
     })
 
     const unsubs = [
       window.openui.onAuthSuccess((u) => {
         setUser({ id: u.id, email: u.email, name: u.display_name, avatar_url: u.avatar_url, tier: (u.tier as Tier) ?? 'free' })
+        // Only a session with a real email is a registered account; an
+        // email-less profile is a guest and must not open the gate.
+        setStatus(u.email ? 'authenticated' : 'unauthenticated')
       }),
-      window.openui.onAuthLogout(() => setUser(null)),
+      window.openui.onAuthLogout(() => {
+        setUser(null)
+        setStatus('unauthenticated')
+      }),
       window.openui.onTierChanged((tier) => {
         setUser((prev) => (prev ? { ...prev, tier } : prev))
       }),
@@ -47,17 +84,30 @@ export function AuthProvider({ children }: { children: ReactNode }): JSX.Element
         : [])
     ]
 
-    return () => unsubs.forEach((fn) => fn())
+    return () => {
+      cancelled = true
+      unsubs.forEach((fn) => fn())
+    }
   }, [])
 
   const tier: Tier = user?.tier ?? 'free'
-  // A guest (silent anonymous cloud session) has a real id but no email — treat
-  // it as anonymous so we keep nudging an optional Google sign-in, even though
-  // the app is already fully usable on the free tier.
+  // A session without an email is an anonymous/guest session, not an account.
   const isAnonymous = !user || user.id === 'anonymous' || !user.email
 
+  const signOut = async (): Promise<void> => {
+    // Clear locally first so the UI drops to the sign-in screen even if the
+    // network sign-out is slow; main emits auth-logout as well.
+    setUser(null)
+    setStatus('unauthenticated')
+    try {
+      await window.openui.logout()
+    } catch {
+      /* local state is already signed out */
+    }
+  }
+
   return (
-    <AuthContext.Provider value={{ user, tier, isAnonymous }}>
+    <AuthContext.Provider value={{ user, tier, isAnonymous, status, signOut }}>
       {children}
       {PAYMENTS_ENABLED && upgradePayload && (
         <TierUpgradeModal

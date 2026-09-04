@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import type { AutonomyLevel, ChannelMemory, ConsentStatus, WhatsAppAutoReplyConfig } from '../env'
 import type { UpdateStatus } from '../hooks/useUpdater'
 import { applyTheme, coerceThemePref, type ThemePref } from '../lib/theme'
+import ModelManager from './ModelManager'
 
 const THEME_OPTIONS: { value: ThemePref; label: string }[] = [
   { value: 'system', label: 'System' },
@@ -624,6 +625,13 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
               </button>
             ))}
           </div>
+        </div>
+
+        {/* Local model: the in-app download path. This is the ONLY place the app
+            documents how to get a model — there is no terminal instruction
+            anywhere in the product. */}
+        <div className="ou-settings-section">
+          <ModelManager />
         </div>
 
         {/* Privacy: anonymous usage analytics */}

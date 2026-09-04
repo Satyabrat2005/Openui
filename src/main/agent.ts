@@ -1226,8 +1226,8 @@ async function runBuilderSession(win: BrowserWindow, tier: Tier, userMessage: st
     const host = process.env.OLLAMA_HOST ?? 'http://127.0.0.1:11434'
     return (
       `I can't reach the local AI engine (Ollama) at ${host}, and starting it here didn't work, ` +
-      `so I can't build this. Start it with "ollama serve" (or open the Ollama app) and make sure ` +
-      `${await localCodeModel()} is installed, then try again.`
+      `so I can't build this. Open the Ollama app so the engine is running, then try again — ` +
+      `you can check whether the coding model is installed under Settings › Local model.`
     )
   }
 
@@ -1874,8 +1874,8 @@ async function callOllama(
       const warn =
         'The local GPU model runner crashed (a known CUDA / flash-attention bug on ' +
         '8 GB cards). Retrying on CPU — this reply will be slower. To fix it permanently, ' +
-        'restart Ollama with OLLAMA_FLASH_ATTENTION=0, or use a model that fully fits your ' +
-        'VRAM (e.g. `ollama pull qwen3:4b`).'
+        'restart Ollama with OLLAMA_FLASH_ATTENTION=0, or switch to a smaller model that ' +
+        'fully fits your VRAM (see Settings › Local model).'
       console.warn('[agent] ' + warn)
       emit(_win, 'openui:chat:warning', { message: warn })
       return await streamOllamaChat(ollama, model, messages, systemPrompt, numCtx, onDelta, {
@@ -1955,10 +1955,13 @@ export async function callModel(
   // actionable message rather than a raw connection error — it is the one
   // dependency the app needs running.
   const host = process.env.OLLAMA_HOST ?? 'http://127.0.0.1:11434'
+  // NOTE: deliberately no shell command here. The app is the only documented
+  // path to the engine and its models — see modelDownload.ts's terminal
+  // boundary — so this points at the Ollama app and OpenUI's own Settings pane.
   const msg =
     `I can't reach the local AI engine (Ollama) at ${host}, and starting it here didn't work. ` +
-    `Start it with "ollama serve" and make sure the model is installed ` +
-    `("ollama pull ${localModel}"), then try again.`
+    `Open the Ollama app so the engine is running, then try again — you can download or check ` +
+    `the model under Settings › Local model.`
   onDelta(msg)
   return msg
 }
@@ -2607,8 +2610,8 @@ export async function handleChat(win: BrowserWindow, userMessage: string, tier: 
     const message = isOllamaRunnerCrash(err)
       ? 'The local AI model runner crashed and could not recover (a known CUDA / ' +
         'flash-attention bug on 8 GB GPUs). Restart Ollama with OLLAMA_FLASH_ATTENTION=0, ' +
-        'or switch to a smaller model that fully fits your VRAM (e.g. `ollama pull qwen3:4b`), ' +
-        'then try again.'
+        'or switch to a smaller model that fully fits your VRAM (see Settings › Local ' +
+        'model), then try again.'
       : err instanceof Error
         ? err.message
         : String(err)

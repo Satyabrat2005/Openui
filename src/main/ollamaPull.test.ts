@@ -140,12 +140,19 @@ describe('pullModel', () => {
     expect((payloads[payloads.length - 1] as { done: boolean }).done).toBe(true)
   })
 
-  it('rejects with an actionable message when Ollama refuses', async () => {
+  it('rejects with an actionable message when Ollama refuses — and never a shell command', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn(async () => ({ ok: false, status: 404, body: null }) as unknown as Response)
     )
-    await expect(pullModel(win, 'nope:1b')).rejects.toThrow(/ollama pull nope:1b/)
+    // The message used to end in "…or run `ollama pull nope:1b` in a terminal",
+    // which is exactly the path the in-app download exists to replace. It must
+    // still name the model and the status, but never a command to type.
+    const err = await pullModel(win, 'nope:1b').catch((e: Error) => e)
+    expect(err).toBeInstanceOf(Error)
+    expect((err as Error).message).toMatch(/nope:1b/)
+    expect((err as Error).message).toMatch(/404/)
+    expect((err as Error).message).not.toMatch(/terminal|ollama pull|ollama run|ollama serve/i)
   })
 
   // A stream that stops early must not be reported as a usable model — that would

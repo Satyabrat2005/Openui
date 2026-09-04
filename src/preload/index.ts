@@ -85,6 +85,49 @@ type AuthUser = {
   avatar_url: string | null
   tier: string
 }
+
+/**
+ * Result of an email/password register or sign-in attempt. The codes mirror
+ * AuthErrorCode in main/auth/emailAuth.ts and env.d.ts — the renderer switches
+ * on them, so they are a narrow union rather than a bare string.
+ */
+type AuthErrorCode =
+  | 'not_configured'
+  | 'invalid_email'
+  | 'weak_password'
+  | 'invalid_credentials'
+  | 'email_not_confirmed'
+  | 'email_taken'
+  | 'rate_limited'
+  | 'network'
+  | 'unknown'
+type AuthOutcome =
+  | { ok: true; profile: AuthUser; needsEmailConfirmation?: boolean }
+  | { ok: false; code: AuthErrorCode; message: string }
+
+/** One row of the local-model list shown by the in-app download UI. */
+type ModelStatus = {
+  id: string
+  label: string
+  purpose: string
+  approxSize: string
+  installed: boolean
+  downloading: boolean
+}
+
+/** Terminal outcome of a user-initiated model download. */
+type ModelDownloadErrorCode =
+  | 'unauthenticated'
+  | 'unknown_model'
+  | 'already_in_progress'
+  | 'engine_unavailable'
+  | 'disk_space'
+  | 'network'
+  | 'model_not_found'
+  | 'failed'
+type ModelDownloadResult =
+  | { ok: true; model: string }
+  | { ok: false; code: ModelDownloadErrorCode; message: string; installUrl?: string }
 type TaskUpdate = {
   id: string
   label: string
@@ -419,6 +462,21 @@ const api = {
   getUser: (): Promise<AuthUser | null> => ipcRenderer.invoke('openui:get-user'),
   getTier: (): Promise<string> => ipcRenderer.invoke('openui:get-tier'),
 
+  // Email + password accounts. The password crosses this bridge exactly once,
+  // straight into the main process; nothing auth-related is ever stored in the
+  // renderer (no localStorage, no token).
+  registerWithEmail: (email: string, password: string): Promise<AuthOutcome> =>
+    ipcRenderer.invoke('openui:auth:register', email, password),
+  signInWithEmail: (email: string, password: string): Promise<AuthOutcome> =>
+    ipcRenderer.invoke('openui:auth:sign-in', email, password),
+  /** True only for a signed-in REGISTERED account (not an anonymous session). */
+  hasAccountSession: (): Promise<boolean> => ipcRenderer.invoke('openui:auth:has-session'),
+
+  // ── Local model download ───────────────────────────────────────────────────
+  listLocalModels: (): Promise<ModelStatus[]> => ipcRenderer.invoke('openui:model:list'),
+  downloadModel: (model: string): Promise<ModelDownloadResult> =>
+    ipcRenderer.invoke('openui:model:download', model),
+
   // Join the Pro-tier waitlist (proxied to Mailchimp via the waitlist Edge
   // Function). Resolves to { ok, alreadySubscribed?, error? }.
   joinWaitlist: (email: string): Promise<WaitlistResult> =>
@@ -563,6 +621,11 @@ const api = {
     ipcRenderer.on('openui:update-error', fn)
     return (): void => { ipcRenderer.removeListener('openui:update-error', fn) }
   },
+
+  // TEMP VERIFICATION HARNESS — paired with the OPENUI_DEBUG_TOOLS handler in
+  // the main process; reverted before the release build.
+  __debugTool: (name: string, args?: Record<string, unknown>, bypassHitl?: boolean): Promise<unknown> =>
+    ipcRenderer.invoke('openui:__debug:tool', { name, args, bypassHitl }),
 
   // ── App settings (key/value persisted in the SQLite settings table) ─────────
   getSetting: (key: string): Promise<unknown> => ipcRenderer.invoke('openui:get-setting', key),

@@ -58,21 +58,12 @@ comparing its hash against the one in the release's `latest.yml` asset. Note
 SHA-256 that `Get-FileHash` prints by default, so use this:
 
 ```powershell
-$fs = [System.IO.File]::OpenRead("OpenUI-Setup-7.2.0.exe"); $h = [System.Security.Cryptography.SHA512]::Create().ComputeHash($fs); $fs.Close(); [Convert]::ToBase64String($h)
+$fs = [System.IO.File]::OpenRead("OpenUI-Setup-7.1.4.exe"); $h = [System.Security.Cryptography.SHA512]::Create().ComputeHash($fs); $fs.Close(); [Convert]::ToBase64String($h)
 ```
 
-(Substitute the filename you actually downloaded — the installer is named
-`OpenUI-Setup-<version>.exe`.)
-
-It must equal the `sha512:` value for the `.exe` entry in `latest.yml` on the
-same release. (Download `latest.yml` from the release's asset list — it's a
-plain text file.) For **v7.2.0** the expected value is:
-
-```
-d+QEAYLIXiNzTmJ1U5duYUFo2urDttal5XG7WxNxobqJ9o35V/xf1Z+8SiAc19ssf1Df7WO+21p9hWzUMa4QIA==
-```
-
-verified against the published asset (364,864,698 bytes) on 2026-08-12.
+That prints a string like `xa+IVGuegmPJuJpc…`. It must equal the `sha512:` value
+for the `.exe` entry in `latest.yml` on the same release. (Download `latest.yml`
+from the release's asset list — it's a plain text file.)
 
 ---
 
@@ -88,23 +79,19 @@ happens on that first manual install.
 ## Prerequisite: the local AI engine
 
 OpenUI runs its models locally through **[Ollama](https://ollama.com/download)**.
-The installer does **not** bundle or install it, and the app does not download
-models for you.
+The installer does **not** bundle or install Ollama itself, so that is the one
+thing you install by hand.
 
 1. Install Ollama from <https://ollama.com/download>.
-2. Pull the two models OpenUI uses:
+2. Start OpenUI and create an account (or sign in).
+3. Download the models from inside the app — the first-run setup offers them,
+   and they are always available under **Settings › Local model**. OpenUI pulls
+   them with real progress and tells you what went wrong if one fails.
 
-```bash
-ollama pull qwen3.5
-```
-
-```bash
-ollama pull qwen2.5-coder:7b
-```
-
-Without these, OpenUI starts but chat and the builder report that the local
-engine or model is unavailable. OpenUI starts the Ollama *service* for you if
-it's installed but not running — it cannot install Ollama or fetch models.
+There is no terminal step: the app is the only place you download a model from.
+OpenUI also starts the Ollama *service* for you if it's installed but not
+running. Until a model is downloaded, chat and the builder report that the local
+model isn't available yet and point you at the same screen.
 
 ---
 
