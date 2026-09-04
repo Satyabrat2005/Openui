@@ -62,6 +62,7 @@ import { overleafToolSchemas, overleafRegistry } from './overleaf'
 import { paperResearchToolSchemas, paperResearchRegistry } from './paperResearch'
 import { contactToolSchemas, contactRegistry } from './contacts'
 import { inboxToolSchemas, inboxRegistry } from './inboxSummary'
+import { broadcastToolSchemas, broadcastRegistry } from './broadcast'
 import { runInteractivePython, writeSandboxFile } from './sandbox'
 import {
   isGoogleCalendarConnected,
@@ -217,6 +218,10 @@ export const STATE_CHANGING_TOOLS = new Set<string>([
   // Sends a message to another person — outward-facing and irreversible, so it
   // is ALSO in DESTRUCTIVE_TOOLS below (always confirms, never runs on autopilot).
   'send_whatsapp_message',
+  // Sends the same message across up to four channels at once. Strictly more
+  // consequential than any single send, so it gets the same treatment and is
+  // ALSO in DESTRUCTIVE_TOOLS (always confirms, never runs on autopilot).
+  'broadcast_message',
   // Group management: creating a group adds real people to a shared chat, and
   // leaving one is visible to everyone in it — both are socially-consequential
   // and are ALSO in DESTRUCTIVE_TOOLS (always confirm, never auto-run).
@@ -431,6 +436,10 @@ export const DESTRUCTIVE_TOOLS = new Set<string>([
   // so it always confirms and never runs under any autonomy mode (same boundary
   // as send_email / send_whatsapp_message).
   'send_slack_message',
+  // Puts the same text in front of several people on several platforms in one
+  // action, none of it unsendable. The blast radius is the whole point of the
+  // tool and the reason it can never run without an explicit confirmation.
+  'broadcast_message',
   // Executes code — must be confirmed even under autopilot.
   'run_python'
 ])
@@ -6366,6 +6375,7 @@ export const toolSchemas: ToolSchema[] = [
   ...paperResearchToolSchemas,
   ...contactToolSchemas,
   ...inboxToolSchemas,
+  ...broadcastToolSchemas,
   {
     name: 'run_python',
     description:
@@ -7481,7 +7491,10 @@ const registry: Record<string, Executor> = {
   ...inboxRegistry({
     unreadSenders: readWhatsAppUnreadSenders,
     readChat: readWhatsAppChatText
-  })
+  }),
+  // Same reason as inboxRegistry: the WhatsApp half is screen automation
+  // defined in this file, so the cross-channel send is built here with it.
+  ...broadcastRegistry(send_whatsapp_message)
 }
 
 /**
