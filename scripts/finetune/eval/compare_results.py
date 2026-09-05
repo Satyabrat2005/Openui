@@ -73,6 +73,24 @@ def main():
 
     net = len(fixed) - len(broken)
     print(f"\nNET: {net:+d} cases  ({len(fixed)} fixed, {len(broken)} broken)")
+
+    # Accuracy over the SHARED cases — added 2026-09-05, when the eval set grew
+    # from 44 to 60. The two summary accuracies above are each computed over
+    # their own file's case list, so once the sets differ the headline comparison
+    # is between two different exams. The per-case transitions were always
+    # intersection-scoped; this makes the number match them.
+    shared = [cid for cid in set(a) & set(b)
+              if a[cid]["verdict"] != "n/a_router" and b[cid]["verdict"] != "n/a_router"]
+    if shared and (set(a) != set(b)):
+        ok_a = sum(1 for cid in shared if a[cid]["verdict"] == "correct")
+        ok_b = sum(1 for cid in shared if b[cid]["verdict"] == "correct")
+        pa, pb = 100.0 * ok_a / len(shared), 100.0 * ok_b / len(shared)
+        print(f"\n  NOTE: the two runs do not cover the same cases "
+              f"({len(a)} vs {len(b)}). Over the {len(shared)} scored cases they "
+              f"share:")
+        print(f"  {'accuracy (shared cases)':24s} {pa:5.1f}%  ->  {pb:5.1f}%   "
+              f"({pb - pa:+.1f} pts)")
+
     if net <= 0:
         print("This is not an improvement. Do not ship it.")
     return 0
