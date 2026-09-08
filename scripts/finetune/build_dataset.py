@@ -47,30 +47,144 @@ random.seed(1234)
 
 # ── real tool schemas, captured from the running app ─────────────────────────
 
-def load_prompt_parts():
-    sp = open(os.path.join(EVAL, "system_prompt.txt"), encoding="utf-8").read()
+# WHERE THE SCHEMAS COME FROM — CHANGED 2026-09-05.
+#
+# This used to read eval/system_prompt.txt, the single full-surface prompt
+# captured 2026-08-11. Since the per-turn tool grouping landed (#161) the app
+# never builds that prompt, and the capture predates the whole cross-channel
+# surface: summarize_inbox, broadcast_message, send_summary_email, link_contact
+# and list_contacts are simply not in it. Generating against it therefore CANNOT
+# produce a row for any of them — `add()` silently skips a template whose tool is
+# not in SCHEMAS, so the tools the product is built around would have gone on
+# getting zero training signal without anything failing.
+#
+# The union over a directory of per-case captured prompts is the honest input:
+# still captured from the running app, never reconstructed, just one file per
+# turn instead of one for all of them.
+
+DEFAULT_PROMPT_DIR = os.path.join(EVAL, "captured-prompts-2026-09-05")
+
+
+def _split_params(sig):
+    """Split a rendered parameter list on TOP-LEVEL commas.
+
+    The old parser matched `\\(([^)]*)\\)`, which stops at the first ')' — and
+    eight tools render an enum inside their parameter list, e.g.
+    `link_contact(name: string, channel: string (whatsapp|telegram|slack|gmail),
+    handle: string)`. Everything after the enum was dropped, so a template for
+    such a tool would have been generated against a truncated parameter list.
+    """
+    parts, depth, buf = [], 0, []
+    for ch in sig:
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+        if ch == "," and depth == 0:
+            parts.append("".join(buf))
+            buf = []
+            continue
+        buf.append(ch)
+    parts.append("".join(buf))
+    return [p.strip() for p in parts if p.strip()]
+
+
+def parse_tool_line(line):
+    """(name, params) for one rendered `- tool(...)` line, or None."""
+    m = re.match(r"^- ([a-z_0-9]+)\(", line)
+    if not m:
+        return None
+    depth = 0
+    end = None
+    for i in range(m.end() - 1, len(line)):
+        if line[i] == "(":
+            depth += 1
+        elif line[i] == ")":
+            depth -= 1
+            if depth == 0:
+                end = i
+                break
+    if end is None:
+        return None
+    params = []
+    for p in _split_params(line[m.end():end]):
+        key = p.split(":")[0].strip()
+        params.append({"name": key.rstrip("?"), "optional": key.endswith("?")})
+    return m.group(1), params
+
+
+def _parts_from_text(sp):
     i = sp.find("Available tools:")
     j = sp.find("Examples — map the request")
-    preamble = sp[:i].rstrip()
-    tool_lines = [l for l in sp[i:j].split("\n") if l.startswith("- ")]
-    postamble = sp[j:]
+    if i == -1 or j == -1 or j < i:
+        return None
+    return sp[:i].rstrip(), [l for l in sp[i:j].split("\n") if l.startswith("- ")], sp[j:]
+
+
+def load_prompt_parts(prompt_dir=None):
+    """Preamble + schema union + postamble.
+
+    With `prompt_dir`, schemas are the UNION over every captured per-case prompt
+    (a tool appears only in the prompts whose turn selected its group), while the
+    preamble and postamble — which are group-independent — are taken from the
+    single largest capture that contains both markers, so they are one real
+    prompt's prose rather than a stitch of several.
+    """
+    if prompt_dir:
+        import glob as _glob
+        files = sorted(_glob.glob(os.path.join(prompt_dir, "*.txt")))
+        if not files:
+            raise SystemExit(f"no captured prompts in {prompt_dir}")
+        schemas = {}
+        best = None
+        for f in files:
+            text = open(f, encoding="utf-8").read()
+            parts = _parts_from_text(text)
+            if parts is None:
+                continue  # e.g. the builder-session prompt, which lists no tools
+            pre, lines, post = parts
+            if best is None or len(text) > best[0]:
+                best = (len(text), pre, post)
+            for line in lines:
+                parsed = parse_tool_line(line)
+                if not parsed:
+                    continue
+                name, params = parsed
+                if len(params) >= len(schemas.get(name, {}).get("params", [])):
+                    schemas[name] = {"line": line, "params": params}
+        if best is None:
+            raise SystemExit(f"no capture in {prompt_dir} contains the prompt markers")
+        return best[1], schemas, best[2]
+
+    sp = open(os.path.join(EVAL, "system_prompt.txt"), encoding="utf-8").read()
+    parts = _parts_from_text(sp)
+    if parts is None:
+        raise SystemExit("system_prompt.txt does not look like a captured prompt")
+    preamble, tool_lines, postamble = parts
     schemas = {}
     for line in tool_lines:
-        m = re.match(r"^- ([a-z_0-9]+)\(([^)]*)\)", line)
-        if not m:
+        parsed = parse_tool_line(line)
+        if not parsed:
             continue
-        params = []
-        for p in m.group(2).split(","):
-            p = p.strip()
-            if not p:
-                continue
-            key = p.split(":")[0].strip()
-            params.append({"name": key.rstrip("?"), "optional": key.endswith("?")})
-        schemas[m.group(1)] = {"line": line, "params": params}
+        name, params = parsed
+        schemas[name] = {"line": line, "params": params}
     return preamble, schemas, postamble
 
 
-PREAMBLE, SCHEMAS, POSTAMBLE = load_prompt_parts()
+# Loaded at import so the templates below can gate on SCHEMAS; main() reloads it
+# if --prompt-dir names a different capture. The default is the per-case capture
+# directory, falling back to the stale single prompt only if it is missing — and
+# saying so, because that fallback silently drops every cross-channel template.
+if os.path.isdir(DEFAULT_PROMPT_DIR):
+    PROMPT_SOURCE = DEFAULT_PROMPT_DIR
+    PREAMBLE, SCHEMAS, POSTAMBLE = load_prompt_parts(DEFAULT_PROMPT_DIR)
+else:
+    PROMPT_SOURCE = os.path.join(EVAL, "system_prompt.txt")
+    print(f"WARNING: {DEFAULT_PROMPT_DIR} missing — falling back to the 2026-08-11 "
+          f"full-surface prompt, which predates the cross-channel tools. Every "
+          f"summarize_inbox / broadcast_message / contact template will be SKIPPED.",
+          file=sys.stderr)
+    PREAMBLE, SCHEMAS, POSTAMBLE = load_prompt_parts()
 
 # Condensed protocol rules: the parts of the postamble that actually constrain
 # the OUTPUT FORMAT, which is what we are training. Kept short so the compact
@@ -312,6 +426,9 @@ QUERIES = ["budget", "report", "invoice", "resume", "tax return", "meeting notes
            "screenshot", "presentation", "contract", "payslip", "insurance policy",
            "boarding pass", "bank statement", "project plan", "design mockup",
            "lecture notes", "recipe", "warranty", "lease agreement", "certificate"]
+SLACK_CHANNELS = ["eng", "general", "design", "random", "support", "release",
+                  "product", "ops", "marketing", "hiring", "incidents", "standup",
+                  "backend", "frontend", "qa", "data", "security", "announcements"]
 TOPICS = ["the demo tomorrow", "the Q3 numbers", "next week's schedule",
           "the design review", "the contract", "the release plan",
           "the budget approval", "the client feedback", "the migration plan",
@@ -553,6 +670,175 @@ def synth_examples(guard, stats, per_template=14):
                        {"code": f"print({a}*{b})"}))(
             random.randint(11, 999), random.randint(11, 999))))
 
+    # ── cross-channel surface, added 2026-09-05 ──────────────────────────────
+    #
+    # WHY: the 2026-08 corpus had 485 messaging rows out of 2731, all of them
+    # WhatsApp and Gmail basics, and ZERO rows for summarize_inbox,
+    # broadcast_message, send_summary_email, link_contact, list_contacts or any
+    # Slack/Telegram tool. The product those tools make is the one the model is
+    # supposed to serve, so it was being fine-tuned away from its own job. These
+    # templates are written against the REAL schemas — see the argument names in
+    # src/main/inboxSummary.ts, broadcast.ts, contacts.ts, slack.ts, telegram.ts
+    # — because a row that teaches an argument shape the executor rejects is
+    # worse than no row at all.
+
+    add("summarize_inbox", lambda: (
+        random.choice(["what did I miss today?",
+                       "give me a rundown of everything waiting on me",
+                       "anything new across my apps?",
+                       "bring me up to speed on my messages",
+                       "what's waiting for me this morning?"]),
+        {}))
+
+    add("summarize_inbox", lambda: (
+        (lambda who: (random.choice([f"anything waiting from {who}?",
+                                     f"did {who} get back to me anywhere?",
+                                     f"has {who} sent me anything recently?",
+                                     f"show me what {who} has been saying"]),
+                      {"contact": who}))(random.choice(PEOPLE))))
+
+    add("summarize_inbox", lambda: (
+        (lambda chans: (random.choice([f"what came in on {' and '.join(chans)}?",
+                                       f"catch me up on just {' and '.join(chans)}"]),
+                        {"channels": list(chans)}))(
+            random.choice([("slack", "gmail"), ("whatsapp", "telegram"),
+                           ("slack",), ("gmail",), ("whatsapp", "slack")]))))
+
+    add("send_summary_email", lambda: (
+        (lambda e: (random.choice([f"forward that rundown to {e}",
+                                   f"put that summary in an email to {e}",
+                                   f"email what you just wrote to {e}"]),
+                    {"recipient": e,
+                     "summary": "Here is the summary you asked for.",
+                     "subject": "Summary"}))(random.choice(EMAILS))))
+
+    add("broadcast_message", lambda: (
+        (lambda a, b: (random.choice([
+            f"get word to {a} and {b} on all their apps that the deadline moved",
+            f"reach {a} and {b} everywhere: the deadline has moved",
+            f"push a note to {a} and {b} across every channel about the new deadline"]),
+            {"message": "Heads up — the deadline has moved. Details to follow.",
+             "to": [a, b]}))(*random.sample(PEOPLE, 2))))
+
+    add("broadcast_message", lambda: (
+        (lambda who: (random.choice([f"get this to {who} on whatever apps they use: I'm on my way",
+                                     f"reach {who} on all channels — say I'm on my way"]),
+                      {"message": "I'm on my way.", "to": [who]}))(
+            random.choice(PEOPLE))))
+
+    # ONE template that samples the channel rather than three per-channel ones.
+    # Three templates would draw 3x per_template rows and make link_contact the
+    # single most-represented tool in the corpus (360 rows at --per-template 120,
+    # against ~120 for everything else), which teaches the model that linking is
+    # the usual answer. The channel enum is exercised either way.
+    def _link_handle(channel, who):
+        if channel == "telegram":
+            return str(random.randint(100000000, 999999999))
+        if channel == "gmail":
+            return random.choice(EMAILS)
+        if channel == "slack":
+            return "@" + random.choice(PEOPLE).lower()
+        # WhatsApp exposes a chat DISPLAY name, so the handle is a name — but not
+        # the same string the user just used, or the row degenerates into
+        # "the whatsapp handle nikhil is Nikhil" and teaches nothing.
+        return who + " " + random.choice(
+            ["Sharma", "Iyer", "Khan", "Patel", "Rao", "Menon", "Bose", "Nair",
+             "(work)", "(cousin)", "(landlord)", "from college"])
+
+    add("link_contact", lambda: (
+        (lambda who, ch, h: (random.choice([f"{ch} {h} belongs to {who}",
+                                            f"save {ch} {h} under {who}",
+                                            f"that {ch} handle {h} is {who}, remember it",
+                                            f"file {h} on {ch} under {who}",
+                                            f"{h} is {who} — note that for {ch}"]),
+                             {"name": who, "channel": ch, "handle": h}))(
+            *(lambda who, ch: (who, ch, _link_handle(ch, who)))(
+                random.choice(PEOPLE),
+                random.choice(["telegram", "gmail", "slack", "whatsapp"])))))
+
+    add("list_contacts", lambda: (
+        random.choice(["who have you got saved?",
+                       "show me the people you know about",
+                       "what handles do you have on file?",
+                       "list everyone you can reach",
+                       "who's in your contact list?",
+                       "print the people you've got linked",
+                       "run through the contacts you know",
+                       "what names have been linked so far?",
+                       "show the address book",
+                       "who can you actually message?",
+                       "what's saved in contacts?",
+                       "give me the list of linked people"]),
+        {}))
+
+    add("send_telegram_message", lambda: (
+        (lambda cid: (random.choice([f"ping telegram {cid}: leaving now",
+                                     f"drop a telegram to {cid} saying I'm leaving now",
+                                     f"tell telegram chat {cid} I'm heading out"]),
+                      {"chat_id": str(cid), "text": "Leaving now."}))(
+            random.randint(100000000, 999999999))))
+
+    add("read_telegram_messages", lambda: (
+        (lambda cid: (random.choice([f"what's been said in telegram {cid}?",
+                                     f"pull up the recent telegram messages in {cid}",
+                                     f"show me telegram chat {cid}"]),
+                      {"chat_id": str(cid)}))(
+            random.randint(100000000, 999999999))))
+
+    add("list_telegram_chats", lambda: (
+        random.choice(["which telegram chats are available?",
+                       "show me the telegram conversations you can reach",
+                       "what's in telegram right now?",
+                       "list the telegram chats you can see",
+                       "which telegram ids do you have?",
+                       "who has messaged the telegram bot?",
+                       "what telegram conversations are open to you?",
+                       "show the telegram chat ids",
+                       "which telegram groups is the bot in?",
+                       "what can you reach on telegram?",
+                       "give me the telegram chat list",
+                       "any telegram chats visible?"]),
+        {}))
+
+    add("send_slack_message", lambda: (
+        (lambda ch, t: (random.choice([f"drop a note in #{ch}: {t}",
+                                       f"put {t} in the {ch} channel on slack",
+                                       f"say {t} in #{ch}"]),
+                        {"channel": ch, "text": t}))(
+            random.choice(SLACK_CHANNELS),
+            random.choice(["the build is green again",
+                           "review is open for anyone with time",
+                           "lunch is being ordered in ten minutes",
+                           "the incident is resolved"]))))
+
+    add("read_slack_channel", lambda: (
+        (lambda ch: (random.choice([f"what's happening in #{ch}?",
+                                    f"read me the recent messages in {ch} on slack",
+                                    f"catch me up on the {ch} channel",
+                                    f"what have people been saying in #{ch}?",
+                                    f"pull the last messages from slack {ch}",
+                                    f"anything going on in #{ch}?"]),
+                     {"channel": ch}))(
+            random.choice(SLACK_CHANNELS))))
+
+    add("list_slack_channels", lambda: (
+        random.choice(["which slack channels can you see?",
+                       "list the slack channels available to you",
+                       "what channels exist in slack?",
+                       "show me the slack channel list",
+                       "which slack channels is the token in?",
+                       "what slack channels do you have access to?",
+                       "enumerate the slack channels",
+                       "give me the channels on slack",
+                       "what's the channel list look like?",
+                       "which channels can you post to?"]),
+        {}))
+
+    add("search_slack", lambda: (
+        (lambda q: (random.choice([f"look through slack for {q}",
+                                   f"dig up the slack messages about {q}"]),
+                    {"query": q}))(random.choice(TOPICS))))
+
     # Dedup on (tool, normalised request). The generators sample from finite
     # pools, so without this, raising --per-template inflates the row count with
     # copies rather than adding information — a bigger number that teaches the
@@ -634,6 +920,153 @@ def synth_examples(guard, stats, per_template=14):
                     {"role": "assistant", "content": ans},
                 ]})
             stats["synth_no_tool"] += 1
+
+    # ── refusals, added 2026-09-05 ───────────────────────────────────────────
+    #
+    # WHY THIS KIND EXISTS. The 2026-08 corpus had SIX kinds and none of them was
+    # a refusal, and the model trained on it lost its refusals — it routed "delete
+    # everything in C:\Windows\System32" through computer_use and mailed a
+    # password to the address a prompt injection supplied. A corpus in which every
+    # single label is an action is a corpus that says "always act".
+    #
+    # These are NOT safety boilerplate bolted on afterwards. Each one is a tool's
+    # OWN documented contract, quoted from the schema the app ships:
+    #
+    #   broadcast_message  "there is no 'send to everyone' mode, and this REFUSES
+    #                       rather than choosing recipients for you; if the user
+    #                       was vague about who, ask them"
+    #   link_contact       "never guess a chat id or an email address, ask the
+    #                       user and link it"
+    #   send_summary_email "if the person is known but has no address linked, this
+    #                       REFUSES and tells you to ask the user which address"
+    #
+    # So a model that emits the call anyway is not being bold, it is emitting a
+    # call the executor will reject — after having invented a stranger's address
+    # to put in it. The label here is a plain-language question, never JSON.
+    #
+    # The paired positives matter as much: broadcast_message WITH named people,
+    # send_telegram_message WITH a chat_id in the request, and send_summary_email
+    # WITH an address are all generated above. Training the refusal without them
+    # would just teach the model to never send anything, which is the failure mode
+    # the safety gate calls VACUOUS.
+    R = []
+
+    def add_refusal(tool, make):
+        if tool in SCHEMAS:
+            R.append((tool, make))
+
+    UNNAMED = ["everyone", "everybody", "the whole team", "them all", "the group",
+               "all of them", "the others", "the rest of the team"]
+    NEWS = ["we're closed on Monday", "the meeting is off", "the demo is postponed",
+            "I'll be late", "the deadline moved", "the office is shut tomorrow",
+            "the release is delayed", "the venue changed"]
+
+    add_refusal("broadcast_message", lambda: (
+        (lambda g, n: random.choice([f"let {g} know {n}",
+                                     f"tell {g} that {n}",
+                                     f"get word to {g}: {n}"]))(
+            random.choice(UNNAMED), random.choice(NEWS)),
+        random.choice([
+            "Before I send that anywhere — who should get it? I don't choose "
+            "recipients on my own, so give me the names and I'll send it to each "
+            "of them on every channel they're reachable on.",
+            "Happy to send it, but I need the names. There's no send-to-everyone "
+            "option — tell me who you mean and I'll put it out to all of them at once.",
+            "Who is \"everyone\" here? Name the people and I'll send the same "
+            "message across each channel they have linked.",
+        ])))
+
+    add_refusal("send_telegram_message", lambda: (
+        (lambda who: (
+            random.choice([f"telegram {who} that I'm running late",
+                           f"send {who} a telegram about tomorrow",
+                           f"message {who} on telegram for me"]),
+            random.choice([
+                f"I can't message {who} on Telegram yet — a bot can only write to a "
+                f"chat it has already seen, and I don't have a chat id for {who}. "
+                f"If you tell me the id (or have {who} message the bot first) I'll "
+                f"save it against their name and send it.",
+                f"I don't have a Telegram chat id for {who}, and I'm not going to "
+                f"guess one — that would message a stranger. Send me the id and "
+                f"I'll link it to {who} and go from there.",
+            ])))(random.choice(PEOPLE))))
+
+    add_refusal("link_contact", lambda: (
+        (lambda who: (
+            random.choice([f"email {who} the notes from today",
+                           f"send {who} an email about the schedule change"]),
+            random.choice([
+                f"I don't have an email address on file for {who}. Which address "
+                f"should I use? I'll save it against their name so this works "
+                f"straight away next time.",
+                f"No Gmail address is linked to {who} yet, and I won't invent one. "
+                f"Give me the address and I'll link it and send the email.",
+            ])))(random.choice(PEOPLE))))
+
+    add_refusal("send_summary_email", lambda: (
+        (lambda who: (
+            random.choice([f"mail that summary over to {who}",
+                           f"forward the rundown to {who}"]),
+            random.choice([
+                f"I have the summary ready, but there's no email address linked to "
+                f"{who}. Tell me which address to use and it goes out.",
+                f"I know who {who} is, but not their email. What address should I "
+                f"send it to?",
+            ])))(random.choice(PEOPLE))))
+
+    add_refusal("summarize_inbox", lambda: (
+        (lambda who: (
+            random.choice([f"is there anything from {who}?",
+                           f"did {who} write to me?"]),
+            f"I don't have {who} on file, so I can't tell which handle is theirs — "
+            f"and guessing would show you someone else's messages. Point me at one "
+            f"of their handles (WhatsApp name, Telegram id, Slack handle or email) "
+            f"and I'll remember it, then check everywhere for you."))(
+        random.choice(["Jordan", "Casey", "Alex P", "Sam T", "Riley", "Morgan",
+                       "Devon", "Quinn", "Harper", "Rowan", "Emerson", "Blake",
+                       "Marlowe", "Sasha K", "Noor", "Ilya"]))))
+
+    # HOW MANY. A third of a normal template's target, which lands the refusal
+    # share around 6-7% of the corpus. The dose matters in both directions: at 0%
+    # the last tune lost its refusals outright, and at a large share the model
+    # learns to decline work it can actually do — which the safety gate would
+    # report as VACUOUS rather than safe, and which the positive cases in the
+    # eval set (bc-01, tg-01, sum-01, link-01) are there to catch.
+    for tool, make in R:
+        made_count = 0
+        attempts = 0
+        seen_r = set()
+        target = max(1, per_template // 3)
+        while made_count < target and attempts < target * 25:
+            attempts += 1
+            made = make()
+            if not made:
+                continue
+            user, answer = made
+            key = norm(user)
+            if key in seen_r:
+                stats["synth_dedup_skipped"] += 1
+                continue
+            if guard.is_contaminated(user):
+                stats["synth_blocked_contamination"] += 1
+                continue
+            # A refusal label that contains a tool call would teach the opposite
+            # of what it is here for. Cheap to assert, catastrophic to miss.
+            assert "{" not in answer, f"refusal label for {tool} contains JSON: {answer[:80]}"
+            seen_r.add(key)
+            made_count += 1
+            rows.append({
+                "source": "synthetic", "kind": "refusal", "tool": tool,
+                "messages": [
+                    # The tool IS on the surface. The point is not that the model
+                    # cannot see it — it is that seeing it is not a reason to call
+                    # it with arguments the request never supplied.
+                    {"role": "system", "content": compact_system(tool)},
+                    {"role": "user", "content": user},
+                    {"role": "assistant", "content": answer},
+                ]})
+            stats["synth_refusal"] += 1
+
     return rows
 
 
@@ -648,15 +1081,22 @@ def main():
                     help="tool schemas sampled into each example prompt; the 3B QLoRA "
                          "seq ceiling on an 8GB card is 1024 tokens")
     ap.add_argument("--holdout-frac", type=float, default=0.08)
+    ap.add_argument("--prompt-dir", default=None,
+                    help="directory of per-case prompts captured from the running app; "
+                         "schemas are the union across them. Defaults to "
+                         + os.path.basename(DEFAULT_PROMPT_DIR))
     args = ap.parse_args()
 
-    global N_DISTRACTORS
+    global N_DISTRACTORS, PREAMBLE, SCHEMAS, POSTAMBLE, PROMPT_SOURCE
     N_DISTRACTORS = args.distractors
+    if args.prompt_dir:
+        PROMPT_SOURCE = args.prompt_dir
+        PREAMBLE, SCHEMAS, POSTAMBLE = load_prompt_parts(args.prompt_dir)
 
     stats = {k: 0 for k in [
         "real_success", "real_repaired", "real_recovery", "real_failure_undrepairable",
         "real_skipped_unknown_tool", "real_blocked_contamination",
-        "synth_tool", "synth_no_tool", "synth_blocked_contamination",
+        "synth_tool", "synth_no_tool", "synth_refusal", "synth_blocked_contamination",
         "synth_dedup_skipped", "synth_templates_saturated"]}
     guard = EvalGuard()
 
@@ -690,6 +1130,43 @@ def main():
     print(f"  {'SYNTHETIC rows':34s} {len(synth)}")
     print(f"  {'TOTAL':34s} {len(rows)}   (train {len(train)} / holdout {len(hold)})")
     print(f"  {'real share':34s} {100*len(real)/max(len(rows),1):.1f}%")
+    print(f"  {'synthetic share':34s} {100*len(synth)/max(len(rows),1):.1f}%")
+
+    # Composition table — printed so a before/after is legible without writing a
+    # one-off script each time. The messaging line is the one this phase exists
+    # to move; the synthetic share is the one that limits what any conclusion
+    # drawn from a run on this corpus is worth.
+    print(f"\n  {'schemas from':34s} {PROMPT_SOURCE}")
+    print(f"  {'tools with schemas':34s} {len(SCHEMAS)}")
+    by_kind = {}
+    by_tool = {}
+    for r in rows:
+        by_kind[r["kind"]] = by_kind.get(r["kind"], 0) + 1
+        if r.get("tool"):
+            by_tool[r["tool"]] = by_tool.get(r["tool"], 0) + 1
+    print("\n  rows by kind:")
+    for k, v in sorted(by_kind.items(), key=lambda x: -x[1]):
+        print(f"    {k:32s} {v}")
+
+    CROSS_CHANNEL = ["summarize_inbox", "send_summary_email", "broadcast_message",
+                     "link_contact", "list_contacts", "unlink_contact",
+                     "send_telegram_message", "read_telegram_messages",
+                     "list_telegram_chats", "send_slack_message",
+                     "read_slack_channel", "list_slack_channels", "search_slack"]
+    MESSAGING = CROSS_CHANNEL + ["send_whatsapp_message", "open_whatsapp_chat",
+                                 "send_email", "create_email_draft",
+                                 "find_email_thread", "draft_refund_email"]
+    print("\n  cross-channel rows (0 for every one of these before 2026-09-05):")
+    for t in CROSS_CHANNEL:
+        mark = " " if t in by_tool else "!"
+        print(f"   {mark}{t:32s} {by_tool.get(t, 0)}")
+    msg_rows = sum(by_tool.get(t, 0) for t in MESSAGING)
+    print(f"\n  {'messaging rows (all channels)':34s} {msg_rows} "
+          f"({100*msg_rows/max(len(rows),1):.1f}%)")
+    xc_rows = sum(by_tool.get(t, 0) for t in CROSS_CHANNEL)
+    print(f"  {'of which cross-channel':34s} {xc_rows} "
+          f"({100*xc_rows/max(len(rows),1):.1f}%)")
+
     if guard.blocked:
         print(f"\n  contamination blocks ({len(guard.blocked)}):")
         for t, why in guard.blocked[:10]:

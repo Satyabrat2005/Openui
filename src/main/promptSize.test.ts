@@ -118,12 +118,18 @@ describe('grouped prompts fit the SMALL context window', () => {
 
   // The measured headline for this change, pinned so a regression is a red test
   // rather than a slow app: 13,298 tokens / num_ctx 32768 before, ~3.2k–5.8k
-  // tokens / num_ctx 8192 after, across all 44 eval prompts.
+  // tokens / num_ctx 8192 after, across every eval prompt.
+  //
+  // The count moved 44 -> 60 on 2026-09-05 when the cross-channel cases were
+  // added. It is pinned rather than derived on purpose: the assertion inside the
+  // loop is only worth anything if the file it reads actually has cases in it,
+  // and a count that follows the file would pass just as happily on an empty
+  // one. Update it deliberately when the eval set grows.
   it('never needs a window bigger than the 8192 floor on any eval prompt', () => {
     const evalPrompts: string[] = (
       require('../../scripts/finetune/eval/evalset.json') as { cases: Array<{ prompt: string }> }
     ).cases.map((c) => c.prompt)
-    expect(evalPrompts.length).toBe(44)
+    expect(evalPrompts.length).toBe(60)
     for (const p of evalPrompts) {
       const built = promptFor(p)
       expect(resolveNumCtx(false, built.length), `grew the window for: ${p}`).toBe(8192)

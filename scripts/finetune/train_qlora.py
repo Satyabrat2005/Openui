@@ -28,6 +28,7 @@ import argparse
 import json
 import math
 import os
+import random
 import sys
 import time
 
@@ -74,6 +75,17 @@ def main():
                     default=["q_proj", "k_proj", "v_proj", "o_proj",
                              "gate_proj", "up_proj", "down_proj"])
     ap.add_argument("--smoke", action="store_true")
+    ap.add_argument("--resume", action="store_true",
+                    help="continue from the newest checkpoint in <out>-work, if any")
+    ap.add_argument("--eval-steps", type=int, default=300,
+                    help="in-loop evaluation cadence; evaluation costs wall-clock and "
+                         "changes nothing about the weights")
+    ap.add_argument("--eval-subset", type=int, default=64,
+                    help="cap on holdout rows used for the IN-LOOP eval (the final "
+                         "evaluation still runs over the whole holdout file)")
+    ap.add_argument("--save-steps", type=int, default=25,
+                    help="checkpoint cadence; low enough that an interrupted run "
+                         "loses minutes rather than hours")
     args = ap.parse_args()
 
     rows = load_rows(args.data)
@@ -177,8 +189,30 @@ def main():
     if args.eval_data and os.path.exists(args.eval_data):
         er = load_rows(args.eval_data)
         if er:
+            # SUBSAMPLE THE IN-LOOP EVAL SET — 2026-09-05.
+            #
+            # This is a harness cost, not a hyperparameter: evaluation computes no
+            # gradients and updates no weights, so nothing here changes what the
+            # model learns. It changes only how often the run stops to measure.
+            #
+            # Measured on the first real 3B run: the full 300-row holdout at
+            # per_device_eval_batch_size=1 takes ~16 s/row, i.e. ~80 MINUTES per
+            # evaluation, and eval_steps=25 over 864 training steps schedules 34 of
+            # them. That is ~45 hours of evaluation wrapped around ~11 hours of
+            # training, and it is why the first run's projected ETA jumped from
+            # 44 h to 71 h the moment step 25 arrived. A loss curve does not need
+            # 300 rows every 25 steps to be readable.
+            #
+            # The subsample is drawn with a FIXED seed, so the holdout loss is
+            # comparable across runs — it is a consistent slice of the holdout,
+            # not a different one each time. Report it as what it is: a loss over
+            # `--eval-subset` held-out rows, not over the whole holdout file.
+            if len(er) > args.eval_subset:
+                rng = random.Random(0)
+                er = rng.sample(er, args.eval_subset)
             eval_ds = Dataset.from_list(er).map(render, remove_columns=list(er[0].keys()))
-            print(f"holdout: {len(eval_ds)} examples", flush=True)
+            print(f"holdout: {len(eval_ds)} examples used for in-loop eval "
+                  f"(every {args.eval_steps} steps)", flush=True)
 
     def collate(batch):
         n = max(len(b["input_ids"]) for b in batch)
@@ -202,20 +236,52 @@ def main():
         warmup_steps=max(5, int(0.03 * max(args.max_steps, 100))),
         lr_scheduler_type="cosine",
         logging_steps=5,
-        save_strategy="no",
+        # CHECKPOINTING — added 2026-09-05, and it does not change the training
+        # maths at all: same seed, same data order, same optimiser, same schedule.
+        # It only writes the adapter and optimiser state to disk periodically.
+        #
+        # Why it was needed: a full 3B run on this card is ~7 hours, and with
+        # save_strategy="no" it was uninterruptible — a laptop sleeping, a power
+        # cut or one Ctrl+C lost the entire run with nothing to resume from. On a
+        # machine that is also somebody's daily driver that is not a reasonable
+        # thing to ask. save_total_limit=2 keeps the cost to ~300 MB of disk.
+        save_strategy="steps",
+        save_steps=args.save_steps,
+        save_total_limit=2,
         report_to=[],
         bf16=True,
         optim="paged_adamw_8bit",
         gradient_checkpointing=True,
         eval_strategy="steps" if eval_ds is not None else "no",
-        eval_steps=25 if eval_ds is not None else None,
+        eval_steps=args.eval_steps if eval_ds is not None else None,
         per_device_eval_batch_size=1,
     )
 
     trainer = Trainer(model=model, args=targs, train_dataset=ds,
                       eval_dataset=eval_ds, data_collator=collate)
+
+    # Resume from the newest checkpoint in the work dir, if one is there and
+    # --resume was asked for. Auto-detected rather than passed as a path so the
+    # restart command is the same command as the original one plus a flag; falls
+    # back to a fresh run with a printed reason rather than failing, because a
+    # missing checkpoint should not cost another hour of confusion.
+    resume = None
+    if args.resume:
+        work = args.out + "-work"
+        ckpts = sorted(
+            (d for d in os.listdir(work) if d.startswith("checkpoint-"))
+            if os.path.isdir(work) else [],
+            key=lambda d: int(d.split("-")[-1]),
+        )
+        if ckpts:
+            resume = os.path.join(work, ckpts[-1])
+            print(f"resuming from {resume}", flush=True)
+        else:
+            print(f"--resume given but no checkpoint in {work}; starting fresh",
+                  flush=True)
+
     t0 = time.time()
-    result = trainer.train()
+    result = trainer.train(resume_from_checkpoint=resume)
     dt = time.time() - t0
 
     model.save_pretrained(args.out)
