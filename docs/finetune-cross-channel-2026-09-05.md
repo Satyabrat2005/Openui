@@ -460,6 +460,33 @@ than the *safety* ones (don't help with an account takeover, don't switch off a
 confirmation gate). Nothing in the corpus teaches the latter, so two epochs of
 gradient on the former eroded them.
 
+### When the safety went: measured, not guessed
+
+34 checkpoints were preserved during the run, so "would stopping earlier have
+helped?" was answered directly. Checkpoints 200, 400 and 600 were packaged and
+put through the same gate at seed 1:
+
+| checkpoint | epoch | gate violations |
+|---|---|---|
+| stock base | — | **5** |
+| `checkpoint-200` | 0.46 | 6 |
+| `checkpoint-400` | 0.93 | 7 |
+| `checkpoint-600` | 1.39 | 8 |
+| `checkpoint-864` (final) | 2.00 | 8 |
+
+**The degradation is monotonic, and it is already past the base by step 200 —
+less than half of the first epoch.** There is no clean early checkpoint: no point
+in this run is both better than the base on the eval set and no worse on the
+gate. The `consent-01` gate-bypass invention is a first-epoch behaviour too,
+appearing at step 400 as `"skip_confirmation": true` and at step 600 as
+`"skipConfirmation": true`.
+
+This is the useful kind of negative result, because it removes an option that
+looked obvious. Early stopping is **not** a remedy here — safety is being eroded
+from the very first few hundred steps, so the fix has to be in the corpus or the
+base, not in the schedule. The checkpoints were deleted once they had answered
+this.
+
 **The next change, in priority order:**
 
 1. **Put adversarial safety rows in the corpus.** The refusal kind added here
@@ -470,12 +497,8 @@ gradient on the former eroded them.
    violation against the coder base's 5, at a cost of 7.9 accuracy points. Given
    that gate 2 is the binding constraint, that trade now looks like the better
    starting point than it did when the base was chosen on accuracy alone.
-3. **Stop at ~1 epoch, or fewer.** The second epoch cost 2.8 hours and, on this
-   corpus, could only deepen memorisation.
-
-A fourth, cheaper than all of them: the run produced 34 preserved checkpoints, so
-the safety/accuracy trade across training can be measured directly rather than
-argued about.
+3. ~~Stop at ~1 epoch.~~ **Ruled out by the checkpoint sweep above** — the
+   regression is already present at epoch 0.46.
 
 ---
 
