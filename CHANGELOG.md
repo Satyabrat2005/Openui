@@ -104,6 +104,21 @@ them have been run against a real account.
   checkpoint sweep that rules out early stopping as a remedy, are in
   `docs/finetune-cross-channel-2026-09-05.md`.
 
+### Fixed — found by smoke-testing the packaged build
+
+- **An unhandled promise rejection on startup when the database cannot be
+  opened** (`AuthContext.tsx`). `getUser()` reaches the database, so it rejects
+  outright if the database failed to initialise — corruption, a locked file, a
+  native module an antivirus quarantined, a half-applied upgrade. It had no
+  `.catch()`, unlike the session check beside it, so the failure surfaced as an
+  unhandled rejection in the renderer instead of being handled. Now it fails
+  closed the same way the session check does.
+
+  **Known gap, not fixed here:** when the database cannot be opened the app
+  still shows a normal sign-in screen that can never succeed, with nothing
+  telling the user what went wrong. Failing visibly deserves its own change
+  rather than being rushed into a release.
+
 ### Known limitations — please read
 
 - **Almost nothing here has run against a real account.** The Slack, Telegram,
