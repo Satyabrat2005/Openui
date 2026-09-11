@@ -29,12 +29,14 @@ vi.mock('./models', async () => {
 vi.mock('electron', () => ({ BrowserWindow: class {} }))
 
 import {
+  approxSizeLabel,
   classifyPullFailure,
   downloadModel,
   engineUnavailable,
   isCatalogModel,
   listModelStatus,
   MODEL_CATALOG,
+  MODEL_LAYER_BYTES,
   OLLAMA_INSTALL_URL
 } from './modelDownload'
 import { clearInFlightPullsForTests } from './ollamaPull'
@@ -272,6 +274,29 @@ describe('listModelStatus', () => {
     for (const m of MODEL_CATALOG) {
       expect(m.purpose.length).toBeGreaterThan(0)
       expect(m.approxSize).toMatch(/about/i)
+    }
+  })
+
+  // The size shown before a download is the only figure a user can consent to:
+  // once the pull starts, ollamaPull streams real byte counts. `about 2 GB`
+  // shipped beside a 6.59 GB model because the string was written by hand next
+  // to nothing that could contradict it. Deriving it from the manifest byte
+  // count is what makes that drift impossible, so both halves are asserted.
+  it('states a download size derived from the real manifest byte count', () => {
+    for (const m of MODEL_CATALOG) {
+      const bytes = MODEL_LAYER_BYTES[m.id]
+      expect(bytes, `no manifest size recorded for ${m.id}`).toBeGreaterThan(0)
+      expect(m.approxSize).toBe(approxSizeLabel(bytes))
+    }
+  })
+
+  it('does not understate a multi-gigabyte download', () => {
+    // Rounding to one decimal may shave at most 0.05 GB; anything beyond that
+    // is a wrong number, not a rounded one.
+    for (const m of MODEL_CATALOG) {
+      const stated = Number(/([\d.]+)/.exec(m.approxSize)?.[1])
+      const real = MODEL_LAYER_BYTES[m.id] / 1e9
+      expect(real - stated).toBeLessThanOrEqual(0.05)
     }
   })
 })
