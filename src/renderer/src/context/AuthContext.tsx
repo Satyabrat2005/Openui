@@ -59,10 +59,23 @@ export function AuthProvider({ children }: { children: ReactNode }): JSX.Element
       })
 
     // getUser returns AuthUser (display_name); map to our User shape.
-    window.openui.getUser().then((u) => {
-      if (cancelled || !u) return
-      setUser({ id: u.id, email: u.email, name: u.display_name, avatar_url: u.avatar_url, tier: (u.tier as Tier) ?? 'free' })
-    })
+    window.openui
+      .getUser()
+      .then((u) => {
+        if (cancelled || !u) return
+        setUser({ id: u.id, email: u.email, name: u.display_name, avatar_url: u.avatar_url, tier: (u.tier as Tier) ?? 'free' })
+      })
+      // Same reasoning as the status check above, and for the same reason it
+      // needs to be explicit: this call reaches the database, so it rejects
+      // outright when the database could not be opened (corruption, a locked
+      // file, a native module an antivirus quarantined, a half-applied
+      // upgrade). Without a catch that rejection was an unhandled promise
+      // rejection in the renderer — observed on a packaged first run. The
+      // profile simply stays null, which is what the sign-in screen the status
+      // check already selected expects.
+      .catch(() => {
+        if (!cancelled) setUser(null)
+      })
 
     const unsubs = [
       window.openui.onAuthSuccess((u) => {

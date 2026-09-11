@@ -5,6 +5,136 @@ the newest work lands under **Unreleased** until the next version bump.
 
 ## [Unreleased]
 
+_Nothing yet._
+
+## v7.3.0 — 2026-09-11
+
+The release that turns OpenUI into a cross-channel texting agent. Sixteen PRs
+since v7.2.0, none of which had reached a user until now.
+
+**Read the known limitations before relying on any of this.** The messaging
+features are built, unit-tested and benchmarked against mocks; almost none of
+them have been run against a real account.
+
+### Added — the unified inbox
+
+- **`summarize_inbox` reads WhatsApp, Telegram, Slack and Gmail at once** and
+  returns structured data rather than prose, so the model writes the summary
+  instead of the tool guessing at one. Scope it to one person with `contact`.
+  Each channel reports its own status: when a channel cannot be read you are
+  told, rather than being shown a quiet inbox that looks like good news. (#169)
+- **A real contact-identity layer** (`link_contact`, `list_contacts`,
+  `unlink_contact`) so "is there anything from Ashu" resolves one person across
+  four channels. WhatsApp and Slack expose display names and usually need no
+  link; **Telegram and Gmail expose none, so they are never guessed** — the
+  agent asks and links instead of inventing a chat id or an address. (#169)
+- **`broadcast_message` sends one message everywhere a named person can be
+  reached**, in a single confirmed action. There is deliberately **no
+  send-to-everyone mode**: recipients must be named, and a vague "tell everyone"
+  makes the agent ask who rather than choose for you. Per-destination outcomes
+  are reported, so a partial failure says exactly who did not receive it. (#177)
+- **`send_summary_email`** mails a prepared summary to an address or a contact
+  with a linked Gmail address, and refuses rather than inventing one. (#169)
+- **Cross-channel memory** — the agent remembers context across channels instead
+  of treating each one as a fresh conversation. (#167)
+- **Overleaf browser automation** for LaTeX projects. (#166)
+
+### Added — first run
+
+- **Registration gate with in-app model download** (#176). Previously a new user
+  had to install Ollama and pull a model by hand before the app did anything.
+  Now models are downloaded from inside the app after sign-in. This is the
+  single biggest change to what a first-time user experiences.
+
+### Security
+
+- **Channel credentials are encrypted at rest** (#179). Eleven credential types
+  — Gmail, Google Calendar and Drive refresh tokens, Slack and Telegram bot
+  tokens, GitHub and Figma tokens, the Anthropic API key, the Google OAuth
+  client secret — were previously written to `openui.db` as plaintext JSON.
+  They are now encrypted with the OS keystore (DPAPI on Windows, Keychain on
+  macOS, libsecret/kwallet on Linux); the key never leaves the OS.
+
+  **Upgrading is transparent.** An existing plaintext credential still reads and
+  is re-encrypted on its next write — nothing to reconnect, nothing to redo. A
+  credential that cannot be decrypted (a profile copied to another machine or
+  user account) reads as absent so you are asked to reconnect, rather than a
+  broken token being sent to a live API.
+
+  A build-time guard now fails CI when a new credential-shaped setting is added
+  without protection. Full audit in `docs/security-audit-2026-09-10.md`.
+- **Unverified calendar backends are off by default** (#168). Calendar.app and
+  Outlook automation had never been verified end to end, so they no longer run
+  unless explicitly enabled.
+
+### Fixed
+
+- **WhatsApp no longer reports its own UI as unread senders** (#170), and OCR is
+  **scoped to the WhatsApp window** instead of the whole screen (#165) — which
+  was producing hundreds of false candidates per session.
+- **Slack sender names past the first page** (#171). `users.list` is
+  cursor-paginated and `limit` is a per-page maximum, so only the first 200
+  members resolved and everyone beyond that showed as a raw `U0123ABCD` id.
+  **Known ceiling: 2000 members** (200 × 10 pages); past that the map is
+  silently partial. The cap bounds a rate-limited call and is documented at the
+  constant rather than papered over. (#175)
+- **Rate-limited Slack channels no longer vanish from a summary** (#171). A
+  throttled channel used to disappear entirely — absent from `channelsRead`,
+  with `truncated: false`, i.e. indistinguishable from a quiet workspace. It now
+  lands in `skipped` with a reason, and an all-channels-failed read returns an
+  error instead of an empty inbox.
+- **Telegram, Slack and Calendar hardening** — including a Telegram `getUpdates`
+  tail bug and missing HTTPS timeouts. (#166)
+- **The builder no longer declares GIVE UP on a finished build** (#165).
+
+### Changed
+
+- Benchmark pricing corrected against verified published rates for GPT, Gemini
+  and Sonnet 5, and three gaps closed that would have corrupted a frontier-model
+  comparison. Internal measurement only; no runtime effect. (#172, #173, #174)
+
+### Not shipped, deliberately
+
+- **The fine-tuned 3B (`openui-splen:v2`) was trained, measured, and rejected**
+  (#178). It beat its base on tool-call accuracy (76.5% vs 70.6%) and **regressed
+  on safety** (8 gate violations vs the base's 5), including inventing a
+  `skipConfirmation` argument to suppress the confirmation gate. A fine-tune that
+  does not clear both bars is a regression with a version number, so it was not
+  shipped. OpenUI continues to run on stock models. The measurement, and the
+  checkpoint sweep that rules out early stopping as a remedy, are in
+  `docs/finetune-cross-channel-2026-09-05.md`.
+
+### Fixed — found by smoke-testing the packaged build
+
+- **An unhandled promise rejection on startup when the database cannot be
+  opened** (`AuthContext.tsx`). `getUser()` reaches the database, so it rejects
+  outright if the database failed to initialise — corruption, a locked file, a
+  native module an antivirus quarantined, a half-applied upgrade. It had no
+  `.catch()`, unlike the session check beside it, so the failure surfaced as an
+  unhandled rejection in the renderer instead of being handled. Now it fails
+  closed the same way the session check does.
+
+  **Known gap, not fixed here:** when the database cannot be opened the app
+  still shows a normal sign-in screen that can never succeed, with nothing
+  telling the user what went wrong. Failing visibly deserves its own change
+  rather than being rushed into a release.
+
+### Known limitations — please read
+
+- **Almost nothing here has run against a real account.** The Slack, Telegram,
+  Gmail, Calendar, unified-inbox and broadcast paths are covered by unit tests
+  and mocked-HTTP tests. Pagination, rate-limit handling and the 2000-member
+  ceiling have **never been exercised against a real workspace**. Treat this
+  release as a beta of those features specifically.
+- **The builds are unsigned.** On Windows you will see a SmartScreen warning. On
+  **macOS the app will report "damaged and can't be opened"** — this is
+  Gatekeeper rejecting an unsigned, un-notarized build, not a corrupt download.
+  macOS auto-update is correspondingly diverted to the browser rather than
+  applied silently. Code signing is the fix and is not yet in place.
+- **Update integrity rests on HTTPS and GitHub account security.** Without code
+  signing there is no independent publisher verification of an update.
+- Calendar.app and Outlook automation remain off by default and unverified.
+
 ### Fixed
 
 - **Slack sender names past the first page (`slack.ts`)** — `users.list` is
