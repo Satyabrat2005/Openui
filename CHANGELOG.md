@@ -119,6 +119,14 @@ them have been run against a real account.
   telling the user what went wrong. Failing visibly deserves its own change
   rather than being rushed into a release.
 
+- **The first-run download understated its size by 3.3x.** The default model was
+  offered as "about 2 GB"; its actual registry manifest is **6.59 GB**. That is
+  the first download a new user starts, so someone on a metered or slow
+  connection agreed to a figure that was not real. The coding model's 4.7 GB was
+  correct. Both figures are now derived from the recorded manifest byte count
+  rather than written by hand beside it, so a corrected size cannot leave a
+  stale label behind, and two tests fail if one ever understates again.
+
 ### Known limitations — please read
 
 - **Almost nothing here has run against a real account.** The Slack, Telegram,

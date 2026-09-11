@@ -53,18 +53,51 @@ export interface CatalogModel {
   approxSize: string
 }
 
+/**
+ * Sizes are the real model-layer size from the Ollama registry manifest, not an
+ * estimate. Verified 2026-09-11. `about 2 GB` shipped here previously and was
+ * wrong by 3.3x for the default model, which is the worst place to be wrong: it
+ * is the first download a new user starts, and someone on a metered or slow
+ * connection consented to a figure that was not real.
+ *
+ * Re-derive before changing a tag — these move when upstream repoints `latest`:
+ *
+ *   curl -s -H 'Accept: application/vnd.docker.distribution.manifest.v2+json' \
+ *     https://registry.ollama.ai/v2/library/<name>/manifests/<tag> \
+ *     | jq '.layers[] | select(.mediaType | endswith(".model")) | .size'
+ *
+ * The number shown *during* the download comes from Ollama's own byte counts
+ * (see ollamaPull.ts) and is always live; only this pre-download figure is
+ * static.
+ */
+export const MODEL_LAYER_BYTES: Record<string, number> = {
+  [DEFAULT_GENERAL_MODEL]: 6_594_462_816,
+  [DEFAULT_CODE_MODEL]: 4_683_074_048
+}
+
+/**
+ * Render a byte count as the figure shown before a download starts.
+ *
+ * The label is DERIVED from the byte count rather than written beside it, so a
+ * corrected manifest size cannot leave a stale string behind — which is exactly
+ * how `about 2 GB` survived next to a 6.6 GB model.
+ */
+export function approxSizeLabel(bytes: number): string {
+  return `about ${(bytes / 1e9).toFixed(1)} GB`
+}
+
 export const MODEL_CATALOG: CatalogModel[] = [
   {
     id: DEFAULT_GENERAL_MODEL,
     label: 'General assistant',
     purpose: 'Everyday chat, planning and running tasks across your apps.',
-    approxSize: 'about 2 GB'
+    approxSize: approxSizeLabel(MODEL_LAYER_BYTES[DEFAULT_GENERAL_MODEL])
   },
   {
     id: DEFAULT_CODE_MODEL,
     label: 'Coding assistant',
     purpose: 'Writing and editing code in the autonomous builder.',
-    approxSize: 'about 4.7 GB'
+    approxSize: approxSizeLabel(MODEL_LAYER_BYTES[DEFAULT_CODE_MODEL])
   }
 ]
 
