@@ -35,6 +35,24 @@ export interface UsageUpdatePayload {
   unlimited: boolean
 }
 
+interface AllowancePayload {
+  allowed: boolean
+  used: number
+  limit: number | null
+  remaining: number | null
+  unlimited: boolean
+  resetsAt: number
+}
+
+interface UsageSummaryPayload {
+  activeDays: number
+  windowDays: number
+  totalMessages: number
+  messagesPerActiveDay: number
+  currentStreak: number
+  busiestDay: { day: string; messages: number } | null
+}
+
 export interface ConversationSummary {
   id: string
   title: string
@@ -523,6 +541,11 @@ export interface OpenUIApi {
   onTierUpgradeNeeded: (cb: (payload: TierUpgradePayload) => void) => () => void
   // Daily cloud-message usage counter.
   onUsageUpdate: (cb: (usage: UsageUpdatePayload) => void) => () => void
+  // Local daily allowance and usage history. Read-only by design — the
+  // allowance is enforced in the main process, so a renderer able to write the
+  // counter would be the cheapest possible way around it.
+  getUsageToday: () => Promise<AllowancePayload>
+  getUsageSummary: (windowDays?: number) => Promise<UsageSummaryPayload>
   // Conversation history.
   getConversations: () => Promise<ConversationSummary[]>
   loadConversation: (id: string) => Promise<Array<{ role: string; content: string; created_at: number }>>

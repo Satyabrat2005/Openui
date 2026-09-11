@@ -113,6 +113,11 @@ vi.mock('./models', async (importOriginal) => ({
   streamAnthropic: vi.fn(async () => 'cloud reply')
 }))
 vi.mock('./cloudFreeTier', () => ({ emitLocalUsage: vi.fn() }))
+vi.mock('./usageMeter', () => ({
+  checkAllowance: () => ({ allowed: true, used: 0, limit: null, remaining: null, unlimited: true, resetsAt: 0 }),
+  recordTurn: vi.fn(),
+  limitReachedMessage: () => ''
+}))
 vi.mock('./improvement', () => ({ classifyFeedbackSignal: () => null, getCustomSystemPrompt: () => null }))
 vi.mock('./trainingStore', () => ({
   TrajectoryRecorder: class {

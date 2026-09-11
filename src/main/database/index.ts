@@ -10,6 +10,7 @@ import * as feedback from './repositories/feedbackRepo'
 import * as training from './repositories/trainingRepo'
 import * as memory from './repositories/memoryRepo'
 import * as contacts from './repositories/contactRepo'
+import * as usage from './repositories/usageRepo'
 
 export function initDatabase(): void {
   initDb()
@@ -26,7 +27,8 @@ export const database = {
   feedback,
   training,
   memory,
-  contacts
+  contacts,
+  usage
 }
 
 export type { UserRow, UserData } from './repositories/userRepo'

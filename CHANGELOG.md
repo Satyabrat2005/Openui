@@ -5,6 +5,33 @@ the newest work lands under **Unreleased** until the next version bump.
 
 ## [Unreleased]
 
+### Added
+
+- **A daily usage allowance for local turns, and a record of how the app is
+  actually used.** Free is capped at **10 messages per day** on the user's own
+  machine; Pro and Enterprise are unlimited. Until now nothing metered local
+  inference at all — the existing limits only ever applied to the cloud proxy,
+  which is disabled in shipped builds — so Free and Pro were identical in
+  practice.
+
+  The allowance turns over at the user's **local** midnight, is checked before
+  anything is written (a refused turn leaves no conversation, no stored message
+  and no counted turn), and is charged **once per user message** rather than
+  once per model call, so a single question does not spend a day's allowance on
+  the planner and the refiner.
+
+  Usage history is kept rather than reset, so the app can report active days,
+  messages per active day, current streak and busiest day. A daily rollup event
+  carries **counts only** — no strings, therefore no paths — and is a no-op for
+  anyone who has opted out of analytics.
+
+  **This is a product boundary, not a security one**, and is documented as such:
+  the counter is a row in a database on hardware the user controls. Real
+  enforcement needs a server-issued key the client cannot proceed without.
+  See `docs/usage-limits-and-model-ownership.md`, which also records where our
+  own fine-tuned model stands and why shipping it through Ollama would give it
+  away.
+
 _Nothing yet._
 
 ## v7.3.0 — 2026-09-11

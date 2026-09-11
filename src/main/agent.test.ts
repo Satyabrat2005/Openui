@@ -155,7 +155,27 @@ vi.mock('./models', async (importOriginal) => ({
   resolveCloudModel: () => 'claude-sonnet-5',
   streamAnthropic: h.streamAnthropic
 }))
+const USAGE = vi.hoisted(() => ({
+  allowance: {
+    allowed: true,
+    used: 0,
+    limit: null as number | null,
+    remaining: null as number | null,
+    unlimited: true,
+    resetsAt: 0
+  },
+  recorded: [] as unknown[][]
+}))
 vi.mock('./cloudFreeTier', () => ({ emitLocalUsage: vi.fn() }))
+// The daily allowance is exercised in usageMeter.test.ts and, for the refusal
+// path through handleChat, in the "daily allowance" block below. Everything
+// else in this file predates metering and asserts on an unmetered turn, so the
+// default here is "allowed".
+vi.mock('./usageMeter', () => ({
+  checkAllowance: () => USAGE.allowance,
+  recordTurn: (...a: unknown[]) => USAGE.recorded.push(a),
+  limitReachedMessage: () => 'You have used all 10 of today’s messages.'
+}))
 vi.mock('./improvement', () => ({
   classifyFeedbackSignal: () => null,
   getCustomSystemPrompt: () => null
@@ -975,6 +995,77 @@ describe('handleChat — unknown tool → MCP fallback', () => {
     await pending
 
     expect(vi.mocked(callMcpTool)).not.toHaveBeenCalled()
+  })
+})
+
+// ── daily allowance ─────────────────────────────────────────────
+//
+// The meter's arithmetic lives in usageMeter.test.ts. What matters HERE is the
+// part only handleChat can get wrong: a refused turn must leave no trace and
+// must not reach the model.
+describe('handleChat — daily allowance', () => {
+  const permissive = (): typeof USAGE.allowance => ({
+    allowed: true,
+    used: 0,
+    limit: null,
+    remaining: null,
+    unlimited: true,
+    resetsAt: 0
+  })
+
+  beforeEach(() => {
+    USAGE.recorded.length = 0
+    USAGE.allowance = permissive()
+  })
+
+  // The mock is module-level, so a test that leaves the allowance exhausted
+  // would silently refuse every turn in the tests that follow this block — they
+  // would fail with "model never called", pointing nowhere near the cause.
+  afterEach(() => {
+    USAGE.allowance = permissive()
+  })
+
+  it('records one turn per user message, not per model call', () => {
+    // callModel also serves the planner and the refiner. Counting there would
+    // spend a whole daily allowance on a single request.
+    h.state.responses = ['Hello there.']
+    return handleChat(win, 'hi', 'free').then(() => {
+      expect(USAGE.recorded).toHaveLength(1)
+      expect(USAGE.recorded[0][0]).toBe('message')
+    })
+  })
+
+  it('refuses a turn over the limit without calling the model', async () => {
+    USAGE.allowance = { allowed: false, used: 10, limit: 10, remaining: 0, unlimited: false, resetsAt: 0 }
+    // The fake model shifts one entry off `responses` per call, so an untouched
+    // queue is proof the model was never reached.
+    h.state.responses = ['this should never be consumed']
+    await handleChat(win, 'one more thing', 'free')
+    expect(h.state.responses).toEqual(['this should never be consumed'])
+  })
+
+  it('leaves NO trace of a refused turn', async () => {
+    // No conversation row, no stored user message, no counted turn. Someone who
+    // upgrades and comes back should see a clean chat, not a log of refusals —
+    // and must never be charged against tomorrow for a turn that never ran.
+    USAGE.allowance = { allowed: false, used: 10, limit: 10, remaining: 0, unlimited: false, resetsAt: 0 }
+    const { database } = await import('./database')
+    vi.mocked(database.conversations.createConversation).mockClear()
+    vi.mocked(database.messages.addMessage).mockClear()
+
+    await handleChat(win, 'blocked message', 'free')
+
+    expect(database.conversations.createConversation).not.toHaveBeenCalled()
+    expect(database.messages.addMessage).not.toHaveBeenCalled()
+    expect(USAGE.recorded).toHaveLength(0)
+  })
+
+  it('tells the user they are out, and closes the turn cleanly', async () => {
+    USAGE.allowance = { allowed: false, used: 10, limit: 10, remaining: 0, unlimited: false, resetsAt: 0 }
+    await handleChat(win, 'blocked message', 'free')
+    // A refusal that never emits done would leave the composer spinning forever.
+    expect(sent('openui:chat:done')).toBe(true)
+    expect(lastArg('openui:chat:done')?.text).toMatch(/today/i)
   })
 })
 

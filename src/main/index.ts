@@ -3,6 +3,7 @@ import './loadEnv'
 import { app, BrowserWindow, Tray, Menu, ipcMain, nativeImage, session, shell, desktopCapturer, dialog } from 'electron'
 import { join } from 'path'
 import { registerAgentIPC, registerConversationIPC } from './agent'
+import { checkAllowance, summarise } from './usageMeter'
 import { startPromptRefiner, stopPromptRefiner } from './promptRefiner'
 import { registerVoiceIPC } from './voice'
 import { registerInterviewerIPC } from './interviewer'
@@ -440,6 +441,15 @@ app.whenReady().then(async () => {
   ipcMain.handle('openui:get-user', () => getCurrentUser())
   // Cached subscription tier ('free' when unknown/expired).
   ipcMain.handle('openui:get-tier', () => getUserTier())
+
+  // Usage: what this person has used today, and how regularly they use OpenUI.
+  // Read-only over IPC — the renderer can display the counter but must never be
+  // able to set it, since a compromised renderer setting `used = 0` would be
+  // the cheapest possible way around the allowance.
+  ipcMain.handle('openui:usage:today', () => checkAllowance(getUserTier()))
+  ipcMain.handle('openui:usage:summary', (_event, windowDays: unknown) =>
+    summarise(typeof windowDays === 'number' && windowDays > 0 ? Math.min(365, windowDays) : 30)
+  )
 
   // Email + password registration / sign-in. Credentials are handled ONLY here
   // in the main process; the renderer sends them once and receives back a
