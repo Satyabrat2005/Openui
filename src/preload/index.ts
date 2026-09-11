@@ -167,6 +167,22 @@ type UsageUpdatePayload = {
   remaining: number | null
   unlimited: boolean
 }
+type AllowancePayload = {
+  allowed: boolean
+  used: number
+  limit: number | null
+  remaining: number | null
+  unlimited: boolean
+  resetsAt: number
+}
+type UsageSummaryPayload = {
+  activeDays: number
+  windowDays: number
+  totalMessages: number
+  messagesPerActiveDay: number
+  currentStreak: number
+  busiestDay: { day: string; messages: number } | null
+}
 type ConversationSummary = {
   id: string
   title: string
@@ -515,6 +531,13 @@ const api = {
     ipcRenderer.on('openui:usage-update', fn)
     return (): void => { ipcRenderer.removeListener('openui:usage-update', fn) }
   },
+
+  // Read-only usage queries. There is deliberately no setter: the allowance is
+  // enforced in the main process, and a renderer able to write the counter
+  // would be the cheapest possible way around it.
+  getUsageToday: (): Promise<AllowancePayload> => ipcRenderer.invoke('openui:usage:today'),
+  getUsageSummary: (windowDays?: number): Promise<UsageSummaryPayload> =>
+    ipcRenderer.invoke('openui:usage:summary', windowDays),
 
   // ── Conversations ─────────────────────────────────────────────────────────
   getConversations: (): Promise<ConversationSummary[]> =>

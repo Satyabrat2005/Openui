@@ -29,6 +29,7 @@ import { database } from './database'
 import { clampTierToEntitlement } from './stripe/pricing'
 import { getCurrentUserId } from './stripe/subscriptionSync'
 import { emitLocalUsage } from './cloudFreeTier'
+import { checkAllowance, limitReachedMessage, recordTurn } from './usageMeter'
 import { withOllamaLock } from './ollamaLock'
 import { trackEvent } from './telemetry/posthog'
 import { Events } from './telemetry/events'
@@ -2023,6 +2024,31 @@ export function deriveConversationTitle(message: string): string {
  * status is pushed to the renderer as each tool moves working → done/error.
  */
 export async function handleChat(win: BrowserWindow, userMessage: string, tier: Tier, fromVoice = false): Promise<void> {
+  // Daily allowance, checked BEFORE anything is written.
+  //
+  // This is the only place metering belongs. `callModel` is shared with the
+  // planner, the prompt refiner and every step of an autonomous build, so
+  // counting there would spend a user's whole daily allowance on one request
+  // they only made once — the meter would be measuring our own architecture
+  // rather than their usage.
+  //
+  // Refusing early also means a blocked turn leaves NO trace: no conversation
+  // row, no user message in history, no reset event. A user who upgrades and
+  // retries sees a clean chat, not a graveyard of refusals.
+  const allowance = checkAllowance(tier)
+  if (!allowance.allowed) {
+    const refusal = limitReachedMessage(allowance)
+    emit(win, 'openui:usage-update', {
+      tier,
+      limit: allowance.limit,
+      remaining: 0,
+      unlimited: false
+    })
+    emit(win, 'openui:chat:done', { text: refusal, toolCall: null })
+    return
+  }
+  recordTurn('message')
+
   const rollbackLen = history.length // for clean rollback on failure
 
   if (!currentConversationId) {

@@ -101,6 +101,29 @@ export const migrations: Migration[] = [
           ON contact_identities(contact_id);
       `)
     }
+  },
+  {
+    // Local usage meter: one row per calendar day the user sent a chat turn.
+    //
+    // Rows are KEPT rather than reset, because "how often is this person using
+    // OpenUI" cannot be answered by a counter that erases yesterday. A single
+    // day's count enforces the cap; the history answers the frequency question.
+    //
+    // `day` is a local-time YYYY-MM-DD string, not a UTC timestamp: a daily
+    // allowance has to turn over at the user's midnight, or someone in UTC+13
+    // loses most of an evening to a day that already ended on the server.
+    name: '004_usage_daily',
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS usage_daily (
+          day TEXT PRIMARY KEY,
+          message_count INTEGER NOT NULL DEFAULT 0,
+          voice_count INTEGER NOT NULL DEFAULT 0,
+          first_at INTEGER,
+          last_at INTEGER
+        );
+      `)
+    }
   }
 ]
 

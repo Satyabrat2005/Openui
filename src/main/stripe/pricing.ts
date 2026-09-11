@@ -34,6 +34,7 @@ export const TIERS = {
     price: 0,
     description: 'Get started with AI assistance — no setup required',
     features: [
+      '10 messages per day on your own machine',
       '5 cloud messages per day',
       '120 voice minutes per month',
       'Basic OS automation',
@@ -41,6 +42,7 @@ export const TIERS = {
       'Voice input'
     ],
     dailyMessageLimit: 5,
+    localDailyMessageLimit: 10,
     monthlyVoiceMinutes: 120,
     models: {
       cloud: ['claude-3-5-haiku']
@@ -53,6 +55,7 @@ export const TIERS = {
     price: 19,
     description: 'Advanced AI with cloud models and vision',
     features: [
+      'Unlimited messages on your own machine',
       '500 cloud messages per day',
       '600 voice minutes per month',
       'Claude 3.5 Sonnet + GPT-4o',
@@ -61,6 +64,7 @@ export const TIERS = {
       'Priority processing'
     ],
     dailyMessageLimit: 500,
+    localDailyMessageLimit: Infinity,
     monthlyVoiceMinutes: 600,
     models: {
       cloud: ['claude-3-5-sonnet', 'gpt-4o']
@@ -82,6 +86,7 @@ export const TIERS = {
       'Priority support'
     ],
     dailyMessageLimit: Infinity,
+    localDailyMessageLimit: Infinity,
     monthlyVoiceMinutes: Infinity,
     models: {
       cloud: ['glm-5.2', 'claude-3-5-sonnet', 'gpt-4o']
@@ -106,6 +111,25 @@ export function isModelAllowedForTier(model: string, tier: TierId): boolean {
 /** The maximum cloud messages a tier may send per day (Infinity = unlimited). */
 export function dailyMessageLimit(tier: TierId): number {
   return TIERS[tier]?.dailyMessageLimit ?? TIERS.free.dailyMessageLimit
+}
+
+/**
+ * The maximum LOCAL (on-device) chat turns a tier may send per day.
+ *
+ * Deliberately a different number, and a different name, from
+ * `dailyMessageLimit`. That one meters turns served by our API keys through the
+ * chat-proxy — real money, enforced server-side, and disabled in this build.
+ * This one meters turns the user's own machine serves for free, so it exists
+ * purely to give the Free tier a shape. Conflating them would either bill a
+ * local turn or give away a cloud one.
+ *
+ * Enforced client-side (see usageMeter.ts) and therefore NOT a security
+ * boundary: the counter is a row in a SQLite file the user owns. It is a
+ * product boundary that stops casual overuse, and it must never be described
+ * as anything stronger.
+ */
+export function localDailyMessageLimit(tier: TierId): number {
+  return TIERS[tier]?.localDailyMessageLimit ?? TIERS.free.localDailyMessageLimit
 }
 
 /** The maximum voice/interview minutes a tier may use per calendar month (Infinity = unlimited). */
