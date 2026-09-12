@@ -47,6 +47,8 @@
  */
 
 /** A surface the tool registry is partitioned into. */
+import { CODING_TOOL_GROUPS, isCodingEnabled } from './capabilities'
+
 export type ToolGroup =
   | 'core'
   | 'screen'
@@ -363,6 +365,28 @@ export const FALLBACK_GROUPS: readonly ToolGroup[] = ['core', 'email', 'calendar
 export const ALL_GROUPS = Object.keys(GROUP_TOOLS) as ToolGroup[]
 
 /**
+ * The groups actually offered this turn.
+ *
+ * The coding surface (github, figma, python) is switched off by default — see
+ * capabilities.ts. Filtering HERE rather than at each call site means one
+ * predicate governs selection, the not-loaded index and the flat tool-name set
+ * together: a group that cannot be selected also cannot be advertised, and
+ * promising a capability the app then refuses is worse than staying quiet.
+ *
+ * `ALL_GROUPS` is deliberately left intact for `groupsForTool`, which answers
+ * "what group does this name belong to" — a question about the registry, not
+ * about what is switched on. Answering it from the filtered list would make a
+ * disabled tool look like an unknown one.
+ *
+ * Read at call time so a test can flip the env var per case.
+ */
+export function availableGroups(): ToolGroup[] {
+  if (isCodingEnabled()) return ALL_GROUPS
+  const off = new Set<string>(CODING_TOOL_GROUPS)
+  return ALL_GROUPS.filter((g) => !off.has(g))
+}
+
+/**
  * Pick the tool groups a turn needs from the user's words.
  *
  * `text` should be the user's message — optionally with earlier USER turns
@@ -378,7 +402,7 @@ export function selectToolGroups(text: string): Set<ToolGroup> {
   const normalized = normalizeForMatching(text)
   const selected = new Set<ToolGroup>(['core'])
   let matched = false
-  for (const group of ALL_GROUPS) {
+  for (const group of availableGroups()) {
     const trigger = GROUP_TRIGGERS[group]
     if (trigger && trigger.test(normalized)) {
       selected.add(group)
@@ -434,7 +458,7 @@ export function toolNamesForGroups(groups: Iterable<ToolGroup>): Set<string> {
  * deny the rest. Cheap (a few dozen tokens) and it keeps the app honest.
  */
 export function renderGroupIndex(active: Set<ToolGroup>): string {
-  const omitted = ALL_GROUPS.filter((g) => !active.has(g))
+  const omitted = availableGroups().filter((g) => !active.has(g))
   if (omitted.length === 0) return ''
   const list = omitted.map((g) => `${g} (${GROUP_SUMMARY[g]})`).join('; ')
   return (

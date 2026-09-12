@@ -544,6 +544,7 @@ export interface OpenUIApi {
   // Local daily allowance and usage history. Read-only by design — the
   // allowance is enforced in the main process, so a renderer able to write the
   // counter would be the cheapest possible way around it.
+  getCapabilities: () => Promise<{ coding: boolean }>
   getUsageToday: () => Promise<AllowancePayload>
   getUsageSummary: (windowDays?: number) => Promise<UsageSummaryPayload>
   // Conversation history.

@@ -21,6 +21,7 @@
  * ToolResult error instead of crashing the agent loop.
  */
 import { execFile, spawn } from 'node:child_process'
+import { CODING_DISABLED_MESSAGE, isCodingEnabled, isCodingTool } from './capabilities'
 import { promisify } from 'node:util'
 import { existsSync } from 'node:fs'
 import { readFile, writeFile, mkdir, rename, copyFile, unlink, readdir, stat } from 'node:fs/promises'
@@ -7541,6 +7542,15 @@ export async function executeTool(
   args: Record<string, unknown>,
   context: ExecutorContext = { tier: 'free' }
 ): Promise<ToolResult | PendingApprovalResult> {
+  // Capability gate BEFORE the tier gate: a tool the product does not offer at
+  // all must not be described as something a subscription would unlock. The
+  // prompt already omits these (see toolGroups.availableGroups), so reaching
+  // here means the model named one from memory rather than from its tool list —
+  // which is exactly the case a prompt-only gate would miss.
+  if (isCodingTool(name) && !isCodingEnabled()) {
+    return { ok: false, error: CODING_DISABLED_MESSAGE }
+  }
+
   // Tier gate FIRST: if the tool is out of the caller's tier, deny it up front
   // rather than prompting the user to approve an action they cannot actually run
   // (e.g. a free user should be told computer_use needs Pro, not asked to Allow

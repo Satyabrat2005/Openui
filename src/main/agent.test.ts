@@ -1069,6 +1069,51 @@ describe('handleChat — daily allowance', () => {
   })
 })
 
+// ── the builder route is off by default ───────────────────────────────────────
+//
+// Gating the TOOLS is not enough for the builder: runBuilderSession bypasses the
+// general tool path entirely and runs its own loop against executeCodingTool, so
+// a tool-level check never sees it. The route itself has to be gated.
+describe('handleChat — the coding surface is off by default', () => {
+  afterEach(() => {
+    delete process.env.OPENUI_ENABLE_CODING
+  })
+
+  it('does not start a build session for a build request', async () => {
+    clearHistory()
+    vi.mocked(executeCodingTool).mockClear()
+    h.state.responses = ['I can help with messages across your channels.']
+
+    await handleChat(win, 'build me a react app with a login page', 'free')
+
+    // Not one coding tool call: the request was answered by the normal
+    // assistant instead of silently scaffolding a project.
+    expect(vi.mocked(executeCodingTool)).not.toHaveBeenCalled()
+  })
+
+  it('still answers the turn rather than dropping it', async () => {
+    // The failure mode worth guarding: a gated route that returns early and
+    // emits nothing looks to the user exactly like the app hanging.
+    clearHistory()
+    h.state.responses = ['OpenUI works across your messages.']
+    await handleChat(win, 'build me a website', 'free')
+    expect(sent('openui:chat:done')).toBe(true)
+    expect(String(lastArg('openui:chat:done')?.text ?? '')).not.toBe('')
+  })
+
+  it('runs the build session again once the surface is enabled', async () => {
+    process.env.OPENUI_ENABLE_CODING = '1'
+    clearHistory()
+    vi.mocked(executeCodingTool).mockClear()
+    h.state.responses = [
+      JSON.stringify({ tool: 'write_file', args: { path: 'index.html', content: '<h1>hi</h1>' } }),
+      'Done.'
+    ]
+    await handleChat(win, 'build a website', 'free')
+    expect(vi.mocked(executeCodingTool)).toHaveBeenCalled()
+  })
+})
+
 // ── GPU-runner-crash detection (pure) ─────────────────────────────────────────
 describe('isOllamaRunnerCrash', () => {
   it('recognises the transport-level signatures of a crashed GPU runner', () => {
@@ -1491,7 +1536,19 @@ describe('looksLikeDesignerRequest', () => {
 // Regression, observed in a real local run: the model answered "TOOL RESULT
 // [write_file] success" by writing the same file again, 38 times, until the
 // step budget ran out and the user got a half-built project.
+// The builder route is switched OFF in the shipped product (capabilities.ts) —
+// OpenUI is a texting agent. These cases keep proving the loop's guardrails for
+// the enabled case, so re-enabling it cannot quietly reintroduce the identical-
+// write loop that was fixed in #165. That it does NOT fire by default is
+// asserted in its own block below.
 describe('runBuilderSession — repeated identical writes', () => {
+  beforeEach(() => {
+    process.env.OPENUI_ENABLE_CODING = '1'
+  })
+  afterEach(() => {
+    delete process.env.OPENUI_ENABLE_CODING
+  })
+
   const writeCall = JSON.stringify({ tool: 'write_file', args: { path: 'index.html', content: '<h1>hi</h1>' } })
 
   it('executes an identical write once, however many times the model asks', async () => {
