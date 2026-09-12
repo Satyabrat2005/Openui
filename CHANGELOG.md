@@ -5,6 +5,26 @@ the newest work lands under **Unreleased** until the next version bump.
 
 ## [Unreleased]
 
+### Added
+
+- **A live-channel acceptance harness** (`scripts/acceptance/live-channels.mjs`).
+  Slack, Telegram, Gmail, Calendar, the unified inbox and broadcast have only
+  ever run against mocks — pagination, rate-limit handling and token refresh
+  have never touched a real account. This drives the channel modules directly,
+  with no model in the loop, so a failure says which half broke.
+
+  Reads only; `--send` needs an explicit destination. Runs under plain Node
+  (`--experimental-strip-types`) because every channel resolves its credential
+  from the environment and lazy-requires the database, so no Electron, no
+  native module and no app profile are needed. Credentials are reported by
+  length and last four characters only, so a run is safe to paste into an issue.
+
+  Exit codes are distinct on purpose — 0 passed, 1 **tested and failed**,
+  2 **nothing tested**. The last one exists because a probe with no credentials
+  otherwise prints all green. It earned its keep immediately: a first draft
+  scored an `invalid_auth` Slack response as a PASS with "0 channels read", and
+  only a deliberate bad-token run exposed it.
+
 ### Changed
 
 - **OpenUI is a messaging assistant only — the coding surface is switched off.**
