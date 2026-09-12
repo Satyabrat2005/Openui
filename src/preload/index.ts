@@ -535,6 +535,7 @@ const api = {
   // Read-only usage queries. There is deliberately no setter: the allowance is
   // enforced in the main process, and a renderer able to write the counter
   // would be the cheapest possible way around it.
+  getCapabilities: (): Promise<{ coding: boolean }> => ipcRenderer.invoke('openui:capabilities'),
   getUsageToday: (): Promise<AllowancePayload> => ipcRenderer.invoke('openui:usage:today'),
   getUsageSummary: (windowDays?: number): Promise<UsageSummaryPayload> =>
     ipcRenderer.invoke('openui:usage:summary', windowDays),

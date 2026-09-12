@@ -30,6 +30,7 @@ import { clampTierToEntitlement } from './stripe/pricing'
 import { getCurrentUserId } from './stripe/subscriptionSync'
 import { emitLocalUsage } from './cloudFreeTier'
 import { checkAllowance, limitReachedMessage, recordTurn } from './usageMeter'
+import { isCodingEnabled } from './capabilities'
 import { withOllamaLock } from './ollamaLock'
 import { trackEvent } from './telemetry/posthog'
 import { Events } from './telemetry/events'
@@ -486,6 +487,11 @@ function renderSystemPrompt(groups: Set<ToolGroup>): string {
   // (The matching SCHEMA filter lives in selectSchemas.)
   const hasGithub = getGithubToken().length > 0
   const hasFigma = getFigmaToken().length > 0
+  // The coding surface is switched off in the shipped product. The file tools
+  // themselves stay — "open my Downloads folder" is an ordinary request — but
+  // the prose framing them as a write-code-in-VS-Code workflow goes, or the
+  // assistant keeps offering a job the product no longer does.
+  const codingSurface = isCodingEnabled()
 
   // Prose blocks are gated the same way the schemas are: a page of browser
   // workflow is useless on a turn with no browser tools loaded, and it is far
@@ -544,12 +550,17 @@ CRITICAL — opening an app or browser vs. automating a web page. These are DIFF
 - When the user asks to OPEN or LAUNCH an application or a browser for THEM to use ("open Edge", "open Chrome", "open my browser", "open WhatsApp"), ALWAYS use open_app. This launches their REAL installed app with their normal profile, logins and extensions.
 - NEVER use browser_navigate just to "open a browser". browser_navigate opens a SEPARATE automation window (the user's installed browser driven by OpenUI in a dedicated profile) — use it ONLY when YOU need to read or interact with a web page to complete a task the user asked you to do.
 
-Local folder coding workflow — use this when the user asks to open a local folder (Downloads/test, Desktop/project, etc.) in VS Code and write code there:
+${
+  codingSurface
+    ? `Local folder coding workflow — use this when the user asks to open a local folder (Downloads/test, Desktop/project, etc.) in VS Code and write code there:
 1. Resolve the folder path from the user's words. A path like "Downloads/test" means the user's home folder: "~/Downloads/test".
 2. If you need to confirm the folder exists, call list_directory on its parent (for Downloads/test, list_directory("Downloads")).
 3. Call open_folder_in_editor(path, editor:"vscode") to open that exact folder in VS Code. Do NOT call open_app("Visual Studio Code") by itself for this workflow.
 4. Actually create or edit files with write_file using paths inside that same folder, e.g. "Downloads/test/index.html". Opening VS Code does not write code.
 5. When writing is complete, reply with the file path(s) you wrote.
+`
+    : ''
+}
 
 ${has('browser') ? `Browser automation workflow — use this ONLY when you must drive a web page yourself to complete a task (booking flights, scraping a site, filling web forms, reading prices, cancelling subscriptions, logging into a site on the user's behalf). It opens the user's installed browser (Edge/Chrome) in an OpenUI-controlled profile; it is NOT the way to simply hand the user their browser. Playwright targets elements directly by CSS selector: faster and more precise than pixel clicking:
 1. Call connect_browser() once — the user approves attaching OpenUI to the automation browser (their logins persist in it between sessions).
@@ -2095,7 +2106,13 @@ export async function handleChat(win: BrowserWindow, userMessage: string, tier: 
   // through the OS tools — it runs its own coding loop below.
   // isBuildFollowUp keeps an in-flight build session together: without it an
   // incremental edit lands in the general loop with no sandbox context.
+  // `isCodingEnabled()` gates the whole coding surface off by default, so
+  // "build me a React app" is answered by the normal assistant rather than
+  // silently starting a sandbox session the product no longer offers. Gating
+  // the ROUTE (not just the tools) matters: the builder loop bypasses the
+  // general tool path entirely, so a tool-level check would never see it.
   const isBuild =
+    isCodingEnabled() &&
     !isPrReview &&
     !isDesigner &&
     !isPractice &&

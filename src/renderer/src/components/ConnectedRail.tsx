@@ -65,8 +65,31 @@ export default function ConnectedRail(): JSX.Element {
   const [busy, setBusy] = useState(false)
   const [auto, setAuto] = useState<AutonomousStatus>({ active: false, state: 'disabled' })
 
+  // The Autonomous toggle drives the coding surface, which is switched off in
+  // the shipped product (see main/capabilities.ts). Start from `false` and only
+  // reveal the control if the main process confirms coding is enabled: a control
+  // the main process will refuse is worse than no control, and defaulting to
+  // shown would flash it on every launch before the answer arrives.
+  const [codingEnabled, setCodingEnabled] = useState(false)
+
   // Live connection status from the shared store.
   useEffect(() => subscribeConnections(() => setConns(getConnections())), [])
+
+  useEffect(() => {
+    let live = true
+    window.openui
+      .getCapabilities()
+      .then((c) => {
+        if (live) setCodingEnabled(Boolean(c?.coding))
+      })
+      .catch(() => {
+        // Fail closed: if we cannot ask, do not offer it.
+        if (live) setCodingEnabled(false)
+      })
+    return () => {
+      live = false
+    }
+  }, [])
 
   // Autonomous Coding Mode: hydrate then subscribe.
   useEffect(() => {
@@ -151,7 +174,7 @@ export default function ConnectedRail(): JSX.Element {
         </div>
       </div>
 
-      {auto.active && (
+      {codingEnabled && auto.active && (
         <div className={`autonomous-banner ${auto.state}`}>
           {working ? <div className="autonomous-pulse" /> : <div className="autonomous-dot" />}
           <div className="autonomous-text">
@@ -161,7 +184,7 @@ export default function ConnectedRail(): JSX.Element {
       )}
 
       <div className="ou-rail-controls">
-        <Toggle label="Autonomous" on={enabled} onClick={toggleEnabled} />
+        {codingEnabled && <Toggle label="Autonomous" on={enabled} onClick={toggleEnabled} />}
         <Toggle label="I'm busy" on={busy} onClick={toggleBusy} />
       </div>
 

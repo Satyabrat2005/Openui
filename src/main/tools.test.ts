@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, afterEach, beforeAll, afterAll } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll } from 'vitest'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { mkdtemp, rm, stat } from 'node:fs/promises'
@@ -148,13 +148,44 @@ describe('executeTool — HITL approval gate', () => {
     // an insufficient-tier denial — is what each tool hits here. (A tool that is
     // both state-changing AND tier-gated, e.g. computer_use, is denied by the
     // tier gate first at a lower tier; that ordering is covered separately below.)
-    for (const name of STATE_CHANGING_TOOLS) {
-      const r = await executeTool(name, {}, { tier: 'enterprise' })
-      expect(r, `${name} must pause for approval`).toMatchObject({
-        status: 'pending_approval',
-        tool: name
-      })
+    // The coding surface is switched off by default (capabilities.ts) and its
+    // refusal lands BEFORE the HITL gate, deliberately — a tool the product does
+    // not offer must not be presented as one an approval would unlock. This test
+    // is about the HITL gate's coverage, so it runs with the surface enabled;
+    // that the refusal comes first is asserted in its own case below.
+    const prev = process.env.OPENUI_ENABLE_CODING
+    process.env.OPENUI_ENABLE_CODING = '1'
+    try {
+      for (const name of STATE_CHANGING_TOOLS) {
+        const r = await executeTool(name, {}, { tier: 'enterprise' })
+        expect(r, `${name} must pause for approval`).toMatchObject({
+          status: 'pending_approval',
+          tool: name
+        })
+      }
+    } finally {
+      if (prev === undefined) delete process.env.OPENUI_ENABLE_CODING
+      else process.env.OPENUI_ENABLE_CODING = prev
     }
+  })
+
+  // ── the coding surface is refused before anything else ──────────────────────
+  it('refuses a switched-off coding tool instead of asking for approval', async () => {
+    // The prompt already omits these, so arriving here means the model named one
+    // from memory rather than from its tool list — exactly the case a
+    // prompt-only gate would miss.
+    const r = await executeTool('run_python', { code: 'print(1)' }, { tier: 'enterprise' })
+    expect(r).toMatchObject({ ok: false })
+    expect((r as { error: string }).error).toMatch(/messaging assistant/i)
+  })
+
+  it('does not dress the refusal up as an upgrade prompt', async () => {
+    // A capability the product does not have must never look like one a
+    // subscription would unlock — that converts a scope decision into a
+    // false promise about what money buys.
+    const r = await executeTool('run_python', { code: 'print(1)' }, { tier: 'free' })
+    expect(r).not.toHaveProperty('tierRequired')
+    expect((r as { error: string }).error).not.toMatch(/subscription|upgrade|pro\b/i)
   })
 
   it('applies the tier gate BEFORE the HITL gate for a tier-gated state-changing tool', async () => {
@@ -863,7 +894,17 @@ describe('full browser-control tools', () => {
 })
 
 // ── run_python — interactive execution guardrails ─────────────────────────────
+// Switched OFF in the shipped product (capabilities.ts); these assert the
+// guardrails that apply when the coding surface is enabled, so re-enabling it
+// cannot quietly ship an ungated code-execution tool.
 describe('run_python — HITL gating and arg validation', () => {
+  beforeEach(() => {
+    process.env.OPENUI_ENABLE_CODING = '1'
+  })
+  afterEach(() => {
+    delete process.env.OPENUI_ENABLE_CODING
+  })
+
   it('is gated as both state-changing and destructive (confirm even under autopilot)', () => {
     expect(STATE_CHANGING_TOOLS.has('run_python')).toBe(true)
     expect(DESTRUCTIVE_TOOLS.has('run_python')).toBe(true)

@@ -13,8 +13,32 @@
  * failures observed driving the real app ("check my latest email" →
  * read_clipboard, "draft an email" → hunting for outlook.exe).
  */
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, afterEach } from 'vitest'
 import { homedir } from 'node:os'
+
+/**
+ * Run a case with the coding surface switched ON.
+ *
+ * github / figma / python are off by default (see capabilities.ts), so the cases
+ * below that assert on them are asserting what happens WHEN THE SURFACE IS
+ * ENABLED — still true, still worth keeping, and the thing that would silently
+ * rot if they were deleted instead. The default-off behaviour has its own block
+ * at the end of this file.
+ */
+const withCoding = <T>(fn: () => T): T => {
+  const prev = process.env.OPENUI_ENABLE_CODING
+  process.env.OPENUI_ENABLE_CODING = '1'
+  try {
+    return fn()
+  } finally {
+    if (prev === undefined) delete process.env.OPENUI_ENABLE_CODING
+    else process.env.OPENUI_ENABLE_CODING = prev
+  }
+}
+
+afterEach(() => {
+  delete process.env.OPENUI_ENABLE_CODING
+})
 
 vi.mock('electron', () => ({
   app: { getPath: () => homedir(), getName: () => 'OpenUI' },
@@ -173,10 +197,16 @@ describe('selectToolGroups — the expected tool is always in the loaded surface
     { prompt: 'mail that summary to Priya', expected: 'send_summary_email' }
   ]
 
+  // Wrapped in withCoding so the github rows still assert something real: this
+  // block is about the ROUTING being right for a phrasing, which stays worth
+  // proving for a surface that is switched off rather than removed. That the
+  // coding groups do not load by default is asserted separately below.
   for (const { prompt, expected } of cases) {
     it(`${JSON.stringify(prompt.slice(0, 52))} keeps ${expected}`, () => {
-      const loaded = toolNamesForGroups(selectToolGroups(prompt))
-      expect(loaded.has(expected)).toBe(true)
+      withCoding(() => {
+        const loaded = toolNamesForGroups(selectToolGroups(prompt))
+        expect(loaded.has(expected)).toBe(true)
+      })
     })
   }
 })
@@ -198,7 +228,11 @@ describe('selectToolGroups — picks the right surface', () => {
     ['run a python script to plot this', 'python'],
     ['turn this docx into a pdf', 'docs']
   ] as Array<[string, ToolGroup]>)('%s → %s', (text, group) => {
-    expect(selectToolGroups(text).has(group)).toBe(true)
+    // withCoding for the same reason as the block above: routing correctness is
+    // worth keeping for a surface that is off rather than gone.
+    withCoding(() => {
+      expect(selectToolGroups(text).has(group)).toBe(true)
+    })
   })
 
   // The domain half of an email address is not a website. Before normalizing it
@@ -248,13 +282,106 @@ describe('renderGroupIndex — capability honesty', () => {
   it('names the omitted groups so the assistant does not understate itself', () => {
     const index = renderGroupIndex(new Set<ToolGroup>(['core', 'email']))
     expect(index).toContain('slides')
-    expect(index).toContain('github')
     expect(index).toMatch(/genuinely CAN/i)
     // Must not advertise what IS loaded as missing.
     expect(index).not.toMatch(/\bemail \(/)
   })
 
+  // The index exists so the assistant does not understate itself. The mirror of
+  // that is that it must not OVERstate: naming a capability the app will then
+  // refuse is worse than never mentioning it, because the user goes and asks for
+  // the thing they were just told about.
+  it('does not advertise a surface that is switched off', () => {
+    const index = renderGroupIndex(new Set<ToolGroup>(['core', 'email']))
+    expect(index).not.toContain('github')
+    expect(index).not.toContain('figma')
+    expect(index).not.toContain('python')
+  })
+
+  it('advertises it again once the surface is enabled', () => {
+    withCoding(() => {
+      expect(renderGroupIndex(new Set<ToolGroup>(['core', 'email']))).toContain('github')
+    })
+  })
+
   it('is empty when nothing was trimmed', () => {
-    expect(renderGroupIndex(new Set(ALL_GROUPS))).toBe('')
+    withCoding(() => {
+      expect(renderGroupIndex(new Set(ALL_GROUPS))).toBe('')
+    })
+  })
+})
+
+// ── the coding surface is off by default ──────────────────────────────────────
+//
+// Purely a product decision: OpenUI is a texting agent, not a build tool. It is
+// NOT a prompt-size win — per-turn grouping already kept these schemas out of a
+// messaging turn, so the measured saving on messaging requests is zero. See the
+// numbers in capabilities.ts.
+describe('the coding surface is off by default', () => {
+  const codingGroups: ToolGroup[] = ['github', 'figma', 'python']
+
+  it('is not selectable, however plainly the user asks for it', () => {
+    for (const text of [
+      'list the open pull requests on my repo',
+      'review my figma file',
+      'run a python script to plot this',
+      'build me a react app with a login page'
+    ]) {
+      const groups = selectToolGroups(text)
+      for (const g of codingGroups) expect(groups.has(g), `${text} → ${g}`).toBe(false)
+    }
+  })
+
+  it('loads none of its tool schemas', () => {
+    const names = toolNamesForGroups(selectToolGroups('open a pull request from my branch'))
+    for (const n of ['open_pull_request', 'list_open_prs', 'run_python', 'design_preview']) {
+      expect(names.has(n), n).toBe(false)
+    }
+  })
+
+  it('leaves the messaging surface completely intact', () => {
+    // The whole point of the cut. If this ever fails, the flag has taken
+    // something with it that the product actually sells.
+    const cases: Array<[string, ToolGroup]> = [
+      ['summarise my inbox', 'inbox'],
+      ['send a whatsapp to Ashu', 'whatsapp'],
+      ['message the team on slack', 'slack'],
+      ['send a telegram to mum', 'telegram'],
+      ['draft an email to priya@example.com', 'email'],
+      ['what is on my calendar tomorrow', 'calendar']
+    ]
+    for (const [text, group] of cases) {
+      expect(selectToolGroups(text).has(group), `${text} → ${group}`).toBe(true)
+    }
+  })
+
+  it('actually removes the schemas rather than only hiding the group name', () => {
+    // A gate that dropped the group from the index but still loaded its schemas
+    // would pass every test above and change nothing about what the model sees.
+    // Measured on a coding request, which is where the difference exists at all.
+    const ask = 'open a pull request and then tell the team on slack'
+    const off = toolNamesForGroups(selectToolGroups(ask)).size
+    const on = withCoding(() => toolNamesForGroups(selectToolGroups(ask)).size)
+    expect(off).toBeLessThan(on)
+  })
+
+  it('does not change the surface of a messaging turn at all', () => {
+    // The honest scope of this cut: per-turn grouping already excluded the
+    // coding groups from messaging turns, so there is no saving here. Asserted
+    // so nobody later claims one — and so a future change that DOES start
+    // touching messaging prompts shows up as a failure here.
+    for (const ask of ['summarise my inbox', 'send a whatsapp to Ashu', 'message the team on slack']) {
+      const off = toolNamesForGroups(selectToolGroups(ask)).size
+      const on = withCoding(() => toolNamesForGroups(selectToolGroups(ask)).size)
+      expect(off, ask).toBe(on)
+    }
+  })
+
+  it('comes back in full when enabled, so nothing is lost', () => {
+    withCoding(() => {
+      expect(selectToolGroups('list the open pull requests on my repo').has('github')).toBe(true)
+      expect(selectToolGroups('review my figma file').has('figma')).toBe(true)
+      expect(selectToolGroups('run a python script to plot this').has('python')).toBe(true)
+    })
   })
 })

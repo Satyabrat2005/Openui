@@ -5,6 +5,33 @@ the newest work lands under **Unreleased** until the next version bump.
 
 ## [Unreleased]
 
+### Changed
+
+- **OpenUI is a messaging assistant only — the coding surface is switched off.**
+  The sandbox builder, the autonomous coding loop, and the GitHub, Figma and
+  `run_python` tools are no longer reachable. A "build me an app" request is
+  answered by the normal assistant instead of silently starting a build, the
+  Autonomous toggle is gone from the sidebar, the system prompt no longer offers
+  a write-code-in-VS-Code workflow, and a coding tool named by the model anyway
+  is refused with a plain statement of what the product does.
+
+  The refusal deliberately does **not** mention upgrading: this is a scope
+  decision, not a paywall, and implying money unlocks it would be a false
+  promise about what a subscription buys.
+
+  Document, slides, spreadsheet, Drive, media, archive and print tools all stay —
+  "summarise this thread and put it in a doc" is a messaging request that happens
+  to end in a file.
+
+  **A flag, not a deletion.** `OPENUI_ENABLE_CODING=1` restores the whole surface
+  with no code change, and its guardrails are still under test, so re-enabling it
+  cannot quietly ship an ungated code-execution tool. Honest measurement while
+  doing this: it is **not** a prompt-size win — per-turn tool grouping already
+  kept these schemas out of a messaging turn, so the saving on messaging requests
+  is zero. Numbers are recorded in `src/main/capabilities.ts`.
+
+  Plan and the licensing finding behind it: `docs/PHASE-5-PLAN.md`.
+
 ### Added
 
 - **A daily usage allowance for local turns, and a record of how the app is

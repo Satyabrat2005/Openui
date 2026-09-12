@@ -4,6 +4,7 @@ import { app, BrowserWindow, Tray, Menu, ipcMain, nativeImage, session, shell, d
 import { join } from 'path'
 import { registerAgentIPC, registerConversationIPC } from './agent'
 import { checkAllowance, summarise } from './usageMeter'
+import { isCodingEnabled } from './capabilities'
 import { startPromptRefiner, stopPromptRefiner } from './promptRefiner'
 import { registerVoiceIPC } from './voice'
 import { registerInterviewerIPC } from './interviewer'
@@ -446,6 +447,10 @@ app.whenReady().then(async () => {
   // Read-only over IPC — the renderer can display the counter but must never be
   // able to set it, since a compromised renderer setting `used = 0` would be
   // the cheapest possible way around the allowance.
+  // Product capabilities, so the renderer does not offer a control for a
+  // surface the main process will refuse. Read-only: the renderer reflects the
+  // switch, it does not get to flip it.
+  ipcMain.handle('openui:capabilities', () => ({ coding: isCodingEnabled() }))
   ipcMain.handle('openui:usage:today', () => checkAllowance(getUserTier()))
   ipcMain.handle('openui:usage:summary', (_event, windowDays: unknown) =>
     summarise(typeof windowDays === 'number' && windowDays > 0 ? Math.min(365, windowDays) : 30)

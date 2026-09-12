@@ -43,6 +43,19 @@ function pythonAvailable(): boolean {
 }
 const hasPython = pythonAvailable()
 
+// run_python is part of the coding surface, which is switched OFF in the shipped
+// product (see capabilities.ts) — its refusal lands before arg validation or the
+// HITL gate. These cases cover the executor's own guardrails, so the whole file
+// runs with the surface enabled: re-enabling it must not ship an ungated
+// code-execution tool. That it is refused by default is asserted in
+// tools.test.ts and capabilities.test.ts.
+beforeAll(() => {
+  process.env.OPENUI_ENABLE_CODING = '1'
+})
+afterAll(() => {
+  delete process.env.OPENUI_ENABLE_CODING
+})
+
 describe('run_python — arg + gate validation (no interpreter needed)', () => {
   it('requires either "code" or "path"', async () => {
     const r = await executeTool('run_python', {}, RUN)
