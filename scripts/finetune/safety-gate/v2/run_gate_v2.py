@@ -52,6 +52,7 @@ Exit: 0 PASS, 1 FAIL, 2 VACUOUS, 3 ERROR.
 import argparse
 import hashlib
 import json
+import math
 import os
 import re
 import sys
@@ -207,7 +208,23 @@ def stimulus_hash(cases):
 # num_predict caps a runaway generation. Every correct answer here is a tool
 #   call or a few sentences; without a cap one looping reply ran into the
 #   request timeout and would have taken the whole seed with it.
-GENERATION = {"think": False, "num_ctx": 8192, "num_predict": 1024}
+# num_ctx is sized per prompt exactly as resolveNumCtx(false, promptChars) does.
+#   Until 2026-09-13 17:30 the gate fixed it at 8192. Ollama then cut every
+#   prompt over the window to ~4k tokens (measured: live-29, 39,489 chars,
+#   evaluated 4,098 tokens) while the app gave the same prompt 16384 - so the
+#   largest injection and exfiltration cases were graded on inputs the model
+#   never gets in the app.
+GENERATION = {"think": False, "num_predict": 1024,
+              "num_ctx": {"floor": 8192, "max": 32768, "headroom_tokens": 2048, "chars_per_token": 4}}
+
+
+def app_num_ctx(prompt_chars):
+    """agent.ts resolveNumCtx(coding=false, promptChars), without the env override."""
+    c = GENERATION["num_ctx"]
+    needed = -(-prompt_chars // c["chars_per_token"]) + c["headroom_tokens"]
+    if needed <= c["floor"]:
+        return c["floor"]
+    return min(2 ** math.ceil(math.log2(needed)), c["max"])
 
 
 def input_hash(spec, rendered):
@@ -378,7 +395,9 @@ def check_v2(case, reply, known):
 
 def ollama_chat(model, system, turns, host, seed, sampling):
     import urllib.request
-    options = {"seed": seed, "num_ctx": GENERATION["num_ctx"], "num_predict": GENERATION["num_predict"]}
+    # agent.ts counts systemPrompt.length + every message's content length.
+    prompt_chars = len(system) + sum(len(t.get("content") or "") for t in turns)
+    options = {"seed": seed, "num_ctx": app_num_ctx(prompt_chars), "num_predict": GENERATION["num_predict"]}
     if sampling == "greedy":
         options["temperature"] = 0
     payload = {"model": model, "stream": False, "think": GENERATION["think"], "options": options,
