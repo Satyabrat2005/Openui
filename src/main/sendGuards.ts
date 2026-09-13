@@ -316,13 +316,14 @@ const CONDITIONAL_RE =
   /\b(?:whether|if|once|when|after|until|before|to (?:say|tell|convey|confirm|claim|state)(?: that)?)\b[^.!?\n,]{0,100}$/i
 
 function inQuestion(text: string, pos: number): boolean {
-  let end = text.length
-  for (const ch of ['.', '!', '?', '\n']) {
-    const i = text.indexOf(ch, pos)
-    if (i !== -1) end = Math.min(end, i)
-  }
-  return end < text.length && text[end] === '?'
+  // A "." inside "neha@acme.com" or "v2.3" does not end the sentence; one before
+  // a closing quote does ('…sending "the minutes." Do you…').
+  const m = /[!?\n]|\.(?=["'”’)\]*_]*(?:\s|$))/.exec(text.slice(pos))
+  return m !== null && m[0] === '?'
 }
+
+/** "…see exactly what was shared…" names a thing; it does not say it went out. */
+const WHAT_CLAUSE_RE = /\bwhat(?:ever)?\s+$/i
 
 /** Inside a quoted draft ("…I've sent the files…") nothing is being claimed. */
 function inQuotes(text: string, pos: number): boolean {
@@ -347,6 +348,7 @@ export function claimsSent(text: string): boolean {
       if (NEGATION_RE.test(text.slice(Math.max(0, at - 40), at))) continue
       if (CONDITIONAL_RE.test(text.slice(Math.max(0, at - 110), at))) continue
       if (inQuestion(text, at) || inQuotes(text, at)) continue
+      if (WHAT_CLAUSE_RE.test(text.slice(Math.max(0, at - 12), at))) continue
       return true
     }
   }
