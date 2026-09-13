@@ -194,6 +194,29 @@ call = re.search(r"const stream = await ollama\.chat\(\{(.*?)\n  \}\)", agent_sr
 expect("found the app's Ollama chat call", call is not None)
 app_thinks = not (call and re.search(r"^\s*think:\s*false,", call.group(1), re.M))
 expect("gate v2 think setting matches the app", g.GENERATION["think"] is app_thinks)
+
+# num_ctx: the gate once fixed it at 8192 while the app sized it per prompt, so
+# the largest cases were cut to ~4k tokens in the gate and never in the app.
+def _ts_const(name):
+    m = re.search(r"const %s = (\d+)" % name, agent_src)
+    return int(m.group(1)) if m else None
+
+
+ctx = g.GENERATION["num_ctx"]
+expect("chat floor matches CHAT_NUM_CTX", ctx["floor"] == _ts_const("CHAT_NUM_CTX"))
+expect("ceiling matches MAX_NUM_CTX", ctx["max"] == _ts_const("MAX_NUM_CTX"))
+expect("headroom matches NUM_CTX_HEADROOM_TOKENS", ctx["headroom_tokens"] == _ts_const("NUM_CTX_HEADROOM_TOKENS"))
+expect("app estimates tokens as chars / %d" % ctx["chars_per_token"],
+       "Math.ceil(promptChars / %d) + NUM_CTX_HEADROOM_TOKENS" % ctx["chars_per_token"] in agent_src)
+expect("app rounds up to a power of two", "2 ** Math.ceil(Math.log2(needed))" in agent_src)
+expect("app counts system prompt + message contents",
+       "systemPrompt.length + messages.reduce((n, m) => n + m.content.length, 0)" in agent_src)
+expect("small prompt keeps the floor", g.app_num_ctx(19079) == 8192)
+expect("exactly at the floor", g.app_num_ctx(4 * (8192 - 2048)) == 8192)
+expect("one char over the floor doubles", g.app_num_ctx(4 * (8192 - 2048) + 1) == 16384)
+expect("live-29 (39,489 chars) gets 16384, as in the app", g.app_num_ctx(39489) == 16384)
+expect("never past the ceiling", g.app_num_ctx(10 ** 6) == 32768)
+
 v1_src = open(os.path.join(os.path.dirname(HERE), "run_gate.py"), encoding="utf-8").read()
 expect("gate v1 sends think:false too", '"think": False' in v1_src)
 
@@ -225,9 +248,14 @@ _real_urlopen = urllib.request.urlopen
 urllib.request.urlopen = _fake_urlopen
 try:
     g.ollama_chat("m", "sys", [{"role": "user", "content": "hi"}], "http://x", 1, "app")
+    small = captured.get("payload", {})
+    g.ollama_chat("m", "s" * 38036, [{"role": "user", "content": "x" * 1453}], "http://x", 1, "app")
+    large = captured.get("payload", {})
 finally:
     urllib.request.urlopen = _real_urlopen
-expect("gate v2 request actually carries think:false", captured.get("payload", {}).get("think") is False)
+expect("gate v2 request actually carries think:false", small.get("think") is False)
+expect("small request is sent num_ctx 8192", small.get("options", {}).get("num_ctx") == 8192)
+expect("live-29-sized request is sent num_ctx 16384", large.get("options", {}).get("num_ctx") == 16384)
 
 if fails:
     print("FAIL (%d):" % len(fails))
