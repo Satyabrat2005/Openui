@@ -117,7 +117,7 @@ vi.mock('./planner', () => ({
 }))
 
 vi.mock('./mcp-client', () => ({
-  getMcpToolSchemas: () => [],
+  getMcpToolSchemas: vi.fn(() => []),
   callMcpTool: vi.fn(async () => ({ ok: false, error: 'no mcp' }))
 }))
 
@@ -213,7 +213,7 @@ import {
 import { figmaBuildToolSchemas } from './figmaBuild'
 import { trackEvent } from './telemetry/posthog'
 import { Events } from './telemetry/events'
-import { callMcpTool } from './mcp-client'
+import { callMcpTool, getMcpToolSchemas } from './mcp-client'
 import { executeCodingTool } from './codingTools'
 import { grantOrigin } from './browser/consent'
 
@@ -284,6 +284,7 @@ beforeEach(() => {
   h.streamAnthropic.mockClear()
   vi.mocked(trackEvent).mockClear()
   vi.mocked(callMcpTool).mockClear().mockResolvedValue({ ok: false, error: 'no mcp' })
+  vi.mocked(getMcpToolSchemas).mockReset().mockReturnValue([])
   vi.mocked(grantOrigin).mockClear()
   // isOllamaRunning() probes GET /api/tags — report the local engine as up so
   // the loop streams from our mocked Ollama transport instead of the "start
@@ -969,6 +970,9 @@ describe('handleChat — unknown tool → MCP fallback', () => {
   beforeEach(() => {
     registerAgentIPC(win)
     h.executeTool.mockResolvedValue({ ok: false, error: 'Unknown tool "mcp_thing".' })
+    vi.mocked(getMcpToolSchemas).mockReturnValue([
+      { name: 'mcp_thing', description: 'an MCP tool', parameters: { type: 'object', properties: {}, required: [] } }
+    ] as never)
   })
 
   it('asks for approval before invoking an MCP tool, and invokes it on Allow', async () => {
@@ -995,6 +999,60 @@ describe('handleChat — unknown tool → MCP fallback', () => {
     await pending
 
     expect(vi.mocked(callMcpTool)).not.toHaveBeenCalled()
+  })
+})
+
+// qwen3.5 called `slack_send` for send_slack_message. No MCP server has it, so
+// the approval card it used to get asked the user to allow a tool that does not
+// exist. The model is told instead, with the name it meant.
+describe('handleChat — a hallucinated tool name', () => {
+  beforeEach(() => {
+    registerAgentIPC(win)
+    h.executeTool.mockResolvedValue({ ok: false, error: 'Unknown tool "open_ap".' })
+  })
+
+  it('asks nobody to approve it, and tells the model the real name', async () => {
+    h.state.responses = ['{"tool":"open_ap","args":{"name":"Slack"}}', 'Sorry, that tool name was wrong.']
+    await handleChat(win, 'open slack', 'free')
+
+    expect(sent('openui:hitl:request')).toBe(false)
+    expect(vi.mocked(callMcpTool)).not.toHaveBeenCalled()
+    const second = (h.ollamaChat.mock.calls[1] as unknown as [{ messages: Array<{ content: string }> }])[0].messages
+    const fed = second.map((m) => m.content).join('\n')
+    expect(fed).toMatch(/Unknown tool "open_ap": no such tool exists, so nothing ran\. Did you mean open_app\?/)
+  })
+})
+
+// Gate v2 (app mode): qwen3.5 answered "send 'happy diwali!' to #general" with
+// "Would you like me to send both of these now?" — the user had said exactly what
+// and to whom, and the app asks for confirmation itself. The rules live in
+// replyRecovery.ts; these pin that the loop applies them once, and only then.
+describe('handleChat — a reply that stalls in prose gets one retry', () => {
+  beforeEach(() => registerAgentIPC(win))
+  const modelCalls = (): number => h.ollamaChat.mock.calls.length
+  const fedOnCall = (n: number): string =>
+    (h.ollamaChat.mock.calls[n] as unknown as [{ messages: Array<{ content: string }> }])[0].messages.map((m) => m.content).join('\n')
+
+  it('retries a "should I send?" when the user named the recipient, and the retry can act', async () => {
+    h.state.autonomy = 'full-auto'
+    h.state.responses = ['Would you like me to send "running late" to #eng now?', '{"tool":"open_app","args":{"name":"Slack"}}', 'Posted.']
+    await handleChat(win, 'post "running late" in #eng', 'free')
+
+    expect(modelCalls()).toBe(3)
+    expect(fedOnCall(1)).toMatch(/Do not ask them to confirm in chat/)
+    expect(h.executeTool).toHaveBeenCalledWith('open_app', { name: 'Slack' }, expect.anything())
+  })
+
+  it('does not retry when the user never named who it goes to', async () => {
+    h.state.responses = ['Would you like me to send it to your boss?']
+    await handleChat(win, "email my boss that I'm late", 'free')
+    expect(modelCalls()).toBe(1)
+  })
+
+  it('retries at most once per turn', async () => {
+    h.state.responses = ['Would you like me to send it to #eng?', 'Should I go ahead and post it to #eng?', 'unused']
+    await handleChat(win, 'post "hi" in #eng', 'free')
+    expect(modelCalls()).toBe(2)
   })
 })
 

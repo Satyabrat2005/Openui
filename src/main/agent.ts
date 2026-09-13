@@ -68,8 +68,11 @@ import {
   extractFirstJsonObject,
   looksLikeAttemptedToolCall,
   StreamGate,
+  suggestToolNames,
+  unknownToolError,
   type ToolCall
 } from './toolCallParser'
+import { recoveryNudge } from './replyRecovery'
 
 // Re-exported so existing importers (autonomous.ts, planner.ts) keep resolving
 // these against `./agent`; the implementations now live in the pure, unit-tested
@@ -2329,6 +2332,8 @@ export async function handleChat(win: BrowserWindow, userMessage: string, tier: 
     const completedStepIds = new Set<string>()
     let continuationNudges = 0
     const MAX_CONTINUATION_NUDGES = 2
+    // One retry per turn for a reply that stalled in prose (replyRecovery.ts).
+    let recoveryNudged = false
 
     // Precondition-failure tracking: a tool failing because something it needs
     // (an app, a connection, a config value, a subscription tier) isn't there
@@ -2386,6 +2391,31 @@ export async function handleChat(win: BrowserWindow, userMessage: string, tier: 
           continuationNudges++
           history.push({ role: 'user', content: buildContinuationNudge(unfinished) })
           continue
+        }
+
+        // "Would you like me to send it?" after the user said exactly what to
+        // send and to whom, "Let me send…" with no call, or a call under a name
+        // that does not exist: one bounded retry. When it is safe to push towards
+        // acting is decided in replyRecovery.ts, not here.
+        if (!recoveryNudged && !planSteps) {
+          const known = knownToolNames()
+          const recovery = recoveryNudge({
+            userText: userMessage,
+            reply: responseText,
+            conversationText: history
+              .slice(0, -1)
+              .map((m) => m.content)
+              .join('\n'),
+            knownTools: known,
+            suggest: (name) => suggestToolNames(name, known)
+          })
+          if (recovery) {
+            recoveryNudged = true
+            console.log(`[agent] turn ${turn}: stalled in prose (${recovery.reason}), one retry`)
+            emit(win, 'openui:chat:chunk', '\n\n')
+            history.push({ role: 'user', content: recovery.message })
+            continue
+          }
         }
 
         if (planSteps) settlePlanHonest(win, planSteps, completedStepIds)
@@ -2570,7 +2600,14 @@ export async function handleChat(win: BrowserWindow, userMessage: string, tier: 
       // server can run arbitrary local actions — so gate the call the same way
       // built-in state-changing tools are gated: outside autopilot (full-auto or
       // an approved plan) require one human confirmation before invoking it.
-      if (!result.ok && result.error?.startsWith('Unknown tool')) {
+      //
+      // A name no MCP server exposes is a hallucination (qwen3.5 has called
+      // `slack_send`). Asking the user to approve it showed a confirmation card
+      // for a tool that does not exist; tell the model instead, with the names it
+      // probably meant, so it can retry.
+      if (!result.ok && result.error?.startsWith('Unknown tool') && !getMcpToolSchemas().some((s) => s.name === toolCall.tool)) {
+        result = { ok: false, error: unknownToolError(toolCall.tool, knownToolNames()) }
+      } else if (!result.ok && result.error?.startsWith('Unknown tool')) {
         const mcpApproved = bypassHitl || (await waitForHitlApproval(win, toolCall.tool, toolCall.args))
         if (mcpApproved) {
           result = await callMcpTool(toolCall.tool, toolCall.args)
