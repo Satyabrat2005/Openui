@@ -21,7 +21,8 @@ describe('HitlModal — recipient warnings', () => {
     render(<HitlModal request={{ ...base, warnings: [warning] }} onAllow={noop} onDeny={noop} />)
     const box = screen.getByTestId('hitl-recipient-warnings')
     expect(box.getAttribute('role')).toBe('alert')
-    expect(box.textContent).toContain('Check the recipient')
+    // not "Check the recipient": the box also carries the staff-impersonation warning
+    expect(box.textContent).toContain('Check before you allow')
     expect(box.textContent).toContain(warning)
   })
 
