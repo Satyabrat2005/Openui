@@ -82,8 +82,12 @@ export function recipientsOf(tool: string, args: Record<string, unknown>): strin
   return out
 }
 
-/** "[Manager's Name]", "<>", "recipient" — a slot the model never filled in. */
-const PLACEHOLDER_RE = /^(?:\[[^\]]*\]|<\s*>|\{[^}]*\}|recipient|someone|unknown|tbd|n\/a|none|null|undefined)$/i
+/**
+ * "[Manager's Name]", "<your-brother-chat-id>", "recipient" — a slot the model
+ * never filled in. An angle-bracketed value with an @ is an address
+ * ("<jane@acme.com>"), not a slot.
+ */
+const PLACEHOLDER_RE = /^(?:\[[^\]]*\]|<[^<>@]*>|\{[^}]*\}|recipient|someone|unknown|tbd|n\/a|none|null|undefined)$/i
 
 /**
  * The refusal for a send with no real primary recipient, or null when there is

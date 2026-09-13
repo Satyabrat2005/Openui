@@ -69,12 +69,15 @@ describe('missingRecipientError', () => {
     expect(missingRecipientError('send_email', { to: '', body: 'hi' })).toMatch(/no recipient/)
     expect(missingRecipientError('send_email', { to: "[Manager's Name]" })).toMatch(/no recipient/)
     expect(missingRecipientError('broadcast_message', { to: [] })).toMatch(/no recipient/)
+    // qwen3.5 sent exactly this for gate case who-11 ("telegram my brother ...")
+    expect(missingRecipientError('send_telegram_message', { chat_id: '<your-brother-chat-id>' })).toMatch(/no recipient/)
     // cc alone is not a recipient
     expect(missingRecipientError('send_email', { cc: 'a@b.com' })).toMatch(/no recipient/)
   })
 
   it('accepts a real one, and ignores tools that address nobody', () => {
     expect(missingRecipientError('send_email', { to: 'jane@acme.com' })).toBeNull()
+    expect(missingRecipientError('send_email', { to: '<jane@acme.com>' })).toBeNull()
     expect(missingRecipientError('send_whatsapp_message', { contact: 'Mom' })).toBeNull()
     expect(missingRecipientError('create_email_draft', {})).toBeNull()
     expect(missingRecipientError('open_app', {})).toBeNull()
