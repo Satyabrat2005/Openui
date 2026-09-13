@@ -175,7 +175,7 @@ for tag, want in (("qwen3.5:latest", "apache"), ("qwen2.5-coder:3b", "research")
     expect("real %s" % tag, lg.classify(text) == want, lg.classify(text))
 
 # ── the guard is actually wired in ───────────────────────────────────────────
-for script in ("build_ollama_model.py", "train_qlora.py", "train_lora.py"):
+for script in ("build_ollama_model.py", "train_qlora.py", "train_lora.py", "train_splen4b.py"):
     src = open(os.path.join(HERE, script), encoding="utf-8").read()
     expect("%s calls the guard" % script, "licence_guard" in src and "require(" in src)
 
