@@ -542,7 +542,8 @@ export async function readTelegramInbox(opts: {
       if (wanted && !chatMatches(msg.chat, wanted)) continue
       messages.push({
         chatId: String(msg.chat.id),
-        chatLabel: describeChat(msg.chat),
+        // Group and channel titles are chosen by whoever created the chat.
+        chatLabel: defangIncoming(describeChat(msg.chat)),
         sender: defangIncoming(describeSender(msg.from, msg.chat)),
         text: defangIncoming(msg.text ?? msg.caption ?? '(non-text message)'),
         at: fmtTime(msg.date)

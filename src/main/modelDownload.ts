@@ -51,6 +51,14 @@ export interface CatalogModel {
   purpose: string
   /** Approximate download size, for setting expectations before a long wait. */
   approxSize: string
+  /**
+   * Whose weights these are and under what licence, shown beside the model.
+   * Apache-2.0 requires the attribution to travel with redistribution; showing
+   * it where the user downloads the model is also simply honest — "Splen" is
+   * OpenUI's assistant, running on a third party's open model, not weights we
+   * trained from scratch. Full text: resources/THIRD_PARTY_MODEL_NOTICES.md.
+   */
+  attribution: string
 }
 
 /**
@@ -89,15 +97,17 @@ export function approxSizeLabel(bytes: number): string {
 export const MODEL_CATALOG: CatalogModel[] = [
   {
     id: DEFAULT_GENERAL_MODEL,
-    label: 'General assistant',
-    purpose: 'Everyday chat, planning and running tasks across your apps.',
-    approxSize: approxSizeLabel(MODEL_LAYER_BYTES[DEFAULT_GENERAL_MODEL])
+    label: 'Splen',
+    purpose: 'Reads, summarises and replies to your messages across WhatsApp, Telegram, Slack and Gmail.',
+    approxSize: approxSizeLabel(MODEL_LAYER_BYTES[DEFAULT_GENERAL_MODEL]),
+    attribution: 'Runs Qwen3.5 by Alibaba Cloud · Apache License 2.0'
   },
   {
     id: DEFAULT_CODE_MODEL,
     label: 'Coding assistant',
     purpose: 'Writing and editing code in the autonomous builder.',
-    approxSize: approxSizeLabel(MODEL_LAYER_BYTES[DEFAULT_CODE_MODEL])
+    approxSize: approxSizeLabel(MODEL_LAYER_BYTES[DEFAULT_CODE_MODEL]),
+    attribution: 'Runs Qwen2.5-Coder by Alibaba Cloud · Apache License 2.0'
   }
 ]
 

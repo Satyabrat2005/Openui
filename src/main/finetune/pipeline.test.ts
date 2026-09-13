@@ -66,14 +66,33 @@ let dir: string
 beforeEach(() => {
   settings.clear()
   dir = mkdtempSync(join(tmpdir(), 'openui-llamacpp-'))
-  // Reachable Ollama, so the skip reason under test is the one we mean.
-  vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => ({ models: [] }) })))
+  // Reachable Ollama with an Apache-licensed base, so the skip reason under
+  // test is the one we mean.
+  stubOllama('Apache License\n Version 2.0, January 2004')
   delete process.env.LLAMACPP_DIR
+  // The pass only exists for the coding model; switched off, nothing runs.
+  process.env.OPENUI_ENABLE_CODING = '1'
 })
 afterEach(() => {
   rmSync(dir, { recursive: true, force: true })
   vi.unstubAllGlobals()
+  delete process.env.OPENUI_ENABLE_CODING
 })
+
+/** /api/tags answers; /api/show reports `licence` (null = the call fails). */
+function stubOllama(licence: string | null): void {
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string) => {
+      if (String(url).endsWith('/api/show')) {
+        return licence === null
+          ? { ok: false, json: async () => ({}) }
+          : { ok: true, json: async () => ({ license: licence }) }
+      }
+      return { ok: true, json: async () => ({ models: [] }) }
+    })
+  )
+}
 
 /** Everything green except the thing each test is probing. */
 function enableFineTuning(): void {
@@ -125,6 +144,44 @@ describe('fineTuneSkipReason — GGUF converter precondition', () => {
   // The earlier gates must still win, so the new check can't mask them.
   it('still reports the opt-in gate first', async () => {
     expect(await fineTuneSkipReason()).toMatch(/not enabled/)
+  })
+})
+
+describe('fineTuneSkipReason — capability and licence gates', () => {
+  function readyWithConverter(): void {
+    enableFineTuning()
+    writeFileSync(join(dir, 'convert_lora_to_gguf.py'), '# stub')
+    settings.set('finetune_llamacpp_dir', dir)
+  }
+
+  it('control: runs when coding is on and the base is Apache', async () => {
+    readyWithConverter()
+    expect(await fineTuneSkipReason()).toBeNull()
+  })
+
+  it('does not train while the coding surface is switched off', async () => {
+    readyWithConverter()
+    delete process.env.OPENUI_ENABLE_CODING
+    expect(await fineTuneSkipReason()).toMatch(/coding model is switched off/)
+  })
+
+  // The route openui-splen:v2 took: a research-licensed base, inherited by FROM.
+  it('refuses a base whose licence is non-commercial', async () => {
+    readyWithConverter()
+    stubOllama('Qwen RESEARCH LICENSE AGREEMENT')
+    expect(await fineTuneSkipReason()).toMatch(/not commercially licensed \(research\)/)
+  })
+
+  it('refuses a base with no licence text', async () => {
+    readyWithConverter()
+    stubOllama('')
+    expect(await fineTuneSkipReason()).toMatch(/not commercially licensed \(unknown\)/)
+  })
+
+  it('refuses when the licence cannot be read at all', async () => {
+    readyWithConverter()
+    stubOllama(null)
+    expect(await fineTuneSkipReason()).toMatch(/could not read the licence/)
   })
 })
 

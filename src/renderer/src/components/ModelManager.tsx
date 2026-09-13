@@ -117,6 +117,11 @@ export default function ModelManager(): JSX.Element {
               <div className="ou-model-grow">
                 <div className="ou-model-name">{m.label}</div>
                 <div className="ou-model-purpose">{m.purpose}</div>
+                {m.attribution && (
+                  <div className="ou-model-attribution" data-testid={`model-attribution-${m.id}`}>
+                    {m.attribution}
+                  </div>
+                )}
               </div>
               {m.installed ? (
                 <span className="ou-model-ready" data-testid={`model-ready-${m.id}`}>

@@ -38,6 +38,7 @@ import { isTelegramConnected, readTelegramInbox } from './telegram'
 import { isSlackConnected, readSlackInbox } from './slack'
 import { isGmailConnected, findEmailThread, sendGmailMessage } from './gmail'
 import type { ExecutorContext, ToolResult, ToolSchema } from './tools'
+import { defangIncoming, wrapUntrustedMessages } from './untrustedMessages'
 
 /** Persisted setting key: see isUnifiedInboxEnabled. */
 export const UNIFIED_INBOX_SETTING_KEY = 'unified_inbox_enabled'
@@ -234,7 +235,9 @@ export function defaultInboxDeps(whatsapp: WhatsAppReaders): InboxDeps {
         }
       }
 
-      const senders = await whatsapp.unreadSenders()
+      // Chat-list names are OCR'd display names the SENDER chose — the same
+      // sender-name vector the API channels defang (untrustedMessages.ts).
+      const senders = (await whatsapp.unreadSenders()).map(defangIncoming)
       return {
         status: 'ok',
         items: senders.slice(0, scope.limit).map((name) => ({
@@ -515,10 +518,15 @@ function parseChannels(
  * have to re-parse.
  */
 export function renderSummary(summary: InboxSummaryData): string {
+  // Every `from`, `source` and `preview` below was written by someone other
+  // than the user. The per-channel readers already defang that text
+  // (untrustedMessages.ts); the markers tell the model where other people's
+  // words begin and end. This is the product's flagship read, and it was the
+  // one path that reached the model without them.
   return [
     'Unified inbox read (structured). Compose the summary from this; do not invent items,',
     'and when a channel status is not "ok", say you could not check it rather than implying silence.',
-    JSON.stringify(summary, null, 2)
+    wrapUntrustedMessages('the unified inbox', JSON.stringify(summary, null, 2))
   ].join('\n')
 }
 

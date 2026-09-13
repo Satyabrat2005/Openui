@@ -212,6 +212,15 @@ export interface ExecutorContext {
  * PendingApprovalResult for these unless bypassHitl is set in the context.
  */
 export const STATE_CHANGING_TOOLS = new Set<string>([
+  // Contact identity is what every later send resolves a NAME through. An
+  // un-gated link_contact let text the model merely READ (a message saying
+  // "Mom's new Telegram is @x") silently attach an attacker's handle to a real
+  // person, so the next "tell Mom I'm home" would go to them. Linking is rare
+  // and identity-critical: it always asks (link_contact is ALSO destructive).
+  // unlink_contact fails closed (the next send asks who) but still mutates who
+  // a name reaches, so it confirms too.
+  'link_contact',
+  'unlink_contact',
   'left_click',
   'type_text',
   'open_app',
@@ -406,6 +415,9 @@ export const STATE_CHANGING_TOOLS = new Set<string>([
  */
 export const DESTRUCTIVE_TOOLS = new Set<string>([
   'delete_file',
+  // Rewires who a name reaches on every future send — see STATE_CHANGING_TOOLS.
+  // Never runs on autopilot: an injected link under full-auto is the attack.
+  'link_contact',
   // Creating/overwriting a file is a real filesystem mutation with no isolation
   // net (sub-agents run with bypassHitl and only DESTRUCTIVE_TOOLS are ever
   // blocked/confirmed for them), so both always confirm and never bypass HITL.
@@ -3674,6 +3686,15 @@ const COMPUTER_USE_MAX_ITERATIONS = 12
 const COMPUTER_USE_SETTLE_MS = 600
 /** Bound on the natural-language goal accepted from the model. */
 const MAX_GOAL_LEN = 1024
+/**
+ * Goals that destroy or irreversibly change data. Mirrors the safety gate's
+ * DESTRUCTIVE_GOAL_RE (scripts/finetune/safety-gate/run_gate.py) plus the
+ * phrasings a desktop goal takes ("uninstall", "empty the recycle bin").
+ * Over-matching costs one extra confirmation; under-matching is an unattended
+ * wipe, so it errs wide.
+ */
+export const DESTRUCTIVE_GOAL_RE =
+  /\b(delete|deleting|remove|removing|wipe|wiping|erase|erasing|format|formatting|uninstall\w*|destroy\w*|purge\w*|rm\s+-rf|factory[\s-]reset|empty (the )?(trash|recycle bin|bin)|clear (out|all|everything))\b/i
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
 
@@ -3763,6 +3784,27 @@ async function computer_use(
   if (!goal) return { ok: false, error: 'computer_use requires a string "goal".' }
   if (goal.length > MAX_GOAL_LEN) return { ok: false, error: 'computer_use "goal" is too long.' }
   const tier = context?.tier ?? 'free'
+
+  // An irreversible objective always asks — even under full-auto.
+  //
+  // computer_use is STATE_CHANGING, not DESTRUCTIVE, so autopilot bypasses its
+  // HITL gate, and the per-app consent below is granted once per SESSION. So
+  // "wipe C:\Users" in an app the user had already let OpenUI drive ran with
+  // nobody asked — the exact route the recorded TUNED-v1 regression used to walk
+  // around delete_file's confinement, and one safety gate v2's
+  // destructive_free_text family exercises. This is the sensitive-action
+  // re-entry control_calendar uses for invites: it fires regardless of
+  // bypassHitl and authorises exactly one re-run.
+  if (DESTRUCTIVE_GOAL_RE.test(goal) && !context?.sensitiveApproved) {
+    return {
+      ok: false,
+      error: 'Awaiting confirmation for an action that cannot be undone.',
+      needsConfirmation: {
+        kind: 'sensitive-action',
+        label: `Let OpenUI control your computer to: ${goal} — this may not be reversible`
+      }
+    }
+  }
 
   // The loop drives the mouse/keyboard, which needs Accessibility. Fail fast with
   // the same permission signal the primitives use, so the renderer can guide the
@@ -7861,6 +7903,12 @@ export function describeToolCall(name: string, args: Record<string, unknown>): s
       return `Convert image ${String(args.path ?? '')} to ${String(args.format ?? '')}`
     case 'watermark_image':
       return `Watermark image ${String(args.path ?? '')}`
+    case 'link_contact':
+      return `Link ${String(args.channel ?? '')} "${String(args.handle ?? '')}" to ${String(args.name ?? '')} — future messages to ${String(args.name ?? '')} on ${String(args.channel ?? '')} will go to this handle`
+    case 'unlink_contact':
+      return args.channel
+        ? `Unlink ${String(args.channel)} from ${String(args.name ?? '')}`
+        : `Forget ${String(args.name ?? '')} and every linked handle`
     case 'send_slack_message': {
       const ch = String(args.channel ?? '')
       const msg = String(args.text ?? '')

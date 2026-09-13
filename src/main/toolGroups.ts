@@ -305,7 +305,11 @@ const GROUP_TRIGGERS: Partial<Record<ToolGroup, RegExp>> = {
     /\b(calendar|schedule|scheduling|reschedul\w*|meeting|appointment|event|standup|stand-?up|invite|invitation|availabilit\w*|free time|block (out|off)|busy|agenda|1:1|one.on.one|\bcall\b)\b/i,
   whatsapp: /\bwhats\s?app\b|\bwa\b/i,
   telegram: /\btelegram\b/i,
-  slack: /\bslack\b/i,
+  // A channel named the way Slack users name it: "#eng", "#client-acme". Must
+  // start with a letter, so "#1 priority" and "item #4" do not pull Slack in.
+  // Found by safety gate v2: "post 'standup in 5' in #eng" loaded calendar
+  // and no Slack tool at all.
+  slack: /\bslack\b|(?:^|[\s(])#[a-z][a-z0-9_-]{1,79}\b/i,
   // Person-scoped and whole-inbox questions. "is there anything from him" and
   // "what's my summary" name no channel at all, so nothing else in this table
   // can fire for them — without this trigger the request reaches FALLBACK_GROUPS
@@ -316,7 +320,7 @@ const GROUP_TRIGGERS: Partial<Record<ToolGroup, RegExp>> = {
   // "Ashu's email is ashu@acme.com", "that handle belongs to Priya". None of
   // those contain the word "link", so a verb-shaped trigger missed all of them.
   inbox:
-    /\b(summar(y|ies|ise[sd]?|ize[sd]?|ising|izing)|catch me up|catch.?up|what'?s new|anything new|anything from|any (news|updates?|messages?) from|heard from|all my (messages|chats|channels)|across (all |my )?(channels|apps|platforms)|unified inbox|my inbox|contacts?|belongs to|broadcast|everywhere|every (platform|channel|app)|all (platforms|channels|apps)|(tell|notify|inform|message|ping|let) (everyone|everybody|the team)|(chat|thread|handle|id|number|address|email)( \S{1,40})? is)\b/i,
+    /\b(summar(y|ies|ise[sd]?|ize[sd]?|ising|izing)|catch me up|catch.?up|what'?s new|anything new|anything from|any (news|updates?|messages?) from|heard from|all my (messages|chats|channels)|across (all |my )?(channels|apps|platforms)|unified inbox|my inbox|contacts?|belongs to|broadcast|everywhere|every (platform|channel|app)|all (platforms|channels|apps)|(tell|notify|inform|message|ping|let) (everyone|everybody|the team)|(chat|thread|handle|id|number|address|email)( \S{1,40})? is|(un)?link\w*\b.{0,60}\b(contacts?|telegram|whats\s?app|slack|gmail|e-?mail|handle|number|chat)|on any (app|apps|platform|channel)|any of my (apps|chats|channels)|what (did|has|have) \S.{0,40}? (say|said|send|sent|post|posted|write|wrote))\b/i,
   // Deliberately narrow: only the word "overleaf" (or an overleaf.com URL) pulls
   // this group in. It does NOT claim bare "latex"/"tex"/"paper" — those belong to
   // write_latex, which authors a local file and needs neither a browser nor an

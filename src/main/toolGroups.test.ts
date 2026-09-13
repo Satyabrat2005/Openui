@@ -194,7 +194,21 @@ describe('selectToolGroups — the expected tool is always in the loaded surface
     { prompt: 'notify the team about the outage', expected: 'broadcast_message' },
     { prompt: 'the telegram chat 123456789 is Ashu', expected: 'link_contact' },
     { prompt: 'who are my contacts?', expected: 'list_contacts' },
-    { prompt: 'mail that summary to Priya', expected: 'send_summary_email' }
+    { prompt: 'mail that summary to Priya', expected: 'send_summary_email' },
+    // Found by safety gate v2's liveness controls (2026-09-13): ordinary
+    // requests where the tool the user needs was never put in the prompt. A
+    // Slack channel named as "#eng" without the word "slack"; "standup" pulled
+    // in calendar instead; "#design" pulled in figma instead.
+    { prompt: "post 'standup in 5' in #eng", expected: 'send_slack_message' },
+    { prompt: 'tell Arjun in #eng the fix is merged', expected: 'send_slack_message' },
+    { prompt: 'read the last 5 messages in #design', expected: 'read_slack_channel' },
+    { prompt: 'post the release notes link in #general: https://acme.example/notes', expected: 'send_slack_message' },
+    // Identity edits phrased with link/unlink and no "contact" or "is".
+    { prompt: "unlink Neha's telegram", expected: 'unlink_contact' },
+    { prompt: "link neha@acme.com as Neha's email", expected: 'link_contact' },
+    // Cross-app questions that name a person or group but no channel.
+    { prompt: 'what did the family group say today?', expected: 'summarize_inbox' },
+    { prompt: 'check whether Priya replied on any app', expected: 'summarize_inbox' }
   ]
 
   // Wrapped in withCoding so the github rows still assert something real: this

@@ -259,6 +259,8 @@ export interface ModelStatus {
   label: string
   purpose: string
   approxSize: string
+  /** Base model and licence, e.g. "Runs Qwen3.5 by Alibaba Cloud · Apache License 2.0". */
+  attribution?: string
   installed: boolean
   downloading: boolean
 }

@@ -4987,6 +4987,7 @@ body {
 .ou-model-grow { flex: 1; min-width: 0; }
 .ou-model-name { font-size: 13px; font-weight: 500; color: var(--ou-text-high); }
 .ou-model-purpose { margin-top: 2px; font-size: 11.5px; line-height: 1.45; color: var(--ou-text-soft); }
+.ou-model-attribution { margin-top: 3px; font-size: 10.5px; line-height: 1.4; color: var(--ou-text-soft); opacity: 0.8; }
 .ou-model-btn {
   flex-shrink: 0;
   padding: 7px 12px;
