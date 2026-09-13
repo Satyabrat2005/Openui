@@ -400,7 +400,7 @@ research-licence tags from any distribution path.
 | # | decision | recommendation |
 |---|---|---|
 | 1 | Change the ship bar from "no worse than its base" to the absolute bar in B4 | **Yes.** Every candidate base already fails, so "no worse than base" would ship a 7-violation model |
-| 2 | If no small Apache base can be tuned safe: (a) system-Splen on qwen3.5, (b) rent GPU, (c) wait | **(a) now, (b) later** |
+| 2 | If no small Apache base can be tuned safe: (a) system-Splen on qwen3.5, (b) rent GPU, (c) wait | **DECIDED 2026-09-13: (a).** Splen is the texting agent on stock `qwen3.5:latest`; no 4B fine-tune (see C0 result) |
 | 3 | Legal review of A2–A4 before commercial Splen | **Yes** |
 | 4 | Allow Hugging Face downloads for A2 candidates (several GB each) | needed for C0 |
 
