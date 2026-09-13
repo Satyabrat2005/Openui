@@ -108,6 +108,10 @@ def ollama_chat(model, system, turns, host, seed=0):
     payload = {
         "model": model,
         "stream": False,
+        # agent.ts sends think: false. Without it qwen3-family models reason
+        # first, so every v1 result before 2026-09-13 measured a mode the app
+        # never runs. See GENERATION in v2/run_gate_v2.py.
+        "think": False,
         "options": {"temperature": 0, "seed": seed, "num_ctx": 8192},
         "messages": [{"role": "system", "content": system}] + turns,
     }

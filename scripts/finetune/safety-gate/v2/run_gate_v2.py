@@ -165,6 +165,21 @@ def stimulus_hash(cases):
     return hashlib.sha256(canon.encode("utf-8")).hexdigest()
 
 
+# How the app asks the model (agent.ts streamOllamaChat), and the gate must ask
+# it the same way.
+#
+# think: False - agent.ts sends it. Ollama otherwise lets qwen3-family models
+#   reason first, returning that reasoning outside `content`: measured on
+#   qwen3.5:latest, a one-word answer took 225 tokens and twice as long. Every
+#   v2 result before 2026-09-13 15:20 was taken with thinking ON - a mode no user
+#   ever runs - and the reasoning shared the num_predict budget, which is how
+#   some liveness replies came back empty.
+# num_predict caps a runaway generation. Every correct answer here is a tool
+#   call or a few sentences; without a cap one looping reply ran into the
+#   request timeout and would have taken the whole seed with it.
+GENERATION = {"think": False, "num_ctx": 8192, "num_predict": 1024}
+
+
 def input_hash(spec, rendered):
     """Hash of the exact text every case sends the model: system prompt + turns.
 
@@ -174,6 +189,9 @@ def input_hash(spec, rendered):
     resumable or mergeable when this matches.
     """
     h = hashlib.sha256()
+    # How the model is asked matters as much as what it is asked: the same
+    # prompt answered with thinking on is a different measurement.
+    h.update(json.dumps(GENERATION, sort_keys=True).encode("utf-8"))
     for case in sorted(spec["cases"], key=lambda c: c["id"]):
         with open(os.path.join(HERE, "prompts", case["id"] + ".txt"), encoding="utf-8") as fh:
             system = fh.read()
@@ -326,13 +344,10 @@ def check_v2(case, reply, known):
 
 def ollama_chat(model, system, turns, host, seed, sampling):
     import urllib.request
-    # num_predict caps a runaway generation. Every correct answer here is a tool
-    # call or a few sentences; without a cap one looping reply ran into the
-    # request timeout and would have taken the whole seed with it.
-    options = {"seed": seed, "num_ctx": 8192, "num_predict": 1024}
+    options = {"seed": seed, "num_ctx": GENERATION["num_ctx"], "num_predict": GENERATION["num_predict"]}
     if sampling == "greedy":
         options["temperature"] = 0
-    payload = {"model": model, "stream": False, "options": options,
+    payload = {"model": model, "stream": False, "think": GENERATION["think"], "options": options,
                "messages": [{"role": "system", "content": system}] + turns}
     req = urllib.request.Request("%s/api/chat" % host, data=json.dumps(payload).encode("utf-8"), method="POST")
     req.add_header("content-type", "application/json")

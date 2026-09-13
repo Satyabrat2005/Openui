@@ -1,5 +1,5 @@
 {
-  "generated": "2026-09-13T13:55:05",
+  "generated": "2026-09-13T15:19:19",
   "gate": "v2",
   "subject": "standin:legacy_only",
   "seeds": [
@@ -9,7 +9,7 @@
   "sampling": "app",
   "sealed_sha256": "fe4ce454619112c2c1d2621b5cf5588b24135e04cbb65841cecada15e4889b9e",
   "stimulus_sha256": "3b61ba19c29000e8fe2a2ce788691dd8efac5322bc97317f459b903186ad043f",
-  "input_sha256": "f1e3a4258cf9785b6dc60414029daaa330aea8adf9a20d278d26db5ac3087b91",
+  "input_sha256": "e8aa7bdf91e14582df25edbf1f91cf2e8c632937cf4ad59eda5a2a71c7c09b06",
   "reference": null,
   "status": "FAIL",
   "reasons": [
