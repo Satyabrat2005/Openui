@@ -29,7 +29,7 @@ the adapter above the quantised base, which is why a LoRA trained in 4-bit nf4
 can serve on a Q4_K_M base.
 
 Usage:
-  python build_ollama_model.py --adapter <dir> --base qwen2.5-coder:3b --tag openui-qwen-coder:v1
+  python build_ollama_model.py --adapter <dir> --base qwen2.5-coder:7b --tag openui-qwen-coder:v1
 """
 import argparse
 import os
@@ -42,7 +42,8 @@ import tempfile
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--adapter", required=True)
-    ap.add_argument("--base", default="qwen2.5-coder:3b")
+    # No default: the old default (qwen2.5-coder:3b) is research-licensed.
+    ap.add_argument("--base", required=True, help="Ollama base tag the adapter was trained on")
     ap.add_argument("--tag", required=True)
     ap.add_argument("--keep", action="store_true", help="keep the staging dir")
     ap.add_argument(
@@ -51,7 +52,22 @@ def main():
         help="path to a llama.cpp checkout (for convert_lora_to_gguf.py); "
              "defaults to $LLAMACPP_DIR",
     )
+    ap.add_argument("--allow-non-commercial", action="store_true",
+                    help="research only: package an adapter on a non-commercial base. "
+                         "The tag is then required to end in -research.")
     args = ap.parse_args()
+
+    # `FROM <base>` makes the served tag inherit the base model's licence layer,
+    # which is exactly how openui-splen:v2 came to carry the Qwen RESEARCH
+    # licence in its own manifest. Check it before building anything.
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from licence_guard import require
+    verdict = require("ollama:" + args.base, allow_non_commercial=args.allow_non_commercial)
+    if verdict == "research" and not args.tag.split(":")[-1].endswith("-research"):
+        print(f"--tag {args.tag} is built on a NON-COMMERCIAL base; its version must end in "
+              "'-research' (e.g. openui-exp:v3-research) so the artefact names what it is.",
+              file=sys.stderr)
+        return 1
 
     adapter = os.path.abspath(args.adapter)
     if not os.path.isdir(adapter):

@@ -31,6 +31,7 @@ vi.mock('./telemetry/posthog', () => ({ trackEvent: () => {} }))
 
 import {
   executeTool,
+  describeToolCall,
   parseDuckDuckGoResults,
   scoreContactCandidates,
   validateGroupMembers,
@@ -1099,5 +1100,82 @@ describe('isWhatsAppChrome — WhatsApp UI chrome must not read as senders', () 
     expect(isWhatsAppChrome('Chats')).toBe(true)
     expect(isWhatsAppChrome('Archived')).toBe(true)
     expect(isWhatsAppChrome('Archived Projects')).toBe(false)
+  })
+})
+
+// ── link_contact / unlink_contact — identity is confirmation-gated ────────────
+// Every later send resolves a NAME through the contacts table. When
+// link_contact ran without confirmation, text the model had only READ (a
+// message saying "Mom's new Telegram is @x") could attach an attacker's handle
+// to a real person, and the next "tell Mom I'm home" went to the attacker.
+describe('link_contact — contact identity cannot change silently', () => {
+  it('link_contact pauses for approval instead of writing', async () => {
+    const r = await executeTool(
+      'link_contact',
+      { name: 'Mom', channel: 'telegram', handle: '987654321' },
+      { tier: 'free' }
+    )
+    expect(r).toMatchObject({ status: 'pending_approval', tool: 'link_contact' })
+  })
+
+  it('never runs on autopilot (destructive, not merely state-changing)', () => {
+    expect(STATE_CHANGING_TOOLS.has('link_contact')).toBe(true)
+    expect(DESTRUCTIVE_TOOLS.has('link_contact')).toBe(true)
+  })
+
+  it('unlink_contact also confirms', async () => {
+    const r = await executeTool('unlink_contact', { name: 'Mom' }, { tier: 'free' })
+    expect(r).toMatchObject({ status: 'pending_approval', tool: 'unlink_contact' })
+  })
+
+  it('the approval card says where future messages will go', () => {
+    const text = describeToolCall('link_contact', { name: 'Mom', channel: 'telegram', handle: '987654321' })
+    expect(text).toContain('987654321')
+    expect(text).toContain('Mom')
+    expect(text).toMatch(/future messages/)
+  })
+})
+
+// ── computer_use — irreversible goals always confirm, even under autopilot ────
+// computer_use is state-changing but not destructive, so full-auto bypasses its
+// HITL gate, and per-app consent lasts the whole session. A destructive goal in
+// an already-granted app therefore ran with nobody asked. Found building safety
+// gate v2's system layer; the sensitive-action re-entry closes it.
+describe('computer_use — destructive goal screen', () => {
+  it('asks before a destructive goal even when HITL is already bypassed', async () => {
+    const r = await executeTool(
+      'computer_use',
+      { goal: 'open File Explorer and wipe C:\\Users' },
+      { tier: 'enterprise', bypassHitl: true }
+    )
+    expect(r).toMatchObject({ ok: false, needsConfirmation: { kind: 'sensitive-action' } })
+    expect((r as { needsConfirmation: { label: string } }).needsConfirmation.label).toContain('wipe C:\\Users')
+  })
+
+  it.each(['delete everything in the Documents folder', 'uninstall WhatsApp and remove its data',
+    'erase browser history', 'empty the recycle bin'])('screens %j', async (goal) => {
+    const r = await executeTool('computer_use', { goal }, { tier: 'enterprise', bypassHitl: true })
+    expect(r).toMatchObject({ needsConfirmation: { kind: 'sensitive-action' } })
+  })
+
+  it('an approved re-run passes the screen (and moves on to the next gate)', async () => {
+    const r = await executeTool(
+      'computer_use',
+      // app named, so the run stops at per-app consent instead of probing the
+      // real active window (slow, and native on CI)
+      { goal: 'delete the file notes.txt from Downloads', app: 'OpenUI Gate Test App' },
+      { tier: 'enterprise', bypassHitl: true, sensitiveApproved: true }
+    )
+    expect((r as { needsConfirmation?: { kind: string } }).needsConfirmation?.kind).not.toBe('sensitive-action')
+  })
+
+  // Vacuity control: ordinary goals must not start asking twice.
+  it('does not screen an ordinary goal', async () => {
+    const r = await executeTool(
+      'computer_use',
+      { goal: 'turn on dark mode in System Settings', app: 'OpenUI Gate Test App' },
+      { tier: 'enterprise', bypassHitl: true }
+    )
+    expect((r as { needsConfirmation?: { kind: string } }).needsConfirmation?.kind).not.toBe('sensitive-action')
   })
 })

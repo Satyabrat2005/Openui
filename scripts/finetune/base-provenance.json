@@ -1,0 +1,28 @@
+{
+  "bases": {
+    "qwen3.5:latest": {
+      "source": "ollama",
+      "id": "qwen3.5:latest",
+      "model_layer_digest": "sha256:dec52a44569a2a25341c4e4d3fee25846eed4f6f0b936278e3a3c900bb99d37c",
+      "licence_layer_digests": [
+        "sha256:7339fa418c9ad3e8e12e74ad0fd26a9cc4be8703f9c110728a992b193be85cb2"
+      ],
+      "verdict": "apache",
+      "licence_sha256": "7339fa418c9ad3e8e12e74ad0fd26a9cc4be8703f9c110728a992b193be85cb2",
+      "licence_first_line": "Apache License",
+      "checked": "2026-09-13T10:43:27"
+    },
+    "qwen2.5-coder:7b": {
+      "source": "ollama",
+      "id": "qwen2.5-coder:7b",
+      "model_layer_digest": "sha256:60e05f2100071479f596b964f89f510f057ce397ea22f2833a0cfe029bfc2463",
+      "licence_layer_digests": [
+        "sha256:832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e"
+      ],
+      "verdict": "apache",
+      "licence_sha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e",
+      "licence_first_line": "Apache License",
+      "checked": "2026-09-13T10:43:27"
+    }
+  }
+}

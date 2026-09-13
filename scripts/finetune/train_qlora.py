@@ -58,9 +58,18 @@ def load_rows(path):
     return rows
 
 
+def _corpus_meta(data_path):
+    """The build_dataset.py sidecar for this corpus, or a record that there was none."""
+    meta = data_path + ".meta.json"
+    if os.path.isfile(meta):
+        return json.load(open(meta, encoding="utf-8"))
+    return {"commercial": False, "note": "no .meta.json beside the corpus (built before --commercial existed)"}
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--base", default="Qwen/Qwen2.5-Coder-3B-Instruct")
+    # No default: the old one (Qwen2.5-Coder-3B-Instruct) is research-licensed.
+    ap.add_argument("--base", required=True, help="Hugging Face id or local dir; licence-checked first")
     ap.add_argument("--data", required=True)
     ap.add_argument("--eval-data", default=None)
     ap.add_argument("--out", required=True)
@@ -86,7 +95,17 @@ def main():
     ap.add_argument("--save-steps", type=int, default=25,
                     help="checkpoint cadence; low enough that an interrupted run "
                          "loses minutes rather than hours")
+    ap.add_argument("--allow-non-commercial", action="store_true",
+                    help="research only: train on a non-commercially licensed base. "
+                         "The result can never ship; see licence_guard.py")
     args = ap.parse_args()
+
+    # Licence first, before any weights are downloaded or a GPU hour is spent:
+    # openui-qwen-coder:v1 and openui-splen:v2 were both trained on a
+    # research-only base and nothing noticed. See licence_guard.py.
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from licence_guard import require, subject_for_base
+    base_licence = require(subject_for_base(args.base), allow_non_commercial=args.allow_non_commercial)
 
     rows = load_rows(args.data)
     if len(rows) < 8:
@@ -299,6 +318,11 @@ def main():
                        for h in trainer.state.log_history if "eval_loss" in h],
         "peak_vram_gb": round(torch.cuda.max_memory_allocated() / 1024 ** 3, 2),
         "adapter": args.out,
+        # Provenance travels with the artefact: which licence the base carried,
+        # and whether the corpus was a --commercial build (no personal rows).
+        # A corpus with no meta file predates the flag and is NOT commercial.
+        "base_licence": base_licence,
+        "corpus": _corpus_meta(args.data),
     }
     json.dump(summary, open(os.path.join(args.out, "train_summary.json"), "w"), indent=2)
     print(json.dumps({k: v for k, v in summary.items()

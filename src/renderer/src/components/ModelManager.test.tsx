@@ -187,3 +187,28 @@ describe('ModelManager — each failure gets its own message', () => {
     await waitFor(() => expect(screen.queryByTestId(`model-error-${GENERAL}`)).toBeNull())
   })
 })
+
+describe('ModelManager — attribution', () => {
+  afterEach(() => cleanup())
+
+  it('shows which model and licence Splen runs on', async () => {
+    stub({
+      listLocalModels: vi.fn(() =>
+        Promise.resolve([
+          statusRow({ label: 'Splen', attribution: 'Runs Qwen3.5 by Alibaba Cloud · Apache License 2.0' })
+        ])
+      )
+    })
+    render(<ModelManager />)
+    const line = await screen.findByTestId(`model-attribution-${GENERAL}`)
+    expect(line.textContent).toContain('Qwen3.5')
+    expect(line.textContent).toContain('Apache License 2.0')
+  })
+
+  it('renders nothing extra when a row has no attribution', async () => {
+    stub()
+    render(<ModelManager />)
+    await screen.findByTestId(`model-row-${GENERAL}`)
+    expect(screen.queryByTestId(`model-attribution-${GENERAL}`)).toBeNull()
+  })
+})

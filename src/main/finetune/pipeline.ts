@@ -52,6 +52,8 @@ import {
   reject,
   getActiveTag
 } from './manifest'
+import { classifyLicence, fetchOllamaLicence, isCommercialLicence } from './licence'
+import { isCodingEnabled } from '../capabilities'
 
 const IS_WIN = process.platform === 'win32'
 
@@ -211,6 +213,10 @@ export const GGUF_SETUP_HINT =
 export async function fineTuneSkipReason(): Promise<string | null> {
   if (!isImprovementEnabled()) return 'AI Improvement is disabled'
   if (getSettingStr(S_ENABLED) !== 'true') return 'local fine-tuning is not enabled (opt-in setting)'
+  // The tuned tag only ever serves localCodeModel(), i.e. the coding surface.
+  // With that surface switched off (capabilities.ts), a pass would spend two
+  // GPU hours producing a model nothing calls.
+  if (!isCodingEnabled()) return 'the coding model is switched off in this build, so there is nothing to fine-tune'
 
   const lastAt = Number(getSettingStr(S_LAST_AT) ?? 0)
   if (Number.isFinite(lastAt) && Date.now() - lastAt < MIN_INTERVAL_MS) {
@@ -230,6 +236,18 @@ export async function fineTuneSkipReason(): Promise<string | null> {
   }
 
   if (!(await isOllamaReachable())) return 'Ollama is not running'
+
+  // `FROM <base>` makes the promoted tag inherit the base's licence. Read the
+  // licence Ollama attached to the weights — never the name — and refuse any
+  // base we could not ship a derivative of. Unreadable counts as refused.
+  // See licence.ts and scripts/finetune/licence_guard.py.
+  const licenceText = await fetchOllamaLicence(ollamaUrl(), BASE_OLLAMA_MODEL)
+  const verdict = classifyLicence(licenceText)
+  if (!isCommercialLicence(verdict)) {
+    return licenceText === null
+      ? `could not read the licence of the base model ${BASE_OLLAMA_MODEL}, so it will not be fine-tuned`
+      : `the base model ${BASE_OLLAMA_MODEL} is not commercially licensed (${verdict}), so a fine-tune of it could never ship`
+  }
 
   // Checked BEFORE training, not after. Training is a two-hour budget on this
   // hardware, and without the converter the pass is guaranteed to fail at the

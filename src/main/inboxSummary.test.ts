@@ -156,7 +156,11 @@ async function summarize(
 ): Promise<InboxSummaryData> {
   const result = await summarizeInbox(args, deps)
   if (!result.ok) throw new Error(`expected a summary, got: ${result.error}`)
-  const json = (result.output ?? '').slice((result.output ?? '').indexOf('{'))
+  // The JSON sits inside the untrusted-content markers (renderSummary), so take
+  // it from the first brace to the LAST one, not to the end of the output.
+  const out = result.output ?? ''
+  expect(out).toContain('⟦UNTRUSTED MESSAGE CONTENT from the unified inbox')
+  const json = out.slice(out.indexOf('{'), out.lastIndexOf('}') + 1)
   return JSON.parse(json) as InboxSummaryData
 }
 

@@ -87,6 +87,8 @@ def main():
         action="store_true",
         help="acknowledge the bf16 memory cost and run anyway (needs ~15 GB VRAM for a 7B base)",
     )
+    parser.add_argument("--allow-non-commercial", action="store_true",
+                        help="research only: train on a non-commercially licensed base")
     args = parser.parse_args()
 
     # DEPRECATED — see the module docstring. Refuse by default rather than
@@ -106,6 +108,11 @@ def main():
             "If you really do have the VRAM for bf16 and want this script, pass --allow-bf16.\n"
         )
         sys.exit(2)
+
+    import os
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from licence_guard import require, subject_for_base
+    require(subject_for_base(args.base), allow_non_commercial=args.allow_non_commercial)
 
     rows = load_dataset_rows(args.data)
     if len(rows) < 8:

@@ -219,38 +219,9 @@ def call_json(tool, args):
 
 
 # ── contamination guard ──────────────────────────────────────────────────────
-
-def norm(s):
-    return re.sub(r"[^a-z0-9 ]+", " ", (s or "").lower()).strip()
-
-
-def tokens(s):
-    return set(norm(s).split())
-
-
-class EvalGuard:
-    def __init__(self):
-        ev = json.load(open(os.path.join(EVAL, "evalset.json"), encoding="utf-8"))
-        self.exact = {norm(c["prompt"]) for c in ev["cases"]}
-        self.tok = [(c["id"], tokens(c["prompt"])) for c in ev["cases"]]
-        self.blocked = []
-
-    def is_contaminated(self, text):
-        n = norm(text)
-        if n in self.exact:
-            self.blocked.append((text, "exact"))
-            return True
-        t = tokens(text)
-        if not t:
-            return False
-        for cid, et in self.tok:
-            if not et:
-                continue
-            overlap = len(t & et) / len(t | et)       # Jaccard
-            if overlap >= 0.75:
-                self.blocked.append((text, f"near:{cid}:{overlap:.2f}"))
-                return True
-        return False
+# Lives in contamination.py so it can be imported without the prompt captures
+# this module loads at import time. Re-exported here unchanged.
+from contamination import norm, tokens, gate_texts, EvalGuard  # noqa: E402,F401
 
 
 # ── 1. real trajectories ─────────────────────────────────────────────────────
@@ -1085,6 +1056,11 @@ def main():
                     help="directory of per-case prompts captured from the running app; "
                          "schemas are the union across them. Defaults to "
                          + os.path.basename(DEFAULT_PROMPT_DIR))
+    ap.add_argument("--commercial", action="store_true",
+                    help="build a corpus for a model that may SHIP: excludes every real "
+                         "trajectory. Real rows come from one person's openui.db (their "
+                         "paths, contacts and phrasing) and weights can memorise training "
+                         "text, so they never go into anything distributed.")
     args = ap.parse_args()
 
     global N_DISTRACTORS, PREAMBLE, SCHEMAS, POSTAMBLE, PROMPT_SOURCE
@@ -1101,7 +1077,9 @@ def main():
     guard = EvalGuard()
 
     real = []
-    if os.path.exists(args.db):
+    if args.commercial:
+        print("commercial build: real trajectories EXCLUDED (see --commercial)", file=sys.stderr)
+    elif os.path.exists(args.db):
         real = load_real(args.db, guard, stats)
     else:
         print(f"WARNING: no db at {args.db} — real trajectories unavailable",
@@ -1109,6 +1087,14 @@ def main():
 
     synth = synth_examples(guard, stats, args.per_template)
     rows = real + synth
+    if args.commercial:
+        # Belt and braces: the flag must hold even if a future synthetic source
+        # starts emitting rows tagged real.
+        leaked = [r for r in rows if r.get("source") != "synthetic"]
+        if leaked:
+            print(f"--commercial: {len(leaked)} non-synthetic row(s) reached the corpus; refusing to write",
+                  file=sys.stderr)
+            sys.exit(1)
     random.shuffle(rows)
 
     n_hold = int(len(rows) * args.holdout_frac)
@@ -1119,6 +1105,11 @@ def main():
         with open(path, "w", encoding="utf-8") as fh:
             for r in data:
                 fh.write(json.dumps(r, ensure_ascii=False) + "\n")
+    # What this corpus is allowed to become, recorded beside it rather than
+    # remembered. train_qlora.py reads it.
+    with open(args.out + ".meta.json", "w", encoding="utf-8") as fh:
+        json.dump({"commercial": bool(args.commercial), "real_rows": len(real),
+                   "synthetic_rows": len(synth)}, fh, indent=2)
 
     print("=" * 62)
     print("DATASET")

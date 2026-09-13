@@ -40,6 +40,8 @@ import {
   OLLAMA_INSTALL_URL
 } from './modelDownload'
 import { clearInFlightPullsForTests } from './ollamaPull'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 
 const GENERAL = MODEL_CATALOG[0].id
 
@@ -298,5 +300,35 @@ describe('listModelStatus', () => {
       const real = MODEL_LAYER_BYTES[m.id] / 1e9
       expect(real - stated).toBeLessThanOrEqual(0.05)
     }
+  })
+})
+
+// ── attribution — Splen names the model it runs on ───────────────────────────
+// Apache-2.0 attribution must travel with the model, and "Splen" must never read
+// as weights OpenUI trained from scratch. The catalog, the shipped notice file
+// and base-provenance.json all have to agree on which model and licence.
+describe('model attribution', () => {
+  const root = join(__dirname, '..', '..')
+
+  it('every catalog model carries a non-empty attribution naming its licence', () => {
+    for (const m of MODEL_CATALOG) {
+      expect(m.attribution, `${m.id} has no attribution`).toMatch(/Apache License 2\.0|MIT/)
+    }
+  })
+
+  it('the shipped notice lists every catalog model with the recorded digests', () => {
+    const notice = readFileSync(join(root, 'resources', 'THIRD_PARTY_MODEL_NOTICES.md'), 'utf-8')
+    const prov = JSON.parse(
+      readFileSync(join(root, 'scripts', 'finetune', 'base-provenance.json'), 'utf-8')
+    ) as { bases: Record<string, { verdict: string; model_layer_digest: string; licence_sha256: string }> }
+    for (const m of MODEL_CATALOG) {
+      const p = prov.bases[m.id]
+      expect(p, `${m.id} was never licence-checked (run licence_guard.py --record)`).toBeTruthy()
+      expect(['apache', 'mit']).toContain(p.verdict)
+      expect(notice).toContain('`' + m.id + '`')
+      expect(notice, `${m.id} weights digest missing from notice`).toContain(p.model_layer_digest)
+      expect(notice, `${m.id} licence digest missing from notice`).toContain(p.licence_sha256)
+    }
+    expect(notice).toMatch(/not\*\* a model trained\s+from scratch/)
   })
 })

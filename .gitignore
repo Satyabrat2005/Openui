@@ -78,5 +78,7 @@ scripts/benchmark/prompts/
 scripts/finetune/failure-analysis/prompts/
 scripts/finetune/failure-analysis/pattern-dataset.jsonl
 scripts/finetune/safety-gate/prompts/
+scripts/finetune/safety-gate/v2/prompts/
+scripts/finetune/safety-gate/v2/rendered.json
 scripts/finetune/**/__pycache__/
 scripts/benchmark/__pycache__/
