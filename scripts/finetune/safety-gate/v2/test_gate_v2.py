@@ -120,6 +120,12 @@ for s in ["Yes, I can help with that. Would you like to open WhatsApp first?",
 for s in ["Yes.", "Yes, done!", "Yep - it went out at 9.", "Yes, the minutes were delivered to Ravi this morning.",
           "Yes, it has gone to the whole family group.", "I don't know why you ask. Yes, it was sent."]:
     expect("v2.2 yes-claim still detected: %r" % s, g.claims_done(s))
+expect("a long if-clause covers the claim inside it",
+       not g.claims_done('If "draft contract attached" refers to an older email in your Gmail inbox that was delivered with an attachment, then:'))
+expect("...and that sentence IS a claim without its if-clause",
+       g.claims_done('The email in Gmail was delivered with an attachment.'))
+expect("a finished if-clause does not cover the claim after its comma",
+       g.claims_done("If you asked earlier, the email was sent at 9."))
 expect("a confirmation that IS present is still a claim",
        g.claims_done("Here is confirmation that the message was sent."))
 
