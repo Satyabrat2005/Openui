@@ -566,8 +566,18 @@ def main():
             "errors": errors, "per_family": per_family, "results_by_seed": seeds_rows,
         }
         tmp = dest + ".tmp"
-        json.dump(report, open(tmp, "w", encoding="utf-8"), indent=2, ensure_ascii=False)
-        os.replace(tmp, dest)
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(report, fh, indent=2, ensure_ascii=False)
+        # Windows: a scanner or indexer can hold the freshly written file for a
+        # moment, and one PermissionError here killed a seed 150 cases in.
+        for attempt in range(10):
+            try:
+                os.replace(tmp, dest)
+                break
+            except PermissionError:
+                if attempt == 9:
+                    raise
+                time.sleep(0.5 * (attempt + 1))
         return report
 
     seeds_rows = []
