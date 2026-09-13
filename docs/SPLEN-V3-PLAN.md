@@ -10,6 +10,17 @@ Written 2026-09-13. Three workstreams, in the order they have to happen:
 Nothing here blocks the v7.3.0 launch. The app ships with stock `qwen3.5:latest`,
 which is Apache-2.0 and passes the gate today.
 
+> **Update (end of 2026-09-13).** Two things below this box are out of date.
+> - **The gate results.** Both gates asked `qwen3.5` differently from the app:
+>   thinking on, and a fixed 8192 context that truncated the largest prompts.
+>   Called the way the app calls it, `qwen3.5:latest` **fails** gate v2 (4 / 9 / 10
+>   safety violations per seed). It does not pass. The v1 "PASS" in §0 was a
+>   thinking-mode result.
+> - **The Part C answer.** No small Apache base comes close (see "C0 result"),
+>   so the recommendation is option (a).
+
+
+
 ---
 
 ## 0. Where we actually are (measured 2026-09-13)
@@ -38,7 +49,7 @@ weights is a compatible combination.
 
 | subject | licence | violations | status |
 |---|---|---|---|
-| `qwen3.5:latest` (9.7B, shipped) | Apache | **0** | ✅ PASS |
+| `qwen3.5:latest` (9.7B, shipped) | Apache | **0** | ✅ PASS (thinking mode; see the update box above) |
 | `qwen2.5-coder:7b` | Apache | **2** | ❌ FAIL (new today) |
 | `qwen2.5:3b` | research | 1 | ❌ FAIL |
 | `qwen2.5-coder:3b` | research | 5 | ❌ FAIL |
@@ -267,6 +278,79 @@ options, all owner decisions:
   passes stock (coder:7b at 2, qwen3.5 at 0). This was a NON-GOAL earlier, so it
   needs your sign-off.
 - **(c) Keep a small base only if tuning brings it to PASS** on the sealed set.
+
+### C0 result (measured 2026-09-13) — no candidate reaches step 4
+
+Every candidate was run stock through gate v2 the way the app runs a model:
+- current instructions;
+- `think: false`;
+- `num_ctx` sized per prompt exactly as `resolveNumCtx` does;
+- 3 seeds, grading v2.3.
+
+The reference is the shipped model under the same harness. Files:
+`scripts/finetune/safety-gate/v2/results/appmode/`.
+
+| | `qwen3.5:latest` (9B, shipped) | `qwen3.5:4b` | `qwen3:4b` | `phi4-mini` (3.8B) |
+|---|---|---|---|---|
+| licence (A1, from the registry) | Apache-2.0 | Apache-2.0 (same licence layer) | Apache-2.0 | MIT |
+| Ollama size | 6.6 GB (spills ~20% to CPU on 8 GB) | 3.4 GB | 2.5 GB | 2.5 GB |
+| **safety violations** per seed, of 110 | **4 / 9 / 10** | 10 / 16 / 19 | 10 (1 seed) | 23 / 18 / 22 |
+| **critical-family violations**, all seeds | **13** | 19 | 5 (1 seed) | 33 |
+| injection in message body, per seed | **0 / 0 / 0** | 1 / 3 / 2 | 1 | 4 / 1 / 2 |
+| wrong recipient ⚠, per seed | 2 / 2 / 2 | 2 / 3 / 5 | 1 | 5 / 5 / 5 |
+| **liveness** per seed | 73% / 87% / 91% | 73% / 89% / 93% | 67% | 67% / 71% / 80% |
+| status | FAIL | FAIL | FAIL, stopped after 1 seed | FAIL |
+
+Safety and liveness are reported separately, as the bar requires.
+
+- **`qwen3.5:4b`** is the best small candidate, but still behind the shipped model
+  on the critical families overall (19 vs 13 across three seeds):
+  - consent bypass: 6 vs 2;
+  - wrong recipient: 10 vs 6;
+  - exfiltration: better, 3 vs 5.
+
+  It also lost the 9B's clean record on injected messages. Its liveness is no
+  better, so it is not a cheaper like-for-like substitute either.
+- **`qwen3:4b`** cannot be used as the app calls it. Under `think: false` all 155
+  replies were its reasoning, written as prose. 89 carried raw `<think>` tags,
+  and none began with the tool call. The user would see that in the chat. It was
+  stopped after one seed, since two more could not change that.
+- **`phi4-mini`** has the most violations. Wrong recipient fails 5 times on
+  every seed.
+
+**Step 4 (stock accuracy) was not run.** No candidate survived step 3.
+
+**Why tuning a 4B to PASS is not a credible plan on this laptop.**
+1. The bar is zero critical violations. The best 4B starts at about 6 per seed.
+   The last fine-tune (v2) moved the other way: violations rose monotonically with
+   training (§0).
+2. **Train/serve skew.** v2 trained on compact prompts:
+   - median ~1.4k tokens, max ~2k (`--max-seq-len 1536`);
+   - the target tool plus 6 distractor schemas.
+
+   The app sends the real routed prompt. That is a median ~18k characters (~4.2k
+   tokens; measured 4.31 characters per token on the Qwen3.5 tokenizer), p90
+   ~6k tokens, and up to 39.5k characters (~9.2k tokens).
+   A model tuned on the short form is being tested on a prompt 3–6× longer than
+   anything it learned from. Training on real-length prompts means sequences of
+   4–9k tokens. Whether that fits QLoRA on the 8 GB card is **unmeasured**:
+   7B QLoRA fits only up to 512 tokens there, and a 4B at 4–9k tokens has not
+   been tried.
+3. **The gains that matter here came from the product, not the weights.**
+   - The messaging rules in the prompt made no measurable difference
+     (`docs/SPLEN-MODEL-CARD.md`).
+   - The send guards turn most of the remaining failures into refusals or card
+     warnings.
+   - The confirmation gate stops every attempted action.
+
+**Recommendation (owner decision #2):**
+- **(a) now:** ship Splen as the system on stock `qwen3.5:latest`.
+- **No 4B fine-tune:** do not download the ~9 GB `Qwen/Qwen3.5-4B` weights to
+  train one.
+- **Revisit training only as (b):** a rented GPU to QLoRA the 9B on real-length
+  prompts, which needs sign-off. Or revisit when a ≤4B Apache base arrives that
+  is at least level with the shipped model **stock**. Re-run this table
+  (`run_gate_v2.py --subject ollama:<tag> --seeds 1,2,3`) before any download.
 
 ### C1. Corpus v3
 
