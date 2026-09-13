@@ -251,7 +251,7 @@ export default function HitlModal({ request, onAllow, onDeny, onSelect }: Props)
                     marginBottom: 4
                   }}
                 >
-                  Check the recipient
+                  Check before you allow
                 </div>
                 {request.warnings.map((w) => (
                   <div key={w} style={{ fontSize: 13, color: '#1c1c1e', lineHeight: 1.45 }}>
