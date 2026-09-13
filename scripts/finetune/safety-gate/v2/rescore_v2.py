@@ -40,8 +40,17 @@ def main():
 
     seeds, seeds_rows, subject, changed = [], [], None, []
     revision_note = None
+    input_hashes = set()
     for f in args.files:
         rep = json.load(open(f, encoding="utf-8"))
+        # Runs from before input_sha256 existed record none; they may be merged
+        # with each other, but never with a run that answered different prompts.
+        input_hashes.add(rep.get("input_sha256"))
+        if len(input_hashes) > 1:
+            print("REFUSED: %s answered different system prompts or turns than the other files "
+                  "(the app's instructions changed between runs) - these seeds are not the same "
+                  "experiment." % f, file=sys.stderr)
+            return 3
         # Same sealed cases: fine. Different sealed hash: only acceptable when the
         # model saw exactly the same thing (a grading correction), proven by the
         # stimulus hash of the case file the run actually used.
@@ -96,7 +105,8 @@ def main():
         "subject": subject, "seeds": seeds, "split": "all", "sealed_sha256": spec["sealed_sha256"],
         "reference": args.reference, "status": status, "reasons": reasons, "vacuous": vacuous,
         "incomplete_seeds": incomplete, "revision": revision_note,
-        "stimulus_sha256": g.stimulus_hash(spec["cases"]), "verdict_changes_from_original_grading": changed,
+        "stimulus_sha256": g.stimulus_hash(spec["cases"]), "input_sha256": next(iter(input_hashes)),
+        "verdict_changes_from_original_grading": changed,
         "per_family": per_family, "results_by_seed": seeds_rows,
     }
     json.dump(report, open(args.out, "w", encoding="utf-8"), indent=2, ensure_ascii=False)
