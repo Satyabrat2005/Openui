@@ -86,6 +86,24 @@ def main():
         eprint("CUDA is not available")
         sys.exit(1)
 
+    # ATTENTION KERNEL - measured on the RTX 4060 (Windows), 2026-09-14.
+    # Windows PyTorch ships no flash attention. The memory-efficient SDPA kernel
+    # does handle Qwen3.5's head_dim 256 (+0.24 GB at 4k tokens), but not
+    # enable_gqa, which transformers passes whenever the mask is None - so every
+    # full-attention layer silently took the O(n^2) math kernel: 8.2 GB and 60 s
+    # per 4k-token step (spilling into system RAM) against 5.3 GB and 12 s with
+    # this. Repeat k/v instead, and disable math so a fallback fails loudly.
+    import transformers.integrations.sdpa_attention as sdpa_integration
+    sdpa_integration.use_gqa_in_sdpa = lambda *a, **k: False
+    torch.backends.cuda.enable_math_sdp(False)
+    torch.backends.cuda.enable_flash_sdp(False)
+    from transformers.utils import is_flash_linear_attention_available
+    if not is_flash_linear_attention_available():
+        # Without fla's Triton kernels the gated-delta-rule layers fall back to a
+        # Python loop that keeps float32 copies per chunk (pip install
+        # triton-windows flash-linear-attention on Windows).
+        eprint("WARNING: flash-linear-attention not available - linear-attention layers use the slow fallback")
+
     tok = AutoTokenizer.from_pretrained(args.base)
     if tok.pad_token is None:
         tok.pad_token = tok.eos_token
@@ -113,7 +131,8 @@ def main():
         len(rows), len(encoded), args.max_seq_len, len(dropped),
         lengths[len(lengths) // 2], lengths[int(len(lengths) * 0.9)], lengths[-1]), flush=True)
 
-    print("loading %s in 4-bit ..." % args.base, flush=True)
+    card_free_gb = torch.cuda.mem_get_info()[0] / 1024 ** 3  # before our weights: what the desktop leaves us
+    print("loading %s in 4-bit ... (%.2f GB free on the card)" % (args.base, card_free_gb), flush=True)
     t_load = time.time()
     bnb = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_quant_type="nf4", bnb_4bit_use_double_quant=True,
                              bnb_4bit_compute_dtype=torch.bfloat16)
@@ -140,6 +159,10 @@ def main():
                                                  ignore_index=IGNORE)
 
     if args.probe:
+        # Gradient checkpointing only runs in training mode; a freshly loaded model
+        # is in eval mode, and the first probe measured ~20 MB/token of activations
+        # because of it. The Trainer switches modes itself; the probe must too.
+        model.train()
         opt = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad], lr=1e-5)
         longest = max(encoded, key=lambda e: len(e[1]))
         results = []
@@ -166,9 +189,14 @@ def main():
                     opt.zero_grad(set_to_none=True)
                     torch.cuda.synchronize()
                     times.append(time.time() - t0)
+                free_gb = torch.cuda.mem_get_info()[1] / 1024 ** 3
+                reserved = torch.cuda.max_memory_reserved() / 1024 ** 3
                 row.update(ok=True, loss=round(float(loss), 3), sec_per_step=round(times[-1], 1),
                            peak_alloc_gb=round(torch.cuda.max_memory_allocated() / 1024 ** 3, 2),
-                           peak_reserved_gb=round(torch.cuda.max_memory_reserved() / 1024 ** 3, 2))
+                           peak_reserved_gb=round(reserved, 2),
+                           # Windows does not OOM past the card: it spills into shared
+                           # system RAM and a step takes 5-30x longer. Flag it.
+                           fits_on_card=bool(reserved < 0.97 * card_free_gb))
             except torch.cuda.OutOfMemoryError as err:
                 row.update(ok=False, error="OOM: %s" % str(err)[:120])
                 opt.zero_grad(set_to_none=True)
