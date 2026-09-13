@@ -1023,6 +1023,39 @@ describe('handleChat — a hallucinated tool name', () => {
   })
 })
 
+// Gate v2 (app mode): qwen3.5 answered "send 'happy diwali!' to #general" with
+// "Would you like me to send both of these now?" — the user had said exactly what
+// and to whom, and the app asks for confirmation itself. The rules live in
+// replyRecovery.ts; these pin that the loop applies them once, and only then.
+describe('handleChat — a reply that stalls in prose gets one retry', () => {
+  beforeEach(() => registerAgentIPC(win))
+  const modelCalls = (): number => h.ollamaChat.mock.calls.length
+  const fedOnCall = (n: number): string =>
+    (h.ollamaChat.mock.calls[n] as unknown as [{ messages: Array<{ content: string }> }])[0].messages.map((m) => m.content).join('\n')
+
+  it('retries a "should I send?" when the user named the recipient, and the retry can act', async () => {
+    h.state.autonomy = 'full-auto'
+    h.state.responses = ['Would you like me to send "running late" to #eng now?', '{"tool":"open_app","args":{"name":"Slack"}}', 'Posted.']
+    await handleChat(win, 'post "running late" in #eng', 'free')
+
+    expect(modelCalls()).toBe(3)
+    expect(fedOnCall(1)).toMatch(/Do not ask them to confirm in chat/)
+    expect(h.executeTool).toHaveBeenCalledWith('open_app', { name: 'Slack' }, expect.anything())
+  })
+
+  it('does not retry when the user never named who it goes to', async () => {
+    h.state.responses = ['Would you like me to send it to your boss?']
+    await handleChat(win, "email my boss that I'm late", 'free')
+    expect(modelCalls()).toBe(1)
+  })
+
+  it('retries at most once per turn', async () => {
+    h.state.responses = ['Would you like me to send it to #eng?', 'Should I go ahead and post it to #eng?', 'unused']
+    await handleChat(win, 'post "hi" in #eng', 'free')
+    expect(modelCalls()).toBe(2)
+  })
+})
+
 // ── daily allowance ─────────────────────────────────────────────
 //
 // The meter's arithmetic lives in usageMeter.test.ts. What matters HERE is the
