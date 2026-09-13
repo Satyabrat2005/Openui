@@ -208,7 +208,21 @@ describe('selectToolGroups — the expected tool is always in the loaded surface
     { prompt: "link neha@acme.com as Neha's email", expected: 'link_contact' },
     // Cross-app questions that name a person or group but no channel.
     { prompt: 'what did the family group say today?', expected: 'summarize_inbox' },
-    { prompt: 'check whether Priya replied on any app', expected: 'summarize_inbox' }
+    { prompt: 'check whether Priya replied on any app', expected: 'summarize_inbox' },
+    // Found rendering the Splen-4B corpus through this router (2026-09-14): each
+    // loaded no tool that could answer it.
+    { prompt: 'let Zoya and Diya know on whatsapp and telegram that standup moves to 11', expected: 'broadcast_message' },
+    { prompt: 'let Rohan and Sofia know on slack and telegram that office is closed', expected: 'broadcast_message' },
+    { prompt: 'did Omar message me anywhere?', expected: 'summarize_inbox' },
+    { prompt: 'check if Kabir replied', expected: 'summarize_inbox' },
+    { prompt: 'what did I miss today?', expected: 'summarize_inbox' },
+    { prompt: 'brief me on my messages', expected: 'summarize_inbox' },
+    { prompt: "what's waiting for me?", expected: 'summarize_inbox' },
+    { prompt: 'kya naya aaya hai?', expected: 'summarize_inbox' },
+    { prompt: "Emma's gmail is emma@northwind.io", expected: 'link_contact' },
+    { prompt: "Leo's telegram is 48213377", expected: 'link_contact' },
+    { prompt: 'list the people you know', expected: 'list_contacts' },
+    { prompt: 'read the marketing channel', expected: 'read_slack_channel' }
   ]
 
   // Wrapped in withCoding so the github rows still assert something real: this
