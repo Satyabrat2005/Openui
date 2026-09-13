@@ -23,6 +23,97 @@
       "licence_sha256": "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e",
       "licence_first_line": "Apache License",
       "checked": "2026-09-13T10:43:27"
+    },
+    "qwen3.5:4b": {
+      "source": "ollama-registry",
+      "id": "qwen3.5:4b",
+      "model_layer_digest": "sha256:81fb60c7daa80fc1123380b98970b320ae233409f0f71a72ed7b9b0d62f40490",
+      "model_layer_bytes": 3389971840,
+      "licence_layer_digests": [
+        "sha256:7339fa418c9ad3e8e12e74ad0fd26a9cc4be8703f9c110728a992b193be85cb2"
+      ],
+      "verdict": "apache",
+      "licence_sha256": "7339fa418c9ad3e8e12e74ad0fd26a9cc4be8703f9c110728a992b193be85cb2",
+      "licence_first_line": "Apache License",
+      "checked": "2026-09-13T15:09:25"
+    },
+    "qwen3.5:2b": {
+      "source": "ollama-registry",
+      "id": "qwen3.5:2b",
+      "model_layer_digest": "sha256:b709d81508a078a686961de6ca07a953b895d9b286c46e17f00fb267f4f2d297",
+      "model_layer_bytes": 2741180928,
+      "licence_layer_digests": [
+        "sha256:9be69ef463066202c1b1bd299aaf42bad370a01ba4b40d293617859720776c17"
+      ],
+      "verdict": "apache",
+      "licence_sha256": "9be69ef463066202c1b1bd299aaf42bad370a01ba4b40d293617859720776c17",
+      "licence_first_line": "Apache License",
+      "checked": "2026-09-13T15:09:27"
+    },
+    "qwen3.5:0.8b": {
+      "source": "ollama-registry",
+      "id": "qwen3.5:0.8b",
+      "model_layer_digest": "sha256:afb707b6b8fac6e475acc42bc8380fc0b8d2e0e4190be5a969fbf62fcc897db5",
+      "model_layer_bytes": 1036034688,
+      "licence_layer_digests": [
+        "sha256:9be69ef463066202c1b1bd299aaf42bad370a01ba4b40d293617859720776c17"
+      ],
+      "verdict": "apache",
+      "licence_sha256": "9be69ef463066202c1b1bd299aaf42bad370a01ba4b40d293617859720776c17",
+      "licence_first_line": "Apache License",
+      "checked": "2026-09-13T15:09:29"
+    },
+    "qwen3:4b": {
+      "source": "ollama-registry",
+      "id": "qwen3:4b",
+      "model_layer_digest": "sha256:3e4cb14174460404e7a233e531675303b2fbf7749c02f91864fe311ab6344e4f",
+      "model_layer_bytes": 2497280480,
+      "licence_layer_digests": [
+        "sha256:d18a5cc71b84bc4af394a31116bd3932b42241de70c77d2b76d69a314ec8aa12"
+      ],
+      "verdict": "apache",
+      "licence_sha256": "d18a5cc71b84bc4af394a31116bd3932b42241de70c77d2b76d69a314ec8aa12",
+      "licence_first_line": "Apache License",
+      "checked": "2026-09-13T15:09:31"
+    },
+    "qwen3:1.7b": {
+      "source": "ollama-registry",
+      "id": "qwen3:1.7b",
+      "model_layer_digest": "sha256:3d0b790534fe4b79525fc3692950408dca41171676ed7e21db57af5c65ef6ab6",
+      "model_layer_bytes": 1359279776,
+      "licence_layer_digests": [
+        "sha256:d18a5cc71b84bc4af394a31116bd3932b42241de70c77d2b76d69a314ec8aa12"
+      ],
+      "verdict": "apache",
+      "licence_sha256": "d18a5cc71b84bc4af394a31116bd3932b42241de70c77d2b76d69a314ec8aa12",
+      "licence_first_line": "Apache License",
+      "checked": "2026-09-13T15:09:33"
+    },
+    "phi4-mini:latest": {
+      "source": "ollama-registry",
+      "id": "phi4-mini:latest",
+      "model_layer_digest": "sha256:3c168af1dea0a414299c7d9077e100ac763370e5a98b3c53801a958a47f0a5db",
+      "model_layer_bytes": 2491874624,
+      "licence_layer_digests": [
+        "sha256:fa8235e5b48faca34e3ca98cf4f694ef08bd216d28b58071a1f85b1d50cb814d"
+      ],
+      "verdict": "mit",
+      "licence_sha256": "fa8235e5b48faca34e3ca98cf4f694ef08bd216d28b58071a1f85b1d50cb814d",
+      "licence_first_line": "Microsoft.",
+      "checked": "2026-09-13T15:09:35"
+    },
+    "granite3.3:2b": {
+      "source": "ollama-registry",
+      "id": "granite3.3:2b",
+      "model_layer_digest": "sha256:ac71e9e32c0bea919b409c5918f69ca74339854b0319c5065e4e9fb6d95c4852",
+      "model_layer_bytes": 1545303328,
+      "licence_layer_digests": [
+        "sha256:4a99a6dd617d9f901f29fe91925d5032600fcd78f315a9fa78c1667c950a3a5f"
+      ],
+      "verdict": "apache",
+      "licence_sha256": "4a99a6dd617d9f901f29fe91925d5032600fcd78f315a9fa78c1667c950a3a5f",
+      "licence_first_line": "Apache License",
+      "checked": "2026-09-13T15:09:37"
     }
   }
 }

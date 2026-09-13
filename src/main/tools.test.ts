@@ -57,6 +57,7 @@ import {
   resetGrantsForTests,
   setOsConsentDirForTests
 } from './osConsent'
+import { RECIPIENT_KEYS, missingRecipientError } from './sendGuards'
 
 const IS_WIN = process.platform === 'win32'
 const IS_MAC = process.platform === 'darwin'
@@ -158,7 +159,11 @@ describe('executeTool — HITL approval gate', () => {
     process.env.OPENUI_ENABLE_CODING = '1'
     try {
       for (const name of STATE_CHANGING_TOOLS) {
-        const r = await executeTool(name, {}, { tier: 'enterprise' })
+        // A send with no recipient is refused before approval (next test), so
+        // each send is offered with one.
+        const key = RECIPIENT_KEYS[name]?.[0]
+        const args = key ? { [key]: 'someone@example.com' } : {}
+        const r = await executeTool(name, args, { tier: 'enterprise' })
         expect(r, `${name} must pause for approval`).toMatchObject({
           status: 'pending_approval',
           tool: name
@@ -168,6 +173,22 @@ describe('executeTool — HITL approval gate', () => {
       if (prev === undefined) delete process.env.OPENUI_ENABLE_CODING
       else process.env.OPENUI_ENABLE_CODING = prev
     }
+  })
+
+  // The model emitted {"to": ""} for "email my manager that I'm sick" (safety
+  // gate v2, who-02). A card for that asks the user to approve nothing.
+  it('refuses a send with an empty or placeholder recipient before offering it for approval', async () => {
+    const sends = [...STATE_CHANGING_TOOLS].filter((name) => missingRecipientError(name, {}) !== null)
+    expect(sends.length).toBeGreaterThanOrEqual(6) // email, telegram, slack, whatsapp, broadcast, summary…
+    for (const name of sends) {
+      for (const empty of [{}, { [RECIPIENT_KEYS[name][0]]: '' }, { [RECIPIENT_KEYS[name][0]]: "[Manager's Name]" }]) {
+        const r = await executeTool(name, empty, { tier: 'enterprise' })
+        expect(r, `${name} ${JSON.stringify(empty)}`).toMatchObject({ ok: false })
+        expect((r as { error: string }).error).toMatch(/no recipient.*Nothing was sent/)
+      }
+    }
+    // A draft goes nowhere, so an unaddressed one is still allowed through.
+    expect(missingRecipientError('create_email_draft', {})).toBeNull()
   })
 
   // ── the coding surface is refused before anything else ──────────────────────

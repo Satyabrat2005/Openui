@@ -37,8 +37,10 @@ import {
   listModelStatus,
   MODEL_CATALOG,
   MODEL_LAYER_BYTES,
-  OLLAMA_INSTALL_URL
+  OLLAMA_INSTALL_URL,
+  offeredModels
 } from './modelDownload'
+import { DEFAULT_CODE_MODEL } from './models'
 import { clearInFlightPullsForTests } from './ollamaPull'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -261,7 +263,7 @@ describe('listModelStatus', () => {
   it('reports installed state per model from the real pool', async () => {
     H.installed = [{ id: GENERAL, provider: 'ollama', label: 'General' }]
     const list = await listModelStatus()
-    expect(list).toHaveLength(MODEL_CATALOG.length)
+    expect(list).toHaveLength(offeredModels().length)
     expect(list.find((m) => m.id === GENERAL)?.installed).toBe(true)
     expect(list.filter((m) => m.id !== GENERAL).every((m) => !m.installed)).toBe(true)
   })
@@ -330,5 +332,26 @@ describe('model attribution', () => {
       expect(notice, `${m.id} licence digest missing from notice`).toContain(p.licence_sha256)
     }
     expect(notice).toMatch(/not\*\* a model trained\s+from scratch/)
+  })
+})
+
+describe('the texting-agent build offers only Splen', () => {
+  afterEach(() => {
+    delete process.env.OPENUI_ENABLE_CODING
+  })
+
+  it('does not list or download the coding model while the coding surface is off', async () => {
+    delete process.env.OPENUI_ENABLE_CODING
+    H.installed = []
+    expect((await listModelStatus()).map((m) => m.id)).toEqual([GENERAL])
+    expect(isCatalogModel(DEFAULT_CODE_MODEL)).toBe(false)
+    expect(await downloadModel(null, DEFAULT_CODE_MODEL)).toMatchObject({ ok: false, code: 'unknown_model' })
+  })
+
+  it('offers it again when the coding surface is switched back on', async () => {
+    process.env.OPENUI_ENABLE_CODING = '1'
+    H.installed = []
+    expect((await listModelStatus()).map((m) => m.id)).toEqual([GENERAL, DEFAULT_CODE_MODEL])
+    expect(isCatalogModel(DEFAULT_CODE_MODEL)).toBe(true)
   })
 })

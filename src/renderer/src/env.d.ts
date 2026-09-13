@@ -106,6 +106,11 @@ export interface HitlRequestPayload {
    * non-empty when set.
    */
   choices?: string[]
+  /**
+   * Recipient checks for the confirmation card: a recipient the user never
+   * named, or one taken from someone else's message. Absent when there are none.
+   */
+  warnings?: string[]
 }
 
 /** One step of an approved plan, tracked as a checklist row. */

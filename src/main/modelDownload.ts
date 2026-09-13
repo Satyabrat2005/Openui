@@ -31,6 +31,7 @@ import type { BrowserWindow } from 'electron'
 import { isPullInFlight, pullModel } from './ollamaPull'
 import { DEFAULT_CODE_MODEL, DEFAULT_GENERAL_MODEL, getAvailableModels } from './models'
 import { hasAccountSession } from './auth/sessionManager'
+import { isCodingEnabled } from './capabilities'
 
 /** Where a user is sent to install the local engine, if they don't have it. */
 export const OLLAMA_INSTALL_URL = 'https://ollama.com/download'
@@ -111,8 +112,19 @@ export const MODEL_CATALOG: CatalogModel[] = [
   }
 ]
 
+/**
+ * The models this build actually offers. The coding model serves only the
+ * coding surface, which is switched off in the shipped texting agent
+ * (capabilities.ts) — offering its 4.7 GB download beside Splen asked users to
+ * fetch a model nothing in the app would ever call. Read at call time, like the
+ * flag itself.
+ */
+export function offeredModels(): CatalogModel[] {
+  return MODEL_CATALOG.filter((m) => m.id !== DEFAULT_CODE_MODEL || isCodingEnabled())
+}
+
 export function isCatalogModel(model: string): boolean {
-  return MODEL_CATALOG.some((m) => m.id === model)
+  return offeredModels().some((m) => m.id === model)
 }
 
 /** Why a download could not be started or did not finish. */
@@ -233,7 +245,7 @@ export async function listModelStatus(): Promise<ModelStatus[]> {
   } catch {
     // Engine unreachable — nothing is installed as far as we can prove.
   }
-  return MODEL_CATALOG.map((m) => ({
+  return offeredModels().map((m) => ({
     ...m,
     installed: installedIds.includes(m.id),
     downloading: isPullInFlight(m.id)

@@ -19,6 +19,9 @@ research-only (qwen2.5-coder:3b); only the text says which.
 
   ollama:<tag>   the `.license` layer(s) in the local Ollama manifest, read
                  straight from disk — no daemon needed
+  registry:<tag> the same layers fetched from registry.ollama.ai and checked
+                 against their digests, WITHOUT pulling the weights — for
+                 comparing base candidates before downloading any of them
   hf:<repo id>   LICENSE* and the README front-matter `license:` field of the
                  snapshot in the local Hugging Face cache (the same files the
                  trainer loads, so the check and the training cannot disagree)
@@ -99,15 +102,74 @@ def ollama_models_dir():
     return os.path.join(os.path.expanduser("~"), ".ollama", "models")
 
 
-def read_ollama(tag, models_dir=None):
-    """(licence text, provenance dict) for an Ollama tag, read from disk."""
-    models_dir = models_dir or ollama_models_dir()
+def _ollama_ref(tag):
+    """'qwen3.5:4b' -> ('library', 'qwen3.5', '4b')."""
     name, _, version = tag.partition(":")
     version = version or "latest"
     if "/" in name:
         ns, _, name = name.rpartition("/")
     else:
         ns = "library"
+    return ns, name, version
+
+
+REGISTRY = "https://registry.ollama.ai"
+_MANIFEST_V2 = "application/vnd.docker.distribution.manifest.v2+json"
+
+
+def _http_get(url, accept=None):
+    import urllib.request
+    req = urllib.request.Request(url, headers={"Accept": accept} if accept else {})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:  # noqa: S310 - fixed https host
+            return resp.read()
+    except Exception as exc:  # noqa: BLE001 - reported as unreadable
+        raise LicenceError("could not fetch %s: %s" % (url, exc))
+
+
+def read_registry(tag, fetch=None):
+    """(licence text, provenance dict) for an Ollama tag, from the public registry
+    WITHOUT downloading the weights.
+
+    Choosing a base means comparing candidates nobody has pulled yet. The manifest
+    and the licence layers are kilobytes; the weights are gigabytes. Each licence
+    blob is checked against its digest, so the text classified is the text that
+    ships with those weights - and a later `ollama pull` of the same tag carries
+    the identical layer.
+    """
+    fetch = fetch or _http_get
+    ns, name, version = _ollama_ref(tag)
+    base = "%s/v2/%s/%s" % (REGISTRY, ns, name)
+    try:
+        manifest = json.loads(fetch("%s/manifests/%s" % (base, version), accept=_MANIFEST_V2).decode("utf-8"))
+    except ValueError as exc:
+        raise LicenceError("unreadable manifest for %s: %s" % (tag, exc))
+    layers = manifest.get("layers") or []
+    if not layers:
+        raise LicenceError("no layers in the registry manifest for %s" % tag)
+    texts, digests = [], []
+    for layer in (l for l in layers if str(l.get("mediaType", "")).endswith(".license")):
+        data = fetch("%s/blobs/%s" % (base, layer["digest"]))
+        actual = "sha256:" + hashlib.sha256(data).hexdigest()
+        if actual != layer["digest"]:
+            raise LicenceError("licence blob for %s does not match its digest (%s != %s)"
+                               % (tag, actual, layer["digest"]))
+        texts.append(data.decode("utf-8", errors="replace"))
+        digests.append(layer["digest"])
+    model = next((l for l in layers if str(l.get("mediaType", "")).endswith(".model")), None)
+    return "\n".join(texts), {
+        "source": "ollama-registry",
+        "id": tag,
+        "model_layer_digest": model["digest"] if model else None,
+        "model_layer_bytes": model.get("size") if model else None,
+        "licence_layer_digests": digests,
+    }
+
+
+def read_ollama(tag, models_dir=None):
+    """(licence text, provenance dict) for an Ollama tag, read from disk."""
+    models_dir = models_dir or ollama_models_dir()
+    ns, name, version = _ollama_ref(tag)
     manifest_path = os.path.join(models_dir, "manifests", "registry.ollama.ai", ns, name, version)
     if not os.path.isfile(manifest_path):
         raise LicenceError("no Ollama manifest for %s at %s" % (tag, manifest_path))
@@ -195,6 +257,8 @@ def read_subject(subject):
     kind, _, ident = subject.partition(":")
     if kind == "ollama":
         return read_ollama(ident)
+    if kind == "registry":
+        return read_registry(ident)
     if kind == "hf":
         snap = _hf_snapshot_dir(ident)
         text, prov = read_dir(snap)
@@ -202,7 +266,8 @@ def read_subject(subject):
         return text, prov
     if kind == "path":
         return read_dir(ident)
-    raise LicenceError("subject must be ollama:<tag>, hf:<repo id> or path:<dir>, got %r" % subject)
+    raise LicenceError("subject must be ollama:<tag>, registry:<tag>, hf:<repo id> or path:<dir>, got %r"
+                       % subject)
 
 
 # ── the check ────────────────────────────────────────────────────────────────
@@ -249,13 +314,14 @@ def record(prov):
     prov = dict(prov)
     prov["checked"] = time.strftime("%Y-%m-%dT%H:%M:%S")
     data.setdefault("bases", {})[prov["id"]] = prov
-    json.dump(data, open(PROVENANCE, "w", encoding="utf-8"), indent=2, ensure_ascii=False)
+    with open(PROVENANCE, "w", encoding="utf-8", newline="\n") as fh:
+        json.dump(data, fh, indent=2, ensure_ascii=False)
     return PROVENANCE
 
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("subject", help="ollama:<tag> | hf:<repo id> | path:<dir>")
+    ap.add_argument("subject", help="ollama:<tag> | registry:<tag> | hf:<repo id> | path:<dir>")
     ap.add_argument("--allow-non-commercial", action="store_true")
     ap.add_argument("--record", action="store_true", help="write the result to base-provenance.json")
     args = ap.parse_args(argv)

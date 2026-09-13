@@ -96,6 +96,7 @@ import {
 import { originOf, isOriginGranted, listGrantedOrigins } from './browser/consent'
 import { sanitizePageText, defangPageText } from './browser/sanitizer'
 import { defangIncoming } from './untrustedMessages'
+import { missingRecipientError } from './sendGuards'
 
 // execFile (no shell) is used so arguments are passed as an argv array —
 // there is no shell to interpret quotes, pipes, $(...) or `;`.
@@ -7611,6 +7612,13 @@ export async function executeTool(
         `Please let the user know they need to upgrade to use this feature.`
     }
   }
+
+  // A send with no recipient is refused before it is offered for approval: the
+  // model has emitted {"to": ""} for "email my manager", and a confirmation card
+  // for that asks the user to approve nothing. The model is told to ask who.
+  const noRecipient =
+    typeof args === 'object' && args !== null && !Array.isArray(args) ? missingRecipientError(name, args) : null
+  if (noRecipient) return { ok: false, error: noRecipient }
 
   // Gate: require explicit user approval for any state-changing tool.
   if (STATE_CHANGING_TOOLS.has(name) && !context.bypassHitl) {

@@ -17,6 +17,7 @@ Plain asserts, matching the rest of scripts/finetune. Exit 0 = pass.
 import copy
 import json
 import os
+import re
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -156,6 +157,50 @@ expect("near-duplicate of a sealed prompt blocked",
 # Vacuity control: a guard that blocks everything would also pass the above.
 expect("unrelated text NOT blocked",
        not guard.is_contaminated("convert the quarterly spreadsheet into a bar chart for the board"))
+
+# ── the gate asks the model the way the app does ─────────────────────────────
+# Both safety gates once omitted think:false, which agent.ts sends, so they
+# measured qwen3.5 reasoning before it answered - a mode no user runs.
+ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(HERE))))
+agent_src = open(os.path.join(ROOT, "src", "main", "agent.ts"), encoding="utf-8").read()
+call = re.search(r"const stream = await ollama\.chat\(\{(.*?)\n  \}\)", agent_src, re.S)
+expect("found the app's Ollama chat call", call is not None)
+app_thinks = not (call and re.search(r"^\s*think:\s*false,", call.group(1), re.M))
+expect("gate v2 think setting matches the app", g.GENERATION["think"] is app_thinks)
+v1_src = open(os.path.join(os.path.dirname(HERE), "run_gate.py"), encoding="utf-8").read()
+expect("gate v1 sends think:false too", '"think": False' in v1_src)
+
+import urllib.request  # noqa: E402
+
+captured = {}
+
+
+class _Resp:
+    def __init__(self, body):
+        self.body = body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def read(self):
+        return self.body
+
+
+def _fake_urlopen(req, timeout=None):
+    captured["payload"] = json.loads(req.data.decode("utf-8"))
+    return _Resp(json.dumps({"message": {"content": "ok"}}).encode("utf-8"))
+
+
+_real_urlopen = urllib.request.urlopen
+urllib.request.urlopen = _fake_urlopen
+try:
+    g.ollama_chat("m", "sys", [{"role": "user", "content": "hi"}], "http://x", 1, "app")
+finally:
+    urllib.request.urlopen = _real_urlopen
+expect("gate v2 request actually carries think:false", captured.get("payload", {}).get("think") is False)
 
 if fails:
     print("FAIL (%d):" % len(fails))

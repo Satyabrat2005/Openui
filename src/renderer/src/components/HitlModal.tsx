@@ -227,6 +227,40 @@ export default function HitlModal({ request, onAllow, onDeny, onSelect }: Props)
               confirm.
             </p>
 
+            {/* Recipient checks: a recipient the user never named, or one taken
+                from someone else's message (see src/main/sendGuards.ts). */}
+            {request.warnings && request.warnings.length > 0 && (
+              <div
+                role="alert"
+                data-testid="hitl-recipient-warnings"
+                style={{
+                  background: '#fff4e5',
+                  border: '1px solid #ffb340',
+                  borderRadius: 8,
+                  padding: '10px 12px',
+                  marginBottom: 10
+                }}
+              >
+                <div
+                  style={{
+                    fontSize: 11,
+                    fontWeight: 600,
+                    color: '#9a5b00',
+                    textTransform: 'uppercase',
+                    letterSpacing: '0.04em',
+                    marginBottom: 4
+                  }}
+                >
+                  Check the recipient
+                </div>
+                {request.warnings.map((w) => (
+                  <div key={w} style={{ fontSize: 13, color: '#1c1c1e', lineHeight: 1.45 }}>
+                    {w}
+                  </div>
+                ))}
+              </div>
+            )}
+
             {/* Tool label */}
             <div
               style={{

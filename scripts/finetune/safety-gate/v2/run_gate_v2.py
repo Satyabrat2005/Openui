@@ -165,6 +165,43 @@ def stimulus_hash(cases):
     return hashlib.sha256(canon.encode("utf-8")).hexdigest()
 
 
+# How the app asks the model (agent.ts streamOllamaChat), and the gate must ask
+# it the same way.
+#
+# think: False - agent.ts sends it. Ollama otherwise lets qwen3-family models
+#   reason first, returning that reasoning outside `content`: measured on
+#   qwen3.5:latest, a one-word answer took 225 tokens and twice as long. Every
+#   v2 result before 2026-09-13 15:20 was taken with thinking ON - a mode no user
+#   ever runs - and the reasoning shared the num_predict budget, which is how
+#   some liveness replies came back empty.
+# num_predict caps a runaway generation. Every correct answer here is a tool
+#   call or a few sentences; without a cap one looping reply ran into the
+#   request timeout and would have taken the whole seed with it.
+GENERATION = {"think": False, "num_ctx": 8192, "num_predict": 1024}
+
+
+def input_hash(spec, rendered):
+    """Hash of the exact text every case sends the model: system prompt + turns.
+
+    stimulus_hash covers the cases, but the system prompt is rendered from the
+    app, so changing the app's instructions changes what the model sees while
+    leaving the cases - and that hash - untouched. Two runs are only comparable,
+    resumable or mergeable when this matches.
+    """
+    h = hashlib.sha256()
+    # How the model is asked matters as much as what it is asked: the same
+    # prompt answered with thinking on is a different measurement.
+    h.update(json.dumps(GENERATION, sort_keys=True).encode("utf-8"))
+    for case in sorted(spec["cases"], key=lambda c: c["id"]):
+        with open(os.path.join(HERE, "prompts", case["id"] + ".txt"), encoding="utf-8") as fh:
+            system = fh.read()
+        turns = rendered["cases"][case["id"]]["turns"]
+        h.update(case["id"].encode("utf-8"))
+        h.update(system.encode("utf-8"))
+        h.update(json.dumps(turns, sort_keys=True, ensure_ascii=False).encode("utf-8"))
+    return h.hexdigest()
+
+
 def _norm(v):
     return re.sub(r"[\s()+\-]", "", str(v)).lower().lstrip("@#")
 
@@ -307,13 +344,10 @@ def check_v2(case, reply, known):
 
 def ollama_chat(model, system, turns, host, seed, sampling):
     import urllib.request
-    # num_predict caps a runaway generation. Every correct answer here is a tool
-    # call or a few sentences; without a cap one looping reply ran into the
-    # request timeout and would have taken the whole seed with it.
-    options = {"seed": seed, "num_ctx": 8192, "num_predict": 1024}
+    options = {"seed": seed, "num_ctx": GENERATION["num_ctx"], "num_predict": GENERATION["num_predict"]}
     if sampling == "greedy":
         options["temperature"] = 0
-    payload = {"model": model, "stream": False, "options": options,
+    payload = {"model": model, "stream": False, "think": GENERATION["think"], "options": options,
                "messages": [{"role": "system", "content": system}] + turns}
     req = urllib.request.Request("%s/api/chat" % host, data=json.dumps(payload).encode("utf-8"), method="POST")
     req.add_header("content-type", "application/json")
@@ -451,11 +485,16 @@ def main():
     dest = args.out or os.path.join(HERE, "results", "gate-v2-%s-%s.json" % (safe, args.split))
     os.makedirs(os.path.dirname(dest), exist_ok=True)
 
+    inputs = input_hash(spec, rendered)
     prior = {}
     if args.resume and os.path.isfile(dest):
         old = json.load(open(dest, encoding="utf-8"))
         if old.get("stimulus_sha256") != stimulus_hash(spec["cases"]) or old.get("subject") != args.subject:
             print("--resume: %s is for a different subject or different cases; refusing" % dest, file=sys.stderr)
+            return 3
+        if old.get("input_sha256") != inputs:
+            print("--resume: %s was answered with different system prompts or turns (the app's "
+                  "instructions changed); refusing to mix them" % dest, file=sys.stderr)
             return 3
         for seed, rows in zip(old["seeds"], old["results_by_seed"]):
             prior[seed] = [r for r in rows if not r.get("error")]  # retry the unanswered
@@ -469,7 +508,7 @@ def main():
             "generated": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "gate": "v2", "subject": args.subject, "seeds": seeds[:len(seeds_rows)], "split": args.split,
             "sampling": args.sampling, "sealed_sha256": spec["sealed_sha256"],
-            "stimulus_sha256": stimulus_hash(spec["cases"]),
+            "stimulus_sha256": stimulus_hash(spec["cases"]), "input_sha256": inputs,
             "reference": args.reference, "status": status, "reasons": reasons, "vacuous": vacuous,
             "errors": errors, "per_family": per_family, "results_by_seed": seeds_rows,
         }
