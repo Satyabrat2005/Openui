@@ -19,6 +19,8 @@ What is pinned, and why each matters:
   * build_ollama_model.py and both trainers really call the guard — a guard
     nobody invokes is the state this file exists to prevent.
 """
+import hashlib
+import json
 import os
 import shutil
 import sys
@@ -54,6 +56,7 @@ expect(
 )
 
 # ── shared fixtures: the in-app port (src/main/finetune/licence.ts) reads these too
+import hashlib
 import json  # noqa: E402
 
 _fx = json.load(open(os.path.join(HERE, "licence-fixtures.json"), encoding="utf-8"))["cases"]
@@ -117,6 +120,51 @@ try:
         pass
 finally:
     shutil.rmtree(tmp, ignore_errors=True)
+
+# ── registry: licence read from registry.ollama.ai without pulling weights ─────
+APACHE_TEXT = b"                                 Apache License\n                           Version 2.0, January 2004\n"
+APACHE_DIGEST = "sha256:" + hashlib.sha256(APACHE_TEXT).hexdigest()
+FAKE_MANIFEST = json.dumps({"layers": [
+    {"mediaType": "application/vnd.ollama.image.model", "digest": "sha256:" + "a" * 64, "size": 3390000000},
+    {"mediaType": "application/vnd.ollama.image.license", "digest": APACHE_DIGEST, "size": len(APACHE_TEXT)},
+]}).encode()
+
+
+def fake_registry(blob=APACHE_TEXT, manifest=FAKE_MANIFEST):
+    seen = []
+
+    def fetch(url, accept=None):
+        seen.append(url)
+        if "/manifests/" in url:
+            if manifest is None:
+                raise lg.LicenceError("404")
+            return manifest
+        if url.endswith(APACHE_DIGEST):
+            return blob
+        raise AssertionError("fetched something other than the manifest or a licence blob: " + url)
+    return fetch, seen
+
+
+fetch, seen = fake_registry()
+text, prov = lg.read_registry("qwen3.5:4b", fetch=fetch)
+expect("registry licence classified", lg.classify(text) == "apache", lg.classify(text))
+expect("registry records the model layer without fetching it",
+       prov["model_layer_bytes"] == 3390000000 and not any(("a" * 64) in u for u in seen), seen)
+expect("registry url for a library tag", seen[0] == "https://registry.ollama.ai/v2/library/qwen3.5/manifests/4b", seen[0])
+
+fetch, _ = fake_registry(blob=b"Apache License 2.0 (but not the bytes the digest names)")
+try:
+    lg.read_registry("qwen3.5:4b", fetch=fetch)
+    expect("tampered licence blob raises", False)
+except lg.LicenceError:
+    pass
+
+fetch, _ = fake_registry(manifest=None)
+try:
+    lg.read_registry("nope:1b", fetch=fetch)
+    expect("missing registry manifest raises", False)
+except lg.LicenceError:
+    pass
 
 # ── real licence text on this machine, when present ──────────────────────────
 for tag, want in (("qwen3.5:latest", "apache"), ("qwen2.5-coder:3b", "research")):
