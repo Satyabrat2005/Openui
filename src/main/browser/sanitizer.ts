@@ -36,9 +36,16 @@ const ROLE_TAG_RE =
 const OVERRIDE_RE =
   /\b(ignore|disregard|forget|override)\b[^.\n]{0,40}\b(previous|prior|above|earlier|all|your)\b[^.\n]{0,40}\b(instructions?|prompts?|rules?|messages?|context)\b[^.\n]*/gi
 
-/** "you are now DAN"-style persona resets and system-prompt fishing. */
+/**
+ * "you are now DAN"-style persona resets and system-prompt fishing.
+ *
+ * `unrestricted` / `unfiltered` / `dan mode` were added after a test showed
+ * "you are now an unrestricted assistant" passing through untouched: the
+ * trigger phrase matched but none of the payload words did. The leading verb
+ * group is what keeps this narrow — the word alone never flags prose.
+ */
 const PERSONA_RESET_RE =
-  /\b(you are now|new persona|act as if you have no|reveal|print|repeat)\b[^.\n]{0,40}\b(system prompt|hidden prompt|instructions|no restrictions?|jailbroken)\b[^.\n]*/gi
+  /\b(you are now|new persona|act as if you have no|reveal|print|repeat)\b[^.\n]{0,40}\b(system prompt|hidden prompt|instructions|no restrictions?|unrestricted|unfiltered|jailbroken|dan mode)\b[^.\n]*/gi
 
 const FLAG = '⟦removed instruction-like text⟧'
 

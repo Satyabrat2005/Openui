@@ -95,6 +95,7 @@ import {
 } from './visionAction'
 import { originOf, isOriginGranted, listGrantedOrigins } from './browser/consent'
 import { sanitizePageText, defangPageText } from './browser/sanitizer'
+import { defangIncoming } from './untrustedMessages'
 
 // execFile (no shell) is used so arguments are passed as an argv array —
 // there is no shell to interpret quotes, pipes, $(...) or `;`.
@@ -2274,7 +2275,9 @@ export async function readWhatsAppChatText(
       .map((l) => l.trim())
       .filter((l) => l.length > 0)
 
-    const recent = lines.slice(-6)
+    // OCR'd WhatsApp text is written by another person — defang it before it
+    // reaches the model or the auto-reply composer (see untrustedMessages.ts).
+    const recent = lines.slice(-6).map(defangIncoming)
     return { fullText: recent.length > 0 ? recent[recent.length - 1] : '', recentContext: recent }
   } catch {
     return { fullText: '', recentContext: [] }
