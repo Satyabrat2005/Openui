@@ -26,6 +26,7 @@ import { createServer } from 'node:http'
 import { readFile } from 'node:fs/promises'
 import { basename } from 'node:path'
 import { GCAL_CLIENT_ID_KEY, GCAL_CLIENT_SECRET_KEY } from './googleCalendar'
+import { defangIncoming } from './untrustedMessages'
 
 // Settings keys — keep in sync with the renderer's SettingsModal. Client id/
 // secret are the SAME keys Calendar uses (shared credentials); only the
@@ -497,11 +498,11 @@ export async function findEmailThread(query: string, maxResults = 5): Promise<Fi
       candidates.push({
         threadId: item.threadId,
         messageId: item.id,
-        subject: get('Subject'),
-        to: get('To'),
+        subject: defangIncoming(get('Subject')),
+        to: defangIncoming(get('To')),
         date: get('Date'),
-        from: get('From'),
-        snippet: typeof mJson.snippet === 'string' ? mJson.snippet : ''
+        from: defangIncoming(get('From')),
+        snippet: defangIncoming(typeof mJson.snippet === 'string' ? mJson.snippet : '')
       })
     }
     return { ok: true, candidates }

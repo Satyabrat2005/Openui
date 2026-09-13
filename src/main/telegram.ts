@@ -42,6 +42,7 @@
 
 import { request as httpsRequest } from 'node:https'
 import type { ExecutorContext, ToolResult, ToolSchema } from './tools'
+import { defangIncoming, wrapUntrustedMessages } from './untrustedMessages'
 
 // Settings key under which the user's bot token is stored (Settings → Telegram).
 // Keep in sync with the renderer's SettingsModal.
@@ -287,11 +288,11 @@ export function formatMessages(updates: TgUpdate[], chatId: string, limit: numbe
     // and there is no other way to obtain one. Without it the model can read a
     // conversation but can only ever answer it as a detached new message.
     const id = m.message_id != null ? ` #${m.message_id}` : ''
-    return `[${fmtTime(m.date)}]${id} ${describeSender(m.from, m.chat)}: ${body}`
+    return `[${fmtTime(m.date)}]${id} ${defangIncoming(describeSender(m.from, m.chat))}: ${defangIncoming(body)}`
   })
-  return `Last ${recent.length} message(s) in chat "${chatId}":\n${lines.join('\n')}`.slice(
-    0,
-    MAX_OUTPUT_CHARS
+  return wrapUntrustedMessages(
+    `Telegram chat "${chatId}"`,
+    `Last ${recent.length} message(s) in chat "${chatId}":\n${lines.join('\n')}`.slice(0, MAX_OUTPUT_CHARS)
   )
 }
 
@@ -542,8 +543,8 @@ export async function readTelegramInbox(opts: {
       messages.push({
         chatId: String(msg.chat.id),
         chatLabel: describeChat(msg.chat),
-        sender: describeSender(msg.from, msg.chat),
-        text: msg.text ?? msg.caption ?? '(non-text message)',
+        sender: defangIncoming(describeSender(msg.from, msg.chat)),
+        text: defangIncoming(msg.text ?? msg.caption ?? '(non-text message)'),
         at: fmtTime(msg.date)
       })
     }
