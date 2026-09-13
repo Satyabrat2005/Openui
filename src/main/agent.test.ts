@@ -117,7 +117,7 @@ vi.mock('./planner', () => ({
 }))
 
 vi.mock('./mcp-client', () => ({
-  getMcpToolSchemas: () => [],
+  getMcpToolSchemas: vi.fn(() => []),
   callMcpTool: vi.fn(async () => ({ ok: false, error: 'no mcp' }))
 }))
 
@@ -213,7 +213,7 @@ import {
 import { figmaBuildToolSchemas } from './figmaBuild'
 import { trackEvent } from './telemetry/posthog'
 import { Events } from './telemetry/events'
-import { callMcpTool } from './mcp-client'
+import { callMcpTool, getMcpToolSchemas } from './mcp-client'
 import { executeCodingTool } from './codingTools'
 import { grantOrigin } from './browser/consent'
 
@@ -284,6 +284,7 @@ beforeEach(() => {
   h.streamAnthropic.mockClear()
   vi.mocked(trackEvent).mockClear()
   vi.mocked(callMcpTool).mockClear().mockResolvedValue({ ok: false, error: 'no mcp' })
+  vi.mocked(getMcpToolSchemas).mockReset().mockReturnValue([])
   vi.mocked(grantOrigin).mockClear()
   // isOllamaRunning() probes GET /api/tags — report the local engine as up so
   // the loop streams from our mocked Ollama transport instead of the "start
@@ -969,6 +970,9 @@ describe('handleChat — unknown tool → MCP fallback', () => {
   beforeEach(() => {
     registerAgentIPC(win)
     h.executeTool.mockResolvedValue({ ok: false, error: 'Unknown tool "mcp_thing".' })
+    vi.mocked(getMcpToolSchemas).mockReturnValue([
+      { name: 'mcp_thing', description: 'an MCP tool', parameters: { type: 'object', properties: {}, required: [] } }
+    ] as never)
   })
 
   it('asks for approval before invoking an MCP tool, and invokes it on Allow', async () => {
@@ -995,6 +999,27 @@ describe('handleChat — unknown tool → MCP fallback', () => {
     await pending
 
     expect(vi.mocked(callMcpTool)).not.toHaveBeenCalled()
+  })
+})
+
+// qwen3.5 called `slack_send` for send_slack_message. No MCP server has it, so
+// the approval card it used to get asked the user to allow a tool that does not
+// exist. The model is told instead, with the name it meant.
+describe('handleChat — a hallucinated tool name', () => {
+  beforeEach(() => {
+    registerAgentIPC(win)
+    h.executeTool.mockResolvedValue({ ok: false, error: 'Unknown tool "open_ap".' })
+  })
+
+  it('asks nobody to approve it, and tells the model the real name', async () => {
+    h.state.responses = ['{"tool":"open_ap","args":{"name":"Slack"}}', 'Sorry, that tool name was wrong.']
+    await handleChat(win, 'open slack', 'free')
+
+    expect(sent('openui:hitl:request')).toBe(false)
+    expect(vi.mocked(callMcpTool)).not.toHaveBeenCalled()
+    const second = (h.ollamaChat.mock.calls[1] as unknown as [{ messages: Array<{ content: string }> }])[0].messages
+    const fed = second.map((m) => m.content).join('\n')
+    expect(fed).toMatch(/Unknown tool "open_ap": no such tool exists, so nothing ran\. Did you mean open_app\?/)
   })
 })
 

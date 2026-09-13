@@ -6,13 +6,37 @@ import {
   objToToolCall,
   parseToolCall,
   repairLooseJson,
-  StreamGate
+  StreamGate,
+  suggestToolNames
 } from './toolCallParser'
 
 // A stand-in tool registry for the embedded-recovery (pass 2) path. The real
 // agent injects built-in + MCP tool names; the parser logic under test is
 // identical regardless of which names are in the set.
 const KNOWN = new Set(['open_app', 'search_files', 'read_screen', 'complete_step'])
+
+describe('suggestToolNames — what a hallucinated name meant', () => {
+  const TOOLS = [
+    'send_slack_message', 'read_slack_channel', 'list_slack_channels', 'search_slack',
+    'summarize_inbox', 'send_summary_email', 'send_telegram_message', 'open_whatsapp_chat', 'open_app'
+  ]
+
+  it.each([
+    // the three names qwen3.5 actually invented in gate v2 (app mode)
+    ['slack_send', 'send_slack_message'],
+    ['slack_message', 'send_slack_message'],
+    ['summary_inbox', 'summarize_inbox'],
+    ['open_ap', 'open_app']
+  ])('%s → %s first', (name, meant) => {
+    expect(suggestToolNames(name, TOOLS)[0]).toBe(meant)
+  })
+
+  it('suggests nothing for a name unlike any tool, and never the name itself', () => {
+    expect(suggestToolNames('book_flight', TOOLS)).toEqual([])
+    expect(suggestToolNames('open_app', TOOLS)).not.toContain('open_app')
+    expect(suggestToolNames('', TOOLS)).toEqual([])
+  })
+})
 
 describe('extractFirstJsonObject', () => {
   it('returns null when there is no object', () => {

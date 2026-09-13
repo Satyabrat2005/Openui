@@ -330,6 +330,33 @@ export function parseToolCall(text: string, knownTools: Set<string> = new Set())
 }
 
 /**
+ * The registered tools a hallucinated name most likely meant, best first.
+ *
+ * qwen3.5 has called `slack_send` and `slack_message` for send_slack_message and
+ * `summary_inbox` for summarize_inbox. Words are compared, not characters: two
+ * names match on a word when they share it, or share its first four letters
+ * ("summary" / "summarize"). A candidate needs half of the longer name's words.
+ */
+export function suggestToolNames(name: string, candidates: Iterable<string>, limit = 2): string[] {
+  const words = (s: string): string[] => s.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean)
+  const same = (a: string, b: string): boolean => a === b || (a.length >= 4 && b.length >= 4 && a.slice(0, 4) === b.slice(0, 4))
+  const want = words(name)
+  if (want.length === 0) return []
+  const scored: Array<{ tool: string; score: number }> = []
+  for (const tool of candidates) {
+    if (tool === name) continue
+    const have = words(tool)
+    const shared = want.filter((w) => have.some((h) => same(w, h))).length
+    const score = shared / Math.max(want.length, have.length)
+    if (score >= 0.5) scored.push({ tool, score })
+  }
+  return scored
+    .sort((a, b) => b.score - a.score || a.tool.length - b.tool.length || a.tool.localeCompare(b.tool))
+    .slice(0, limit)
+    .map((s) => s.tool)
+}
+
+/**
  * Buffers a streaming model response and decides, from the first non-whitespace
  * characters, whether it is a tool call (JSON object, optionally fenced) or a
  * natural-language answer:

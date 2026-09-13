@@ -68,6 +68,7 @@ import {
   extractFirstJsonObject,
   looksLikeAttemptedToolCall,
   StreamGate,
+  suggestToolNames,
   type ToolCall
 } from './toolCallParser'
 
@@ -2570,7 +2571,22 @@ export async function handleChat(win: BrowserWindow, userMessage: string, tier: 
       // server can run arbitrary local actions — so gate the call the same way
       // built-in state-changing tools are gated: outside autopilot (full-auto or
       // an approved plan) require one human confirmation before invoking it.
-      if (!result.ok && result.error?.startsWith('Unknown tool')) {
+      //
+      // A name no MCP server exposes is a hallucination (qwen3.5 has called
+      // `slack_send`). Asking the user to approve it showed a confirmation card
+      // for a tool that does not exist; tell the model instead, with the names it
+      // probably meant, so it can retry.
+      if (!result.ok && result.error?.startsWith('Unknown tool') && !getMcpToolSchemas().some((s) => s.name === toolCall.tool)) {
+        const meant = suggestToolNames(toolCall.tool, knownToolNames())
+        result = {
+          ok: false,
+          error:
+            `Unknown tool "${toolCall.tool}": no such tool exists, so nothing ran. ` +
+            (meant.length > 0
+              ? `Did you mean ${meant.join(' or ')}? Call it by its exact name.`
+              : 'Use only the tool names listed in your instructions, or answer the user.')
+        }
+      } else if (!result.ok && result.error?.startsWith('Unknown tool')) {
         const mcpApproved = bypassHitl || (await waitForHitlApproval(win, toolCall.tool, toolCall.args))
         if (mcpApproved) {
           result = await callMcpTool(toolCall.tool, toolCall.args)
