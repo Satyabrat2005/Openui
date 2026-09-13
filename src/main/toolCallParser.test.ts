@@ -31,6 +31,10 @@ describe('suggestToolNames — what a hallucinated name meant', () => {
     expect(suggestToolNames(name, TOOLS)[0]).toBe(meant)
   })
 
+  it('offers only the best matches, not every tool sharing a word', () => {
+    expect(suggestToolNames('slack_send', [...TOOLS, 'send_email'])).toEqual(['send_slack_message'])
+  })
+
   it('suggests nothing for a name unlike any tool, and never the name itself', () => {
     expect(suggestToolNames('book_flight', TOOLS)).toEqual([])
     expect(suggestToolNames('open_app', TOOLS)).not.toContain('open_app')

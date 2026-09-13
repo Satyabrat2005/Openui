@@ -350,10 +350,25 @@ export function suggestToolNames(name: string, candidates: Iterable<string>, lim
     const score = shared / Math.max(want.length, have.length)
     if (score >= 0.5) scored.push({ tool, score })
   }
+  // Only the best-scoring names: slack_send shares "send" with send_email too,
+  // and suggesting it would be noise next to send_slack_message.
+  const best = Math.max(0, ...scored.map((s) => s.score))
   return scored
-    .sort((a, b) => b.score - a.score || a.tool.length - b.tool.length || a.tool.localeCompare(b.tool))
+    .filter((s) => s.score === best)
+    .sort((a, b) => a.tool.length - b.tool.length || a.tool.localeCompare(b.tool))
     .slice(0, limit)
     .map((s) => s.tool)
+}
+
+/** The tool error the chat loop feeds back for a name no tool or MCP server has. */
+export function unknownToolError(name: string, knownTools: Iterable<string>): string {
+  const meant = suggestToolNames(name, knownTools)
+  return (
+    `Unknown tool "${name}": no such tool exists, so nothing ran. ` +
+    (meant.length > 0
+      ? `Did you mean ${meant.join(' or ')}? Call it by its exact name.`
+      : 'Use only the tool names listed in your instructions, or answer the user.')
+  )
 }
 
 /**

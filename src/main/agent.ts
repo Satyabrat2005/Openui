@@ -69,6 +69,7 @@ import {
   looksLikeAttemptedToolCall,
   StreamGate,
   suggestToolNames,
+  unknownToolError,
   type ToolCall
 } from './toolCallParser'
 import { recoveryNudge } from './replyRecovery'
@@ -2605,15 +2606,7 @@ export async function handleChat(win: BrowserWindow, userMessage: string, tier: 
       // for a tool that does not exist; tell the model instead, with the names it
       // probably meant, so it can retry.
       if (!result.ok && result.error?.startsWith('Unknown tool') && !getMcpToolSchemas().some((s) => s.name === toolCall.tool)) {
-        const meant = suggestToolNames(toolCall.tool, knownToolNames())
-        result = {
-          ok: false,
-          error:
-            `Unknown tool "${toolCall.tool}": no such tool exists, so nothing ran. ` +
-            (meant.length > 0
-              ? `Did you mean ${meant.join(' or ')}? Call it by its exact name.`
-              : 'Use only the tool names listed in your instructions, or answer the user.')
-        }
+        result = { ok: false, error: unknownToolError(toolCall.tool, knownToolNames()) }
       } else if (!result.ok && result.error?.startsWith('Unknown tool')) {
         const mcpApproved = bypassHitl || (await waitForHitlApproval(win, toolCall.tool, toolCall.args))
         if (mcpApproved) {

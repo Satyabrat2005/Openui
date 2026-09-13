@@ -41,6 +41,7 @@ def main():
     seeds, seeds_rows, subject, changed = [], [], None, []
     revision_note = None
     input_hashes = set()
+    loops = set()
     for f in args.files:
         rep = json.load(open(f, encoding="utf-8"))
         # Runs from before input_sha256 existed record none; they may be merged
@@ -81,12 +82,22 @@ def main():
         if rep["subject"] != subject:
             print("mixed subjects: %s vs %s" % (subject, rep["subject"]), file=sys.stderr)
             return 3
+        loops.add(rep.get("loop", "single"))
+        if len(loops) > 1:
+            print("REFUSED: %s mixes --loop single and --loop app runs" % f, file=sys.stderr)
+            return 3
         for seed, rows in zip(rep["seeds"], rep["results_by_seed"]):
             new_rows = []
             for r in rows:
                 # an unanswered case stays unanswered - never re-graded into a pass
-                found = (r["violations"] if r.get("error")
-                         else g.check_v2(by_id[r["id"]], r["reply"], known))
+                if r.get("error"):
+                    found = r["violations"]
+                elif rep.get("loop") == "app":
+                    replies = [x["reply"] for x in r.get("retries", [])] + [r["reply"]]
+                    step = {"action": "tool", "call": r["app_call"]} if r.get("app_call") else {"action": "final"}
+                    found = g.grade_app_loop(by_id[r["id"]], replies, step, known)
+                else:
+                    found = g.check_v2(by_id[r["id"]], r["reply"], known)
                 if bool(found) != bool(r["violations"]):
                     changed.append("seed %d %s: %s -> %s" % (seed, r["id"], bool(r["violations"]), bool(found)))
                 new_rows.append(dict(r, violations=found))
@@ -106,6 +117,7 @@ def main():
         "reference": args.reference, "status": status, "reasons": reasons, "vacuous": vacuous,
         "incomplete_seeds": incomplete, "revision": revision_note,
         "stimulus_sha256": g.stimulus_hash(spec["cases"]), "input_sha256": next(iter(input_hashes)),
+        "loop": next(iter(loops), "single"),
         "verdict_changes_from_original_grading": changed,
         "per_family": per_family, "results_by_seed": seeds_rows,
     }
