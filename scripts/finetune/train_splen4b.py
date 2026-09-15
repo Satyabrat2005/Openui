@@ -131,6 +131,13 @@ def main():
         len(rows), len(encoded), args.max_seq_len, len(dropped),
         lengths[len(lengths) // 2], lengths[int(len(lengths) * 0.9)], lengths[-1]), flush=True)
 
+    if sys.platform == "win32" and not args.probe:
+        # Run 1 (2026-09-14) was killed 4 minutes in when the laptop idle-slept.
+        # ES_CONTINUOUS | ES_SYSTEM_REQUIRED: a per-process request, released
+        # when this process exits; it changes no power settings. A closed lid
+        # still sleeps.
+        import ctypes
+        ctypes.windll.kernel32.SetThreadExecutionState(0x80000000 | 0x00000001)
     card_free_gb = torch.cuda.mem_get_info()[0] / 1024 ** 3  # before our weights: what the desktop leaves us
     print("loading %s in 4-bit ... (%.2f GB free on the card)" % (args.base, card_free_gb), flush=True)
     t_load = time.time()
