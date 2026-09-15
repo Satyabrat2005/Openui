@@ -50,6 +50,78 @@ def run(cmd, **kw):
     return out
 
 
+def stream_merge(base, adapter, out, shard_bytes=1_500_000_000):
+    """W' = W + (alpha/r) * B @ A, one tensor at a time.
+
+    from_pretrained + merge_and_unload holds the whole bf16 model (~9 GB) in
+    RAM; with the laptop's other apps open only 4.7 GB was free. This reads one
+    base tensor, merges its LoRA pair if it has one, and writes ~1.5 GB shards,
+    so peak RAM is one shard. It also makes the key mapping explicit: training
+    loaded the checkpoint as Qwen3_5ForCausalLM (model.layers.N...), while the
+    files on disk are Qwen3_5ForConditionalGeneration (model.language_model...).
+    Every LoRA pair must land on a base tensor, or the merge fails.
+    """
+    import json as _json
+
+    import torch
+    from safetensors import safe_open
+    from safetensors.torch import save_file
+
+    cfg = _json.load(open(os.path.join(adapter, "adapter_config.json"), encoding="utf-8"))
+    if cfg.get("use_dora") or cfg.get("use_rslora"):
+        raise SystemExit("stream_merge handles plain LoRA only")
+    scale = cfg["lora_alpha"] / cfg["r"]
+    pairs = {}
+    with safe_open(os.path.join(adapter, "adapter_model.safetensors"), "pt") as fa:
+        for k in fa.keys():
+            m = re.match(r"^base_model\.model\.model\.layers\.(\d+)\.(.+)\.lora_([AB])\.weight$", k)
+            if not m:
+                raise SystemExit("unexpected adapter tensor %s" % k)
+            base_key = "model.language_model.layers.%s.%s.weight" % (m.group(1), m.group(2))
+            pairs.setdefault(base_key, {})[m.group(3)] = fa.get_tensor(k)
+
+    os.makedirs(out, exist_ok=True)
+    index = _json.load(open(os.path.join(base, "model.safetensors.index.json"), encoding="utf-8"))
+    weight_map, buf, buf_bytes, shard_no, merged = {}, {}, 0, 0, 0
+
+    def flush():
+        nonlocal buf, buf_bytes, shard_no
+        if not buf:
+            return
+        shard_no += 1
+        name = "model-%05d.safetensors" % shard_no
+        save_file(buf, os.path.join(out, name), metadata={"format": "pt"})
+        for k in buf:
+            weight_map[k] = name
+        buf, buf_bytes = {}, 0
+
+    for shard in sorted(set(index["weight_map"].values())):
+        with safe_open(os.path.join(base, shard), "pt") as fb:
+            for k in fb.keys():
+                t = fb.get_tensor(k)
+                if k in pairs:
+                    p = pairs.pop(k)
+                    delta = (p["B"].float() @ p["A"].float()) * scale
+                    if delta.shape != t.shape:
+                        raise SystemExit("shape mismatch on %s: %s vs %s" % (k, tuple(delta.shape), tuple(t.shape)))
+                    t = (t.float() + delta).to(t.dtype)
+                    merged += 1
+                buf[k] = t.contiguous()
+                buf_bytes += t.numel() * t.element_size()
+                if buf_bytes >= shard_bytes:
+                    flush()
+    flush()
+    if pairs:
+        raise SystemExit("%d LoRA pairs matched no base tensor, e.g. %s" % (len(pairs), next(iter(pairs))))
+    total = sum(os.path.getsize(os.path.join(out, f)) for f in set(weight_map.values()))
+    _json.dump({"metadata": {"total_size": total}, "weight_map": weight_map},
+               open(os.path.join(out, "model.safetensors.index.json"), "w", encoding="utf-8"), indent=1)
+    for f in os.listdir(base):
+        if not f.endswith(".safetensors") and f != "model.safetensors.index.json":
+            shutil.copy(os.path.join(base, f), out)
+    print("merged %d LoRA pairs (scale %.2f) into %d shards" % (merged, scale, shard_no), flush=True)
+
+
 def app_model_settings():
     """RENDERER / PARSER / PARAMETER lines of the model the app uses today."""
     mf = run(["ollama", "show", SAME_AS, "--modelfile"])
@@ -87,20 +159,8 @@ def main():
     src = args.base
     try:
         if args.adapter:
-            import torch
-            from peft import PeftModel
-            from transformers import AutoModelForCausalLM, AutoTokenizer
-            print("merging %s into the bf16 base on the CPU ..." % args.adapter, flush=True)
-            model = AutoModelForCausalLM.from_pretrained(args.base, dtype=torch.bfloat16, device_map="cpu",
-                                                         low_cpu_mem_usage=True)
-            model = PeftModel.from_pretrained(model, args.adapter).merge_and_unload()
             src = os.path.join(work, "merged")
-            model.save_pretrained(src, safe_serialization=True, max_shard_size="2GB")
-            AutoTokenizer.from_pretrained(args.base).save_pretrained(src)
-            for f in ("chat_template.jinja", "LICENSE"):
-                if os.path.isfile(os.path.join(args.base, f)):
-                    shutil.copy(os.path.join(args.base, f), src)
-            del model
+            stream_merge(args.base, args.adapter, src)
 
         gguf = os.path.join(work, "model.f16.gguf")
         # f16, not bf16: `ollama create --quantize` quantises from F16/F32 sources.
