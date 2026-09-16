@@ -258,8 +258,23 @@ def main():
         gradient_checkpointing_kwargs={"use_reentrant": False},
         eval_strategy="steps" if eval_items else "no", eval_steps=args.eval_steps if eval_items else None,
         per_device_eval_batch_size=1, remove_unused_columns=False, dataloader_pin_memory=False)
+    from transformers import TrainerCallback
+
+    class ReleaseCache(TrainerCallback):
+        """Run 2 grew to 7.2 GB reserved by step 28 (rows differ by thousands of
+        tokens, so cached blocks fragment) and spilled into system RAM: 55 s ->
+        210 s per step. Releasing the cache after each optimizer step keeps the
+        reservation near the real peak."""
+
+        def on_step_end(self, *a, **k):
+            torch.cuda.empty_cache()
+
+        def on_evaluate(self, *a, **k):
+            torch.cuda.empty_cache()
+
     trainer = ReplyLossTrainer(model=model, args=targs, train_dataset=Rows(encoded),
-                               eval_dataset=Rows(eval_items) if eval_items else None, data_collator=collate)
+                               eval_dataset=Rows(eval_items) if eval_items else None, data_collator=collate,
+                               callbacks=[ReleaseCache()])
 
     resume = None
     work = args.out + "-work"
