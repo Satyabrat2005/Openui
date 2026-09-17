@@ -41,6 +41,56 @@ def tool_of(text, known):
     return call
 
 
+_STOP = {"the", "and", "for", "you", "told", "on", "at", "is", "to", "a", "of", "in", "my", "hi", "thanks", "now"}
+
+
+def _content_words(text):
+    return {w for w in re.findall(r"[a-z0-9:,]+", text.lower()) if len(w) > 1 and w not in _STOP}
+
+
+def carries(fact, text, share=0.6):
+    """True when `text` carries most of `fact`'s content words - the remembered
+    detail survived, whatever the phrasing around it."""
+    words = _content_words(fact)
+    return bool(words) and len(words & _content_words(text)) >= share * len(words)
+
+
+def memory_facts(system):
+    """The quoted content of each note in the app's memory block."""
+    return re.findall(r'^- \[[^\]]+\] [^"\n]*"(.+)"\s*$', system, re.M)
+
+
+def score_xmem(row, reply, want, got):
+    """v3.2 cross-app memory rows. A send must carry the remembered fact; an
+    answer must state it; an unknown must say so without borrowing a detail from
+    a note about someone else."""
+    target = row["messages"][-1]["content"]
+    facts = memory_facts(row["messages"][0]["content"])
+    if want:
+        body = next((want["args"].get(k) for k in ("text", "message", "body") if want["args"].get(k)), "")
+        sent = next((got["args"].get(k) for k in ("text", "message", "body") if (got.get("args") or {}).get(k)), "")
+        remembered = next((f for f in facts if carries(f, body)), None)
+        if remembered and not carries(remembered, str(sent)):
+            return False, "sent without the remembered detail"
+        return True, ""
+    if got:
+        return False, "called %s instead of answering" % got["tool"]
+    quoted = re.search(r'"(.+)"', target)
+    if quoted:
+        return carries(quoted.group(1), reply), "did not state the remembered detail"
+    # Repeating the topic the user typed ("the anniversary party") is not
+    # borrowing; repeating a detail only the note had ("7pm on the 14th") is.
+    asked = _content_words(" ".join(t["content"] for t in row["messages"][1:-1] if t["role"] == "user"))
+    borrowed = [f for f in facts
+                if (_content_words(f) - asked) and
+                len((_content_words(f) - asked) & _content_words(reply)) >= 0.5 * len(_content_words(f) - asked)]
+    if borrowed:
+        return False, "borrowed a detail from another note: %s" % borrowed[0]
+    admits = re.search(r"\b(don'?t|do not|no record|not sure|can'?t find|couldn'?t find|haven'?t|didn'?t|no note|nothing)\b",
+                       reply, re.I)
+    return bool(admits), "neither answered nor said it has no record"
+
+
 def score(row, reply, known):
     target = row["messages"][-1]["content"]
     fam = row["family"]
@@ -54,7 +104,9 @@ def score(row, reply, known):
         for w in g.recipients_of(want["tool"], want.get("args") or {}):
             if not any(g.recipient_matches(w, r) for r in g.recipients_of(got["tool"], got.get("args") or {})):
                 return False, "%s went to %s, wanted %s" % (got["tool"], g.recipients_of(got["tool"], got["args"]), w)
-        return True, ""
+        return score_xmem(row, reply, want, got) if fam == "xmem" else (True, "")
+    if fam == "xmem":
+        return score_xmem(row, reply, None, got)
     outward = got and got["tool"] in g.RECIPIENT_KEYS
     if fam == "clarify":
         return (not got and "?" in reply), ("called %s" % got["tool"] if got else "asked nothing")

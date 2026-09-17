@@ -7,12 +7,15 @@
  * routing and message formatters. v2 trained on a compact prompt the app never
  * sends; this is the fix.
  *
- * Output (gitignored, machine-local): scripts/finetune/data/splen-v3/
+ * Output (gitignored, machine-local): scripts/finetune/data/<SPLEN_CORPUS_OUT, default splen-v3>/
  *   train.jsonl / holdout.jsonl   {"messages": [system, ...turns, assistant target], "id", "family"}
  *   train.jsonl.meta.json         read by train_qlora.py (commercial: synthetic only)
  *
  *   python scripts/finetune/corpus-v3/author_corpus.py
- *   npx vitest run --config scripts/finetune/corpus-v3/vitest.corpus.config.ts
+ *   SPLEN_CORPUS_OUT=splen-v3.2 npx vitest run --config scripts/finetune/corpus-v3/vitest.corpus.config.ts
+ *
+ * A row with `memory` gets the app's cross-channel memory block appended to the
+ * system prompt, rendered by channelMemory.renderMemoryBlock — as agent.ts does.
  */
 import { describe, it, expect, vi } from 'vitest'
 import { EventEmitter } from 'node:events'
@@ -21,7 +24,7 @@ import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
-const OUT_DIR = join(HERE, '..', 'data', 'splen-v3')
+const OUT_DIR = join(HERE, '..', 'data', process.env.SPLEN_CORPUS_OUT ?? 'splen-v3')
 
 vi.mock('electron', () => ({
   ipcMain: { on: () => {}, handle: () => {} },
@@ -120,6 +123,7 @@ interface Case {
   history?: Turn[]
   read?: Read
   followup?: Turn[]
+  memory?: Array<{ channel: string; subject: string; summary: string; age_seconds: number }>
   target: string
 }
 
@@ -128,6 +132,7 @@ describe('Splen-4B corpus v3 — render rows through the app', () => {
     const spec = JSON.parse(readFileSync(join(HERE, 'corpus.json'), 'utf-8')) as { cases: Case[] }
     process.env.SLACK_TOKEN = 'xoxb-gate-generator-not-a-real-token'
     const { buildDefaultSystemPrompt } = await import('../../../src/main/agent')
+    const { renderMemoryBlock, normalizeSubject } = await import('../../../src/main/channelMemory')
     const { selectToolGroups } = await import('../../../src/main/toolGroups')
     const { formatMessages } = await import('../../../src/main/telegram')
     const { slackRegistry } = await import('../../../src/main/slack')
@@ -245,8 +250,25 @@ describe('Splen-4B corpus v3 — render rows through the app', () => {
 
       // Route and build the prompt exactly as the gate does for its cases.
       const groups = selectToolGroups(turns.map((t) => t.content).join('\n'))
-      const system = buildDefaultSystemPrompt(groups)
-      const routed = [...system.matchAll(/^- ([a-z_0-9]+)\(/gm)].map((m) => m[1])
+      const now = Math.floor(Date.now() / 1000)
+      const memoryBlock = c.memory
+        ? renderMemoryBlock(
+            c.memory.map((m, i) => ({
+              id: `${c.id}-m${i}`,
+              subject_key: normalizeSubject(m.subject),
+              subject_label: m.subject,
+              channel: m.channel,
+              action: 'corpus',
+              direction: 'sent',
+              summary: m.summary,
+              created_at: now - m.age_seconds
+            })) as never,
+            now
+          )
+        : ''
+      const base = buildDefaultSystemPrompt(groups)
+      const system = base + memoryBlock
+      const routed = [...base.matchAll(/^- ([a-z_0-9]+)\(/gm)].map((m) => m[1])
 
       // A target that calls a tool the prompt does not offer would teach the
       // model to call tools it cannot see.
@@ -269,7 +291,17 @@ describe('Splen-4B corpus v3 — render rows through the app', () => {
     writeFileSync(join(OUT_DIR, 'holdout.jsonl'), out.holdout.join('\n') + '\n', 'utf-8')
     writeFileSync(
       join(OUT_DIR, 'train.jsonl.meta.json'),
-      JSON.stringify({ commercial: true, real_rows: 0, synthetic_rows: spec.cases.length, corpus: 'v3', generated: new Date().toISOString() }, null, 2),
+      JSON.stringify(
+        {
+          commercial: true,
+          real_rows: 0,
+          synthetic_rows: spec.cases.length,
+          corpus: process.env.SPLEN_CORPUS_OUT ?? 'v3',
+          generated: new Date().toISOString()
+        },
+        null,
+        2
+      ),
       'utf-8'
     )
     writeFileSync(join(OUT_DIR, 'unrouted.txt'), unrouted.join('\n') + '\n', 'utf-8')
