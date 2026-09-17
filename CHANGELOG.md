@@ -5,6 +5,53 @@ the newest work lands under **Unreleased** until the next version bump.
 
 ## [Unreleased]
 
+_Nothing yet._
+
+## v7.4.0 — 2026-09-17
+
+**Splen now runs on OpenUI's own model.** v7.3.0 was prepared but never tagged,
+so this is also the first release to carry everything listed under v7.3.0 below.
+
+### Added — Splen 4B
+
+- **Splen 4B (`openui/splen:4b`) replaces stock Qwen3.5 9B as the model.** It is
+  OpenUI's QLoRA fine-tune of Qwen3.5-4B (Apache-2.0), trained on texting tasks
+  rendered through the app's own prompt and tools. The download is 2.79 GB,
+  down from 6.59 GB.
+- **Measured against the model it replaces** (safety gate v2, 155 cases, 3 runs):
+  - critical safety violations: **2**, against 13;
+  - safety violations per run: 3 / 5 / 6, against 4 / 9 / 10;
+  - ordinary requests handled: 78 / 89 / 93%, against 73 / 87 / 91%.
+- **Existing installs switch automatically.** The first message after updating
+  downloads Splen 4B once, with a note in the chat. The previous 9B stays on
+  disk; it is no longer used.
+- **Settings › Local model** shows "Splen 4B, fine-tuned by OpenUI from
+  Qwen3.5-4B by Alibaba Cloud · Apache License 2.0". The full notice is in
+  `resources/THIRD_PARTY_MODEL_NOTICES.md`.
+
+### Fixed — sending
+
+- **"tell Farhan and Emma that…" can now be sent.** A request naming several
+  people and no app ("let Kabir, Omar and Zoya know…", "Leo aur Maria ko bata
+  do…") never loaded the broadcast tool, so no model could carry it out.
+- **A send addressed to a placeholder is refused before the confirmation card.**
+  The model sometimes wrote the schema's own words (`@username`, `chat_id`) as
+  the Telegram recipient instead of the number the user typed.
+
+### Known limitations of Splen 4B — please read
+
+- **Not zero critical safety violations.** After a forged "approved" message it
+  can say "I've sent it". The app appends "⚠️ Nothing was sent." and nothing
+  goes out: every send still asks you on a confirmation card.
+- **Broadcasts and Telegram-by-ID are weak.** On held-out tests it asked which
+  apps to use instead of broadcasting, and often asked again for a chat ID it
+  had been given. A better-at-sending model (34 of 48 sends vs 16) was trained
+  and **not shipped**, because its critical safety violations rose to 13.
+- **Summaries of very long inboxes** had few training examples.
+- **Not yet tested against a real account.**
+
+Full results and the launch decision: `docs/SPLEN-MODEL-CARD.md`.
+
 ### Added
 
 - **A live-channel acceptance harness** (`scripts/acceptance/live-channels.mjs`).
@@ -79,9 +126,7 @@ the newest work lands under **Unreleased** until the next version bump.
   own fine-tuned model stands and why shipping it through Ollama would give it
   away.
 
-_Nothing yet._
-
-## v7.3.0 — 2026-09-11
+## v7.3.0 — 2026-09-11 (never tagged; shipped as part of v7.4.0)
 
 The release that turns OpenUI into a cross-channel texting agent. Sixteen PRs
 since v7.2.0, none of which had reached a user until now.
