@@ -87,6 +87,19 @@ describe('missingRecipientError', () => {
     expect(missingRecipientError('send_email', { cc: 'a@b.com' })).toMatch(/no recipient/)
   })
 
+  it('refuses a handle made of the schema’s own words', () => {
+    // Splen 4B's real replies to "tell <chat id> on telegram …" (held-out rows).
+    for (const chat_id of ['@username', '@username_telegram_chat_ID', '@telegramusernamefor694772162', '@channelusername', 'chat_id', '@your_brother']) {
+      expect(missingRecipientError('send_telegram_message', { chat_id, text: 'hi' }), chat_id).toMatch(/no recipient/)
+    }
+  })
+
+  it('keeps real handles and ids that merely contain those words', () => {
+    for (const chat_id of ['@anika_desk', '@grace_real', '667079549', '@usernameless_cat', '@chatidiot', '@priya_username']) {
+      expect(missingRecipientError('send_telegram_message', { chat_id, text: 'hi' }), chat_id).toBeNull()
+    }
+  })
+
   it('accepts a real one, and ignores tools that address nobody', () => {
     expect(missingRecipientError('send_email', { to: 'jane@acme.com' })).toBeNull()
     expect(missingRecipientError('send_email', { to: '<jane@acme.com>' })).toBeNull()

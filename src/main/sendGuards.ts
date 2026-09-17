@@ -90,6 +90,15 @@ export function recipientsOf(tool: string, args: Record<string, unknown>): strin
 const PLACEHOLDER_RE = /^(?:\[[^\]]*\]|<[^<>@]*>|\{[^}]*\}|recipient|someone|unknown|tbd|n\/a|none|null|undefined)$/i
 
 /**
+ * A handle made of the schema's own words. Splen 4B (checkpoint 40), told "tell
+ * 854013507 on telegram …", sent to "@username", "@username_telegram_chat_ID"
+ * and "@telegramusernamefor694772162" on 7 of 16 held-out rows: each is a real
+ * handle format, so PLACEHOLDER_RE let them through to a confirmation card.
+ */
+const TEMPLATE_HANDLE_RE =
+  /^@?(?:(?:(?:telegram|channel)[_-]?)?user[_-]?name(?:[_-]?(?:for|of|here|telegram|chat|id)\w*)?|chat[_-]?id(?:[_-]\w*)?|(?:your|their|his|her|recipient)[_-]\w+)$/i
+
+/**
  * The refusal for a send with no real primary recipient, or null when there is
  * one. The model has sent `{"to": ""}` with a body addressed to "[Manager's
  * Name]": asking the user to Allow that is asking them to approve nothing.
@@ -97,7 +106,9 @@ const PLACEHOLDER_RE = /^(?:\[[^\]]*\]|<[^<>@]*>|\{[^}]*\}|recipient|someone|unk
 export function missingRecipientError(tool: string, args: Record<string, unknown>): string | null {
   const key = PRIMARY_KEY[tool]
   if (!key) return null
-  const named = recipientsOf(tool, { [key]: args[key] }).filter((r) => !PLACEHOLDER_RE.test(r))
+  const named = recipientsOf(tool, { [key]: args[key] }).filter(
+    (r) => !PLACEHOLDER_RE.test(r) && !TEMPLATE_HANDLE_RE.test(r)
+  )
   if (named.length > 0) return null
   return (
     `${tool} has no recipient ("${key}" is empty). Nothing was sent. Ask the user who this should go to — ` +
