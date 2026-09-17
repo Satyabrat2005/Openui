@@ -222,7 +222,12 @@ describe('selectToolGroups — the expected tool is always in the loaded surface
     { prompt: "Emma's gmail is emma@northwind.io", expected: 'link_contact' },
     { prompt: "Leo's telegram is 48213377", expected: 'link_contact' },
     { prompt: 'list the people you know', expected: 'list_contacts' },
-    { prompt: 'read the marketing channel', expected: 'read_slack_channel' }
+    { prompt: 'read the marketing channel', expected: 'read_slack_channel' },
+    // Found rendering corpus v3.2 (2026-09-17): named people, no app named.
+    { prompt: 'tell Priya and Dev that the venue moved', expected: 'broadcast_message' },
+    { prompt: 'let Ana, Ravi and Kim know rent is due', expected: 'broadcast_message' },
+    { prompt: 'message Arjun and Neha: running late', expected: 'broadcast_message' },
+    { prompt: 'Priya aur Dev ko bata do ki meeting 5 baje hai', expected: 'broadcast_message' }
   ]
 
   // Wrapped in withCoding so the github rows still assert something real: this
@@ -275,6 +280,11 @@ describe('selectToolGroups — picks the right surface', () => {
   it('still reads a real domain as a web page', () => {
     expect(selectToolGroups('go to github.com in my browser').has('browser')).toBe(true)
     expect(selectToolGroups('open example.org and read the pricing').has('browser')).toBe(true)
+  })
+
+  it('does not read a pronoun pair as a list of people to broadcast to', () => {
+    expect(selectToolGroups('let it build and then tell me that it passed').has('inbox')).toBe(false)
+    expect(selectToolGroups('tell me and you decide that later').has('inbox')).toBe(false)
   })
 
   it('loads several surfaces for a request that spans them', () => {
