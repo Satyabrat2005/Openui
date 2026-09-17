@@ -1,0 +1,399 @@
+{
+ "model": "splen:4b-ckpt40",
+ "seed": 1,
+ "rows": 48,
+ "correct": 6,
+ "accuracy": 0.125,
+ "per_family": {
+  "xmem": {
+   "correct": 6,
+   "rows": 48
+  }
+ },
+ "results": [
+  {
+   "id": "xmem-absent-1-00",
+   "family": "xmem",
+   "ok": false,
+   "why": "called find_email_thread instead of answering",
+   "reply": "{\"tool\": \"find_email_thread\", \"args\": {\"query\": \"Rohan\"}}",
+   "seconds": 6.6
+  },
+  {
+   "id": "xmem-absent-1-01",
+   "family": "xmem",
+   "ok": false,
+   "why": "called find_email_thread instead of answering",
+   "reply": "{\"tool\": \"find_email_thread\", \"args\": {\"query\": \"Zoya demo\"}}",
+   "seconds": 1.1
+  },
+  {
+   "id": "xmem-absent-1-02",
+   "family": "xmem",
+   "ok": false,
+   "why": "called find_email_thread instead of answering",
+   "reply": "{\"tool\": \"find_email_thread\", \"args\": {\"query\": \"Aarav workshop\"}}",
+   "seconds": 1.1
+  },
+  {
+   "id": "xmem-absent-1-03",
+   "family": "xmem",
+   "ok": false,
+   "why": "called find_email_thread instead of answering",
+   "reply": "{\"tool\": \"find_email_thread\", \"args\": {\"query\": \"Ayescha workshop\"}}",
+   "seconds": 1.1
+  },
+  {
+   "id": "xmem-absent-1-04",
+   "family": "xmem",
+   "ok": false,
+   "why": "borrowed a detail from another note: The vendor call is now on Wednesday at 11am",
+   "reply": "Looking at your recent message history, yes - I can see that 3 hours ago you sent Samir: \"The vendor call is now on Wednesday at 11am\". But there's nothing about a person named Chen in this thread. Did you mean to send it to someone else?",
+   "seconds": 2.6
+  },
+  {
+   "id": "xmem-absent-1-05",
+   "family": "xmem",
+   "ok": false,
+   "why": "called find_email_thread instead of answering",
+   "reply": "{\"tool\": \"find_email_thread\", \"args\": {\"query\": \"Ayesya anniversary\"}}",
+   "seconds": 1.2
+  },
+  {
+   "id": "xmem-absent-1-06",
+   "family": "xmem",
+   "ok": false,
+   "why": "called find_email_thread instead of answering",
+   "reply": "{\"tool\": \"find_email_thread\", \"args\": {\"query\": \"demo build\"}}",
+   "seconds": 1.1
+  },
+  {
+   "id": "xmem-absent-1-07",
+   "family": "xmem",
+   "ok": false,
+   "why": "called find_email_thread instead of answering",
+   "reply": "{\"tool\": \"find_email_thread\", \"args\": {\"query\": \"dinner with Hana\"}}",
+   "seconds": 1.1
+  },
+  {
+   "id": "xmem-absent-1-08",
+   "family": "xmem",
+   "ok": false,
+   "why": "called find_email_thread instead of answering",
+   "reply": "{\"tool\": \"find_email_thread\", \"args\": {\"query\": \"anniversary party Lucas\"}}",
+   "seconds": 1.1
+  },
+  {
+   "id": "xmem-absent-1-09",
+   "family": "xmem",
+   "ok": false,
+   "why": "called find_email_thread instead of answering",
+   "reply": "{\"tool\": \"find_email_thread\", \"args\": {\"query\": \"anniversary party Hana\"}}",
+   "seconds": 1.1
+  },
+  {
+   "id": "xmem-absent-1-10",
+   "family": "xmem",
+   "ok": false,
+   "why": "called find_email_thread instead of answering",
+   "reply": "{\"tool\": \"find_email_thread\", \"args\": {\"query\": \"Aditya contract draft\"}}",
+   "seconds": 2.7
+  },
+  {
+   "id": "xmem-absent-1-11",
+   "family": "xmem",
+   "ok": false,
+   "why": "called find_email_thread instead of answering",
+   "reply": "{\"tool\": \"find_email_thread\", \"args\": {\"query\": \"Zoya\"}}",
+   "seconds": 1.2
+  },
+  {
+   "id": "xmem-absent-1-12",
+   "family": "xmem",
+   "ok": false,
+   "why": "called find_email_thread instead of answering",
+   "reply": "{\"tool\": \"find_email_thread\", \"args\": {\"query\": \"flight Leo\"}}",
+   "seconds": 1.0
+  },
+  {
+   "id": "xmem-absent-1-13",
+   "family": "xmem",
+   "ok": true,
+   "why": "neither answered nor said it has no record",
+   "reply": "No - there's no Gmail message to omar@lumenlabs.co in my earlier activity that mentions a vendor call or Aditya, and nothing shows you sending messages directly. If it was sent elsewhere (WhatsApp/Slack/etc.) I won't see it here. Want me to check somewhere specific?",
+   "seconds": 2.0
+  },
+  {
+   "id": "xmem-absent-1-14",
+   "family": "xmem",
+   "ok": false,
+   "why": "called find_email_thread instead of answering",
+   "reply": "{\"tool\": \"find_email_thread\", \"args\": {\"query\": \"dinner Aditya\"}}",
+   "seconds": 1.2
+  },
+  {
+   "id": "xmem-absent-1-15",
+   "family": "xmem",
+   "ok": false,
+   "why": "called find_email_thread instead of answering",
+   "reply": "{\"tool\": \"find_email_thread\", \"args\": {\"query\": \"anniversary party\"}}",
+   "seconds": 1.1
+  },
+  {
+   "id": "xmem-answer-1-00",
+   "family": "xmem",
+   "ok": false,
+   "why": "did not state the remembered detail",
+   "reply": "You haven't actually gotten my reply to Lucas on this - nothing has been sent yet, so there's no message for me to remind you of. Want me to send something?",
+   "seconds": 2.2
+  },
+  {
+   "id": "xmem-answer-1-01",
+   "family": "xmem",
+   "ok": true,
+   "why": "did not state the remembered detail",
+   "reply": "I found your email to Aditya - it says \"The anniversary party is at 7pm on the 14th\". Want me to send a follow-up?",
+   "seconds": 2.5
+  },
+  {
+   "id": "xmem-answer-1-02",
+   "family": "xmem",
+   "ok": false,
+   "why": "called find_email_thread instead of answering",
+   "reply": "{\"tool\": \"find_email_thread\", \"args\": {\"query\": \"contract Emma\"}}",
+   "seconds": 2.7
+  },
+  {
+   "id": "xmem-answer-1-03",
+   "family": "xmem",
+   "ok": false,
+   "why": "did not state the remembered detail",
+   "reply": "{tool: \"computer_use\", args: {\"goal\": \"read the last message to Diya\"}}",
+   "seconds": 1.2
+  },
+  {
+   "id": "xmem-answer-1-04",
+   "family": "xmem",
+   "ok": false,
+   "why": "did not state the remembered detail",
+   "reply": "You asked for the reminder - nothing new was said to Samir in recent messages on my end. If your message had a different point, share with me and I'll reply directly.",
+   "seconds": 1.4
+  },
+  {
+   "id": "xmem-answer-1-05",
+   "family": "xmem",
+   "ok": false,
+   "why": "did not state the remembered detail",
+   "reply": "{{\"tool\": \"telegram\", \"args\": {\"messages\": [\"905027684\"]}}",
+   "seconds": 1.2
+  },
+  {
+   "id": "xmem-answer-1-06",
+   "family": "xmem",
+   "ok": false,
+   "why": "did not state the remembered detail",
+   "reply": "I can find your email to Aditya - would you like me to search for it now?",
+   "seconds": 1.2
+  },
+  {
+   "id": "xmem-answer-1-07",
+   "family": "xmem",
+   "ok": false,
+   "why": "called find_email_thread instead of answering",
+   "reply": "{\"tool\": \"find_email_thread\", \"args\": {\"query\": \"tanvi at lumenlabssouthern\"}}",
+   "seconds": 1.3
+  },
+  {
+   "id": "xmem-answer-1-08",
+   "family": "xmem",
+   "ok": false,
+   "why": "did not state the remembered detail",
+   "reply": "Let me check your message to Anika for you.",
+   "seconds": 1.9
+  },
+  {
+   "id": "xmem-answer-1-09",
+   "family": "xmem",
+   "ok": true,
+   "why": "did not state the remembered detail",
+   "reply": "According to my earlier message activity, I sent WhatsApp to Aditya: \"Dinner is booked at Olive Garden for 8:30 on Saturday\".",
+   "seconds": 2.1
+  },
+  {
+   "id": "xmem-answer-1-10",
+   "family": "xmem",
+   "ok": true,
+   "why": "did not state the remembered detail",
+   "reply": "Maria has already gotten that - three hours ago you texted her: \"Dinner is booked at Olive Garden for 8:30 on Saturday\". Want to change anything?",
+   "seconds": 1.3
+  },
+  {
+   "id": "xmem-answer-1-11",
+   "family": "xmem",
+   "ok": false,
+   "why": "called read_clipboard instead of answering",
+   "reply": "{\n  \"tool\": \"read_clipboard\",\n  \"args\": {}\n}",
+   "seconds": 1.1
+  },
+  {
+   "id": "xmem-answer-1-12",
+   "family": "xmem",
+   "ok": true,
+   "why": "did not state the remembered detail",
+   "reply": "Anikas messages: [2h ago] \"My flight lands at 6:40pm at terminal 2\"",
+   "seconds": 1.2
+  },
+  {
+   "id": "xmem-answer-1-13",
+   "family": "xmem",
+   "ok": false,
+   "why": "called read_clipboard instead of answering",
+   "reply": "{\n\"tool\": \"read_clipboard\",\n\"args\": {}\n}",
+   "seconds": 1.1
+  },
+  {
+   "id": "xmem-answer-1-14",
+   "family": "xmem",
+   "ok": true,
+   "why": "did not state the remembered detail",
+   "reply": "Here's what I wrote to Anika: \"The demo build is uploaded to the shared drive\". Want me to reply to that email?",
+   "seconds": 1.3
+  },
+  {
+   "id": "xmem-answer-1-15",
+   "family": "xmem",
+   "ok": false,
+   "why": "called find_email_thread instead of answering",
+   "reply": "Let me find that conversation for you.\n\n{\"tool\": \"find_email_thread\", \"args\": {\"query\": \"571981776\"}}",
+   "seconds": 1.5
+  },
+  {
+   "id": "xmem-relay-email-00",
+   "family": "xmem",
+   "ok": false,
+   "why": "no tool call (wanted send_email)",
+   "reply": "Let me first find what I wrote to Hana about that follow-up, then send a reply to Ishita's address. What was my original message? And do you want this sent now or should we review it together?",
+   "seconds": 1.8
+  },
+  {
+   "id": "xmem-relay-email-01",
+   "family": "xmem",
+   "ok": false,
+   "why": "no tool call (wanted send_email)",
+   "reply": "I found your message to Nikhil - he mentioned that \"it's booked at Olive Garden on Saturday\". Should I send that to Farhan?",
+   "seconds": 2.4
+  },
+  {
+   "id": "xmem-relay-email-02",
+   "family": "xmem",
+   "ok": false,
+   "why": "no tool call (wanted send_email)",
+   "reply": "A bit - did you want me to send \"Payroll will be processed on the 28th\"?",
+   "seconds": 1.1
+  },
+  {
+   "id": "xmem-relay-email-03",
+   "family": "xmem",
+   "ok": false,
+   "why": "called find_email_thread, wanted send_email",
+   "reply": "Let me find that message from Telegram to get the exact text:\n\n{\"tool\": \"find_email_thread\", \"args\": {\"query\": \"Telegram\"}}",
+   "seconds": 1.3
+  },
+  {
+   "id": "xmem-relay-email-04",
+   "family": "xmem",
+   "ok": false,
+   "why": "no tool call (wanted send_email)",
+   "reply": "Let me send that to your Telegram message - where exactly did I say?",
+   "seconds": 1.2
+  },
+  {
+   "id": "xmem-relay-email-05",
+   "family": "xmem",
+   "ok": false,
+   "why": "no tool call (wanted send_email)",
+   "reply": "To make sure I send to the right person and get your reply exactly as intended - where did you want me to? And would you like me to confirm before sending?",
+   "seconds": 1.5
+  },
+  {
+   "id": "xmem-relay-email-06",
+   "family": "xmem",
+   "ok": false,
+   "why": "no tool call (wanted send_email)",
+   "reply": "Here's my confirmation of what will be sent:\n\nTo: Emma (emma@northwind.io)  \nSubject: following up on your message to me  \n\nI'll include what I said to Samir about the flight. Want any changes before sending?",
+   "seconds": 1.6
+  },
+  {
+   "id": "xmem-relay-email-07",
+   "family": "xmem",
+   "ok": false,
+   "why": "no tool call (wanted send_email)",
+   "reply": "I can find what I sent to Kabir and reply - which email thread? \"to the recruiter at Acme\" matches one, is that the right place to send it now?",
+   "seconds": 1.4
+  },
+  {
+   "id": "xmem-relay-email-08",
+   "family": "xmem",
+   "ok": false,
+   "why": "no tool call (wanted send_email)",
+   "reply": "To find out what I wrote to Sneha and send it to Chen, let me quickly look up that email thread first.",
+   "seconds": 1.3
+  },
+  {
+   "id": "xmem-relay-email-09",
+   "family": "xmem",
+   "ok": false,
+   "why": "no tool call (wanted send_email)",
+   "reply": "I don't know that email - nothing was sent to daniell at kestrel in my history, and your message may have been for someone else. Want me to send it?",
+   "seconds": 1.5
+  },
+  {
+   "id": "xmem-relay-email-10",
+   "family": "xmem",
+   "ok": false,
+   "why": "no tool call (wanted send_email)",
+   "reply": "You mentioned \"what I told chat 771214010\" - I don't have access to your Telegram conversations, so I can't see what was sent. Want me to send it now? If you want a specific message, tell me the text.",
+   "seconds": 1.7
+  },
+  {
+   "id": "xmem-relay-email-11",
+   "family": "xmem",
+   "ok": false,
+   "why": "no tool call (wanted send_email)",
+   "reply": "To find out what I said to Diya before replying, let me check your messages first. Can you confirm which WhatsApp group or conversation that was? That will help me get back into that thread and send it now.",
+   "seconds": 1.5
+  },
+  {
+   "id": "xmem-relay-email-12",
+   "family": "xmem",
+   "ok": false,
+   "why": "no tool call (wanted send_email)",
+   "reply": "The conversation with Telegram at that number says \"Dinner is booked at Olive Garden for 8:30 on Saturday\". Let me send that to Sofia.",
+   "seconds": 1.3
+  },
+  {
+   "id": "xmem-relay-email-13",
+   "family": "xmem",
+   "ok": false,
+   "why": "no tool call (wanted send_email)",
+   "reply": "Let me send that to Grace and then confirm with you before sending.",
+   "seconds": 1.0
+  },
+  {
+   "id": "xmem-relay-email-14",
+   "family": "xmem",
+   "ok": false,
+   "why": "no tool call (wanted send_email)",
+   "reply": "Looking at your message history: you sent Arnav \"The contract draft goes to legal on Monday\" and Kabir \"The vendor call is now on Wednesday at 11am\". \n\nI don't want to send a message only about what I told Kabir, or leave out the other thing. Which one should it be?",
+   "seconds": 2.0
+  },
+  {
+   "id": "xmem-relay-email-15",
+   "family": "xmem",
+   "ok": false,
+   "why": "no tool call (wanted send_email)",
+   "reply": "What would you like me to send them? If you want me to send your entire message, say so and I won't ask.",
+   "seconds": 1.3
+  }
+ ]
+}

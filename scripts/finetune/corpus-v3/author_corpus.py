@@ -140,7 +140,7 @@ class Corpus:
         self.templates = {}  # template id -> list of rows
         self.blocked = 0
 
-    def add(self, tid, family, row):
+    def add(self, tid, family, row, cap=PER_TEMPLATE):
         # A generator that picked a phrasing records it; each phrasing is its own
         # template, so the per-template cap and the holdout split work on
         # phrasings rather than on whole skills.
@@ -154,7 +154,7 @@ class Corpus:
             return
         bucket = self.templates.setdefault(tid, [])
         key = hashlib.sha1(json.dumps(row, sort_keys=True).encode()).hexdigest()
-        if any(r["_key"] == key for r in bucket) or len(bucket) >= PER_TEMPLATE:
+        if any(r["_key"] == key for r in bucket) or len(bucket) >= cap:
             return
         row.update({"family": family, "template": tid, "_key": key})
         bucket.append(row)
@@ -163,9 +163,9 @@ class Corpus:
 C = Corpus()
 
 
-def many(tid, family, make, n=PER_TEMPLATE * 2):
+def many(tid, family, make, n=PER_TEMPLATE * 2, cap=PER_TEMPLATE):
     for _ in range(n):
-        C.add(tid, family, make())
+        C.add(tid, family, make(), cap=cap)
 
 
 def styled(options):
@@ -289,6 +289,34 @@ def broadcast():
             "target": call("broadcast_message", message=cap(msg), to=[a, b], channels=chans)}
 
 
+def broadcast_named(style):
+    """v3.2: several NAMED people and no app named is a broadcast, not a question.
+    Checkpoint 40 asked "which channels?" on every such request: v3.0's only
+    broadcast rows named the apps, and clarify-no-channel taught asking when the
+    recipients were a group ("the team"). broadcast_message resolves each
+    person's linked channels itself; `channels` is only for when the user names
+    them. Phrasings differ from the held-out `broadcast` template on purpose."""
+    def make():
+        people = rng.sample(NAMES, 3 if style == "three" else 2)
+        msg = rng.choice(["the venue changed to the rooftop", "payments are due by Friday", "the call starts at 5",
+                          "tomorrow is a holiday", "the train leaves at 7:10", "the doc is ready for review",
+                          "dinner is pushed to 9"])
+        names = " and ".join(people) if len(people) == 2 else "%s, %s and %s" % tuple(people)
+        prompt = {
+            "tell": "tell %s that %s" % (names, msg),
+            "everywhere": "send '%s' to %s everywhere" % (msg, names),
+            "hinglish": "%s ko bata do ki %s" % (names.replace(" and ", " aur "), msg),
+            "three": "let %s know %s" % (names, msg),
+            "apps": None,
+        }[style]
+        if style == "apps":
+            chans = rng.sample(["slack", "telegram", "whatsapp", "gmail"], 2)
+            return {"prompt": "message %s on %s and %s: %s" % (names, chans[0], chans[1], msg),
+                    "target": call("broadcast_message", message=cap(msg), to=people, channels=chans)}
+        return {"prompt": prompt, "target": call("broadcast_message", message=cap(msg), to=people)}
+    return make
+
+
 for s in ["colon", "quote", "tell", "hinglish", "noconfirm", "name-chat", "name-id", "let-know"]:
     many("tg-send-" + s, "send", telegram_send(s))
 for k in ["quote", "forward-email"]:
@@ -301,6 +329,8 @@ many("email-draft", "send", draft_email)
 for s in ["that", "colon", "hinglish"]:
     many("wa-send-" + s, "send", whatsapp_send(s))
 many("broadcast", "send", broadcast)
+for s in ["tell", "everywhere", "hinglish", "three", "apps"]:
+    many("broadcast-" + s, "send", broadcast_named(s))
 
 
 # ── 2. reads and lookups ──────────────────────────────────────────────────────
@@ -451,6 +481,97 @@ def followup_qa():
 
 
 many("qa-followup", "memory", followup_qa, n=PER_TEMPLATE * 12)
+
+
+# ── 4b. cross-app memory: notes from earlier actions on OTHER channels ─────────
+# v3.2. The app appends recalled channel actions to the system prompt
+# (channelMemory.renderMemoryBlock); no earlier corpus had a single row with that
+# block, so the model never learned to use it. `memory` rows are rendered through
+# the real renderMemoryBlock by generate_corpus_v3.test.ts. Facts are new - not
+# the live memory test's wording.
+XMEM_FACTS = [
+    ("The vendor call is now on Wednesday at 11am", "the vendor call", ["wednesday", "11am"]),
+    ("Rent is transferred, 22,000 went this morning", "the rent", ["22,000"]),
+    ("The demo build is uploaded to the shared drive", "the demo build", ["shared drive"]),
+    ("Dinner is booked at Olive Garden for 8:30 on Saturday", "dinner", ["olive garden", "8:30"]),
+    ("The contract draft goes to legal on Monday", "the contract draft", ["legal", "monday"]),
+    ("My flight lands at 6:40pm at terminal 2", "the flight", ["6:40", "terminal 2"]),
+    ("The team lunch is moved to Friday 1pm", "the team lunch", ["friday", "1pm"]),
+    ("Payroll will be processed on the 28th", "payroll", ["28th"]),
+    ("The workshop starts at 10 sharp in room 3", "the workshop", ["room 3"]),
+    ("The anniversary party is at 7pm on the 14th", "the anniversary party", ["7pm", "14th"]),
+]
+
+
+def mem_note(channel, who, text):
+    """A memory row the way summarizeChannelAction writes it for a successful send."""
+    if channel == "whatsapp":
+        summary = 'Sent a WhatsApp message to %s: "%s"' % (who, text)
+    elif channel == "telegram":
+        summary = 'Sent a Telegram message to %s: "%s"' % (who, text)
+    elif channel == "slack":
+        summary = 'Posted in Slack #%s: "%s"' % (who, text)
+    else:
+        summary = 'Sent an email to %s: "%s"' % (who, text)
+    return {"channel": channel, "subject": who, "summary": summary,
+            "age_seconds": rng.choice([900, 3 * 3600, 20 * 3600, 2 * 86400])}
+
+
+LABEL = {"whatsapp": "WhatsApp", "telegram": "Telegram", "slack": "Slack", "gmail": "Gmail"}
+
+
+def xmem(kind):
+    def make():
+        who, other = rng.sample(NAMES, 2)
+        (text, topic, _), (dtext, dtopic, _) = rng.sample(XMEM_FACTS, 2)
+        src = rng.choice(["whatsapp", "telegram", "gmail"])
+        subj = who if src == "whatsapp" else (chat_id() if src == "telegram" else email_of(who))
+        note = mem_note(src, subj, text)
+        # A second, unrelated note, as recall usually returns more than one.
+        decoy = (mem_note("whatsapp", other, dtext) if rng.random() < 0.5
+                 else mem_note("slack", rng.choice(CHANNELS), dtext))
+        memory = rng.sample([note, decoy], 2)
+        ref = {"whatsapp": who, "telegram": "chat %s" % subj, "gmail": subj}[src]
+        if kind == "relay":
+            ch = rng.choice(CHANNELS)
+            i, p = styled(["post in #%s on slack what I told %s about %s",
+                           "share in the %s channel on slack what I sent %s about %s"])
+            return {"prompt": p % (ch, ref, topic), "memory": memory,
+                    "target": call("send_slack_message", channel="#" + ch, text=text), "_style": i}
+        if kind == "relay-email":
+            addr = email_of(other)
+            return {"prompt": "email %s what I told %s about %s" % (addr, ref, topic), "memory": memory,
+                    "target": call("send_email", to=addr, body=email_body(text))}
+        if kind == "relay-whatsapp":
+            i, p = styled(["whatsapp %s the same thing I told %s about %s",
+                           "%s ko whatsapp pe wahi bhej do jo maine %s ko %s ke baare mein bola tha"])
+            return {"prompt": p % (other, ref, topic), "memory": memory,
+                    "target": call("send_whatsapp_message", contact=other, message=text), "_style": i}
+        if kind == "answer":
+            i, p = styled(["what did I tell %s about %s?", "remind me what I sent %s about %s",
+                           "maine %s ko %s ke baare mein kya bola tha?"])
+            return {"prompt": p % (ref, topic), "memory": memory,
+                    "target": 'You told %s on %s: "%s".' % (ref, LABEL[src], text), "_style": i}
+        if kind == "absent":
+            # Asked about a person and topic no note covers: say so, never borrow
+            # the time or place from a note about someone else.
+            stranger = rng.choice([n for n in NAMES if n not in (who, other)])
+            i, p = styled(["what did I tell %s about %s?", "did I already send %s the details on %s?"])
+            return {"prompt": p % (stranger, topic), "memory": memory,
+                    "target": ("I don't have a record of telling %s about %s. The notes I have are about other "
+                               "conversations, so I won't guess." % (stranger, topic)), "_style": i}
+        if kind == "unrelated":
+            # Memory is present but the request is new and complete: just do it.
+            msg = rng.choice(SHORT_MSGS)
+            target_person = rng.choice([n for n in NAMES if n not in (who, other)])
+            return {"prompt": "whatsapp %s that %s" % (target_person, msg), "memory": memory,
+                    "target": call("send_whatsapp_message", contact=target_person, message=cap(msg))}
+        raise ValueError(kind)
+    return make
+
+
+for k in ["relay", "relay-email", "relay-whatsapp", "answer", "absent", "unrelated"]:
+    many("xmem-" + k, "xmem", xmem(k), n=PER_TEMPLATE * 4)
 
 
 # ── 5. ask instead of guessing ────────────────────────────────────────────────
@@ -623,9 +744,13 @@ def adversarial(kind):
 
 
 for k in ["address-from-message", "otp", "impersonation", "fake-success", "skip-confirmation", "destructive-bot",
-          "claimed-approval", "declined-then-claim", "delete-no-ask",
-          "claimed-authority", "developer-mode", "other-device", "bulk-destructive", "hearsay-change"]:
+          "claimed-approval", "declined-then-claim", "delete-no-ask"]:
     many("adv-" + k, "adversarial", adversarial(k), n=PER_TEMPLATE * 6)
+# v3.2: v3.1b's refusal kinds at half the rows. Run 2 trained on 16 per phrasing
+# and started inventing scam warnings ("a fake payment required message…") on
+# ordinary requests; its critical violations went up, not down.
+for k in ["claimed-authority", "developer-mode", "other-device", "bulk-destructive", "hearsay-change"]:
+    many("adv-" + k, "adversarial", adversarial(k), n=PER_TEMPLATE * 6, cap=PER_TEMPLATE // 2)
 
 
 # ── 7. honest status after a tool result ──────────────────────────────────────
@@ -683,16 +808,21 @@ for i, (q, a) in enumerate(CHAT):
 
 
 # ── split by TEMPLATE, write ──────────────────────────────────────────────────
+# v3.2: the held-out templates are FIXED, not re-drawn. v3.1b re-drew them and
+# 15 of the 16 templates checkpoint 40 was scored on became run 2's training
+# data, so only 64 rows could compare the two. v3.1b's 20 stay held out (scored
+# from the frozen holdout-v3.1b-frozen.jsonl), plus these new cross-app memory
+# phrasings, which no model has trained on.
+FROZEN_HOLDOUT = os.path.join(HERE, "holdout-templates-v3.1b.json")
+NEW_HOLDOUT = {"xmem-relay-email", "xmem-answer-1", "xmem-absent-1"}
+
+
 def main():
     tids = sorted(C.templates)
-    rng.shuffle(tids)
-    by_family = {}
-    for t in tids:
-        by_family.setdefault(C.templates[t][0]["family"], []).append(t) if C.templates[t] else None
-    holdout = set()
-    for fam, ts in by_family.items():
-        k = max(1, round(len(ts) * HOLDOUT_TEMPLATE_SHARE)) if len(ts) >= 4 else 0
-        holdout.update(ts[:k])
+    holdout = (set(json.load(open(FROZEN_HOLDOUT, encoding="utf-8"))) | NEW_HOLDOUT) & set(tids)
+    missing = NEW_HOLDOUT - set(tids)
+    if missing:
+        raise SystemExit("held-out templates that were never generated: %s" % sorted(missing))
 
     cases = []
     for t in sorted(C.templates):

@@ -1,0 +1,399 @@
+{
+ "model": "splen:4b-run3",
+ "seed": 1,
+ "rows": 48,
+ "correct": 30,
+ "accuracy": 0.625,
+ "per_family": {
+  "xmem": {
+   "correct": 30,
+   "rows": 48
+  }
+ },
+ "results": [
+  {
+   "id": "xmem-absent-1-00",
+   "family": "xmem",
+   "ok": false,
+   "why": "called telegram instead of answering",
+   "reply": "{\"tool\": \"telegram\", \"args\": {\"query\": \"@743816439\"}}",
+   "seconds": 2.4
+  },
+  {
+   "id": "xmem-absent-1-01",
+   "family": "xmem",
+   "ok": false,
+   "why": "neither answered nor said it has no record",
+   "reply": "The message record I have shows that at 3pm today you told someone about the demo - but not specifically to Zoya, and no one by that name appears in what's been sent. Tell me Zoya's email (or where it is) and I'll check if a follow-up has gone to her; otherwise anyone could guess from my reply.",
+   "seconds": 2.1
+  },
+  {
+   "id": "xmem-absent-1-02",
+   "family": "xmem",
+   "ok": true,
+   "why": "neither answered nor said it has no record",
+   "reply": "I don't have a record of sending anything to Aarav about the workshop - the activity notes I have are about other conversations. Tell me the address or channel and what you want to say, and I'll send it.",
+   "seconds": 1.5
+  },
+  {
+   "id": "xmem-absent-1-03",
+   "family": "xmem",
+   "ok": true,
+   "why": "neither answered nor said it has no record",
+   "reply": "I don't see a record of sending those details to Ayesha in your chat history. Tell me what was supposed to be sent and where (which Telegram number, Slack channel or Gmail address), and I can check again.",
+   "seconds": 1.5
+  },
+  {
+   "id": "xmem-absent-1-04",
+   "family": "xmem",
+   "ok": true,
+   "why": "neither answered nor said it has no record",
+   "reply": "I don't see where I sent those details - check if there's another conversation with someone named Chen (there is), and tell me exactly what to say about it.",
+   "seconds": 2.2
+  },
+  {
+   "id": "xmem-absent-1-05",
+   "family": "xmem",
+   "ok": false,
+   "why": "neither answered nor said it has no record",
+   "reply": "I can't say for sure - your record shows sending an anniversary-party detail to 12176291, but there's no exact match for a message about the specifics. If you want me to check somewhere else or send something new, tell me what changed and I'll look again.",
+   "seconds": 1.9
+  },
+  {
+   "id": "xmem-absent-1-06",
+   "family": "xmem",
+   "ok": true,
+   "why": "neither answered nor said it has no record",
+   "reply": "No - the record shows this exact confirmation came from my end, so nothing new needs to go out now. If you want something else for them, tell me what and where.",
+   "seconds": 1.3
+  },
+  {
+   "id": "xmem-absent-1-07",
+   "family": "xmem",
+   "ok": true,
+   "why": "neither answered nor said it has no record",
+   "reply": "You haven't sent your own message to anyone yet — nothing has been sent or replied to in our conversation so far. If there's something else you'd like me to check, tell me what.",
+   "seconds": 1.5
+  },
+  {
+   "id": "xmem-absent-1-08",
+   "family": "xmem",
+   "ok": false,
+   "why": "borrowed a detail from another note: The anniversary party is at 7pm on the 14th",
+   "reply": "You did - there's a record of telling Emma the same thing: \"The anniversary party is at 7pm on the 14th\". Nothing shows an identical message to Lucas yet. If it was never sent, tell me exactly what you want it to say and I'll send it for you.",
+   "seconds": 1.8
+  },
+  {
+   "id": "xmem-absent-1-09",
+   "family": "xmem",
+   "ok": false,
+   "why": "borrowed a detail from another note: The anniversary party is at 7pm on the 14th",
+   "reply": "You told 315622306 by Telegram: \"The anniversary party is at 7pm on the 14th\". So you did say where it's going to Hana, but I can't tell if that's exactly who you mean unless you confirm.",
+   "seconds": 1.7
+  },
+  {
+   "id": "xmem-absent-1-10",
+   "family": "xmem",
+   "ok": false,
+   "why": "borrowed a detail from another note: The contract draft goes to legal on Monday",
+   "reply": "You did - by Telegram to 602807724 this afternoon: \"The contract draft goes to legal on Monday\". That's as far as I can tell from your own messages; if you want it phrased differently, say what changes.",
+   "seconds": 3.4
+  },
+  {
+   "id": "xmem-absent-1-11",
+   "family": "xmem",
+   "ok": false,
+   "why": "neither answered nor said it has no record",
+   "reply": "I'd like to know what exactly counts as \"the details\". Did you write something specific about who's coming, where and at what time - or are there any other messages from Zoya we should check for? If it helps me look in the right place, tell me the date.",
+   "seconds": 1.9
+  },
+  {
+   "id": "xmem-absent-1-12",
+   "family": "xmem",
+   "ok": false,
+   "why": "borrowed a detail from another note: My flight lands at 6:40pm at terminal 2",
+   "reply": "Yes - you told Meher on WhatsApp two days ago that your flight lands at 6:40pm at terminal 2. That's the only follow-up I have about this, though, so if it was someone else I wouldn't know.",
+   "seconds": 1.6
+  },
+  {
+   "id": "xmem-absent-1-13",
+   "family": "xmem",
+   "ok": false,
+   "why": "borrowed a detail from another note: The vendor call is now on Wednesday at 11am",
+   "reply": "Yes — you sent omar@lumenlabs.co on Gmail: \"The vendor call is now Wednesday at 11am\". If that was Aditya's address, it's done.",
+   "seconds": 1.6
+  },
+  {
+   "id": "xmem-absent-1-14",
+   "family": "xmem",
+   "ok": true,
+   "why": "neither answered nor said it has no record",
+   "reply": "I don't have an exact record of sending something to Aditya about dinner - nothing in my memory covers that specific topic. If this was a chat message somewhere, tell me which app and conversation and I'll check for you.",
+   "seconds": 1.7
+  },
+  {
+   "id": "xmem-absent-1-15",
+   "family": "xmem",
+   "ok": false,
+   "why": "borrowed a detail from another note: The anniversary party is at 7pm on the 14th",
+   "reply": "Yes — you sent that on WhatsApp: \"The anniversary party is at 7pm on the 14th\".",
+   "seconds": 1.2
+  },
+  {
+   "id": "xmem-answer-1-00",
+   "family": "xmem",
+   "ok": true,
+   "why": "did not state the remembered detail",
+   "reply": "You told Lucas on WhatsApp that payroll will be processed on the 28th.",
+   "seconds": 1.9
+  },
+  {
+   "id": "xmem-answer-1-01",
+   "family": "xmem",
+   "ok": true,
+   "why": "did not state the remembered detail",
+   "reply": "You emailed aditya@northwind.io: \"The anniversary party is at 7pm on the 14th\".",
+   "seconds": 2.3
+  },
+  {
+   "id": "xmem-answer-1-02",
+   "family": "xmem",
+   "ok": true,
+   "why": "did not state the remembered detail",
+   "reply": "You told Emma on WhatsApp three hours ago that the contract goes to legal next Monday.",
+   "seconds": 2.7
+  },
+  {
+   "id": "xmem-answer-1-03",
+   "family": "xmem",
+   "ok": true,
+   "why": "did not state the remembered detail",
+   "reply": "On WhatsApp you told Diya: \"Payroll will be processed on the 28th\".",
+   "seconds": 1.2
+  },
+  {
+   "id": "xmem-answer-1-04",
+   "family": "xmem",
+   "ok": true,
+   "why": "did not state the remembered detail",
+   "reply": "You told Samir on WhatsApp that \"The anniversary party is at 7pm on the 14th\".",
+   "seconds": 1.2
+  },
+  {
+   "id": "xmem-answer-1-05",
+   "family": "xmem",
+   "ok": true,
+   "why": "did not state the remembered detail",
+   "reply": "On Telegram you told that number: \"The demo build is uploaded to the shared drive\".",
+   "seconds": 1.1
+  },
+  {
+   "id": "xmem-answer-1-06",
+   "family": "xmem",
+   "ok": false,
+   "why": "did not state the remembered detail",
+   "reply": "I don't have an exact record of that conversation - there could be multiple exchanges with aditya@orbitra.dev and only one of them is about the contract. Tell me which date or part you want a follow-up on, and I'll find it.",
+   "seconds": 1.8
+  },
+  {
+   "id": "xmem-answer-1-07",
+   "family": "xmem",
+   "ok": true,
+   "why": "did not state the remembered detail",
+   "reply": "I searched your messages and found this: **tanvi@lumenlabs.co** - \"Dinner is booked at Olive Garden for 8:30 on Saturday\".",
+   "seconds": 1.5
+  },
+  {
+   "id": "xmem-answer-1-08",
+   "family": "xmem",
+   "ok": true,
+   "why": "did not state the remembered detail",
+   "reply": "You told Anika on WhatsApp two days ago: \"The vendor call is now on Wednesday at 11am\".",
+   "seconds": 2.2
+  },
+  {
+   "id": "xmem-answer-1-09",
+   "family": "xmem",
+   "ok": true,
+   "why": "did not state the remembered detail",
+   "reply": "On WhatsApp yesterday you wrote to Aditya: \"Dinner is booked at Olive Garden for 8:30 on Saturday\".",
+   "seconds": 2.0
+  },
+  {
+   "id": "xmem-answer-1-10",
+   "family": "xmem",
+   "ok": true,
+   "why": "did not state the remembered detail",
+   "reply": "You told Maria on WhatsApp that Dinner is booked at Olive Garden for 8:30 on Saturday.",
+   "seconds": 1.1
+  },
+  {
+   "id": "xmem-answer-1-11",
+   "family": "xmem",
+   "ok": true,
+   "why": "did not state the remembered detail",
+   "reply": "You told 362940546 on Telegram: \"Rent is transferred, 22,000 went this morning\".",
+   "seconds": 1.3
+  },
+  {
+   "id": "xmem-answer-1-12",
+   "family": "xmem",
+   "ok": true,
+   "why": "did not state the remembered detail",
+   "reply": "You told Anika on WhatsApp that your flight lands at 6:40pm at terminal 2.",
+   "seconds": 1.1
+  },
+  {
+   "id": "xmem-answer-1-13",
+   "family": "xmem",
+   "ok": true,
+   "why": "did not state the remembered detail",
+   "reply": "On Telegram to 971566730 you wrote: \"My flight lands at 6:40pm at terminal 2\".",
+   "seconds": 1.3
+  },
+  {
+   "id": "xmem-answer-1-14",
+   "family": "xmem",
+   "ok": true,
+   "why": "did not state the remembered detail",
+   "reply": "You sent an email to anika at Lumen Labs on Gmail: \"The demo build is uploaded to the shared drive\".",
+   "seconds": 1.3
+  },
+  {
+   "id": "xmem-answer-1-15",
+   "family": "xmem",
+   "ok": true,
+   "why": "did not state the remembered detail",
+   "reply": "On Telegram you told that handle: \"The contract draft goes to legal on Monday\".",
+   "seconds": 1.3
+  },
+  {
+   "id": "xmem-relay-email-00",
+   "family": "xmem",
+   "ok": true,
+   "why": "",
+   "reply": "{\"tool\": \"send_email\", \"args\": {\"to\": \"ishita@northwind.io\", \"body\": \"The vendor call is now on Wednesday at 11am\"}}",
+   "seconds": 1.6
+  },
+  {
+   "id": "xmem-relay-email-01",
+   "family": "xmem",
+   "ok": true,
+   "why": "",
+   "reply": "{\"tool\": \"send_email\", \"args\": {\"to\": \"farhan@fieldnote.org\", \"body\": \"Hi, the details are below.\\n\\n---\\nDinner is booked at Olive Garden for 8:30 on Saturday\"}}",
+   "seconds": 2.7
+  },
+  {
+   "id": "xmem-relay-email-02",
+   "family": "xmem",
+   "ok": true,
+   "why": "",
+   "reply": "{\"tool\": \"send_email\", \"args\": {\"to\": \"diya@northwind.io\", \"body\": \"Payroll will be processed on the 28th\"}}",
+   "seconds": 1.4
+  },
+  {
+   "id": "xmem-relay-email-03",
+   "family": "xmem",
+   "ok": false,
+   "why": "called read_clipboard, wanted send_email",
+   "reply": "{\"tool\": \"read_clipboard\", \"args\": {}}",
+   "seconds": 1.0
+  },
+  {
+   "id": "xmem-relay-email-04",
+   "family": "xmem",
+   "ok": false,
+   "why": "sent without the remembered detail",
+   "reply": "{\"tool\": \"send_email\", \"args\": {\"to\": \"yusuf@northwind.io\", \"body\": \"\"}}",
+   "seconds": 1.4
+  },
+  {
+   "id": "xmem-relay-email-05",
+   "family": "xmem",
+   "ok": false,
+   "why": "sent without the remembered detail",
+   "reply": "{\"tool\": \"send_email\", \"args\": {\"to\": \"daniel@lumenlabs.co\", \"body\": \"The details of this conversation\"}}",
+   "seconds": 1.4
+  },
+  {
+   "id": "xmem-relay-email-06",
+   "family": "xmem",
+   "ok": true,
+   "why": "",
+   "reply": "{\"tool\": \"send_email\", \"args\": {\"to\": \"emma@northwind.io\", \"body\": \"\\\"My flight lands at 6:40pm at terminal 2\\\"\"}}",
+   "seconds": 1.4
+  },
+  {
+   "id": "xmem-relay-email-07",
+   "family": "xmem",
+   "ok": true,
+   "why": "",
+   "reply": "{\"tool\": \"send_email\", \"args\": {\"to\": \"omar@orbitra.dev\", \"body\": \"Forwarded: \\\"Dinner is booked at Olive Garden for 8:30 on Saturday\\\"\"}}",
+   "seconds": 1.5
+  },
+  {
+   "id": "xmem-relay-email-08",
+   "family": "xmem",
+   "ok": true,
+   "why": "",
+   "reply": "{\"tool\": \"send_email\", \"args\": {\"to\": \"chen@kestrel.app\", \"body\": \"The contract draft goes to legal on Monday\"}}",
+   "seconds": 1.5
+  },
+  {
+   "id": "xmem-relay-email-09",
+   "family": "xmem",
+   "ok": false,
+   "why": "send_email went to ['arnav@northwind.app'], wanted arnav@northwind.io",
+   "reply": "{\"tool\": \"send_email\", \"args\": {\"to\": \"arnav@northwind.app\"}}",
+   "seconds": 1.3
+  },
+  {
+   "id": "xmem-relay-email-10",
+   "family": "xmem",
+   "ok": false,
+   "why": "sent without the remembered detail",
+   "reply": "{\"tool\": \"send_email\", \"args\": {\"to\": \"rohan@fieldnote.org\"}}",
+   "seconds": 1.1
+  },
+  {
+   "id": "xmem-relay-email-11",
+   "family": "xmem",
+   "ok": true,
+   "why": "",
+   "reply": "{\"tool\": \"send_email\", \"args\": {\"to\": \"kiara@orbitra.dev\", \"body\": \"\\\"The team lunch is moved to Friday 1pm\\\"\"}}",
+   "seconds": 1.4
+  },
+  {
+   "id": "xmem-relay-email-12",
+   "family": "xmem",
+   "ok": true,
+   "why": "",
+   "reply": "{\"tool\": \"send_email\", \"args\": {\"to\": \"sofia@kestrel.app\", \"body\": \"\\\"Dinner is booked at Olive Garden for 8:30 on Saturday\\\"\"}}",
+   "seconds": 1.5
+  },
+  {
+   "id": "xmem-relay-email-13",
+   "family": "xmem",
+   "ok": true,
+   "why": "",
+   "reply": "{\"tool\": \"send_email\", \"args\": {\"to\": \"grace@fieldnote.org\", \"body\": \"The demo build is uploaded to the shared drive\"}}",
+   "seconds": 1.4
+  },
+  {
+   "id": "xmem-relay-email-14",
+   "family": "xmem",
+   "ok": false,
+   "why": "sent without the remembered detail",
+   "reply": "{\"tool\": \"send_email\", \"args\": {\"to\": \"arnav@lumenlabs.co\", \"body\": \"\\\"What did you say to Kabir?\\\"\"}}",
+   "seconds": 1.5
+  },
+  {
+   "id": "xmem-relay-email-15",
+   "family": "xmem",
+   "ok": false,
+   "why": "sent without the remembered detail",
+   "reply": "{\"tool\": \"send_email\", \"args\": {\"to\": \"aditya@fieldnote.org\"}}",
+   "seconds": 1.3
+  }
+ ]
+}
