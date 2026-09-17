@@ -11,6 +11,10 @@ describe('labelForModel', () => {
     expect(labelForModel('qwen2.5:latest')).toBe('Qwen 2.5')
   })
 
+  it('drops the registry namespace, which names the publisher not the model', () => {
+    expect(labelForModel('openui/splen:4b')).toBe('Splen 4B')
+  })
+
   it('handles an id with no tag', () => {
     expect(labelForModel('mistral')).toBe('Mistral')
   })
