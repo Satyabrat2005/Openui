@@ -85,6 +85,20 @@ describe('resolveOllamaModel', () => {
 })
 
 describe('resolveGeneralModel', () => {
+  it('is Splen by default', async () => {
+    const { resolveGeneralModel, SPLEN_MODEL } = await withInstalled(['openui/splen:4b'])
+    expect(SPLEN_MODEL).toBe('openui/splen:4b')
+    expect(await resolveGeneralModel()).toBe(SPLEN_MODEL)
+  })
+
+  it('does not swap Splen for the old default a v7.3.0 install already has', async () => {
+    // Substituting qwen3.5:latest would keep every upgraded user off Splen for
+    // good; returning Splen lets the chat turn download it once instead.
+    const { resolveGeneralModel, SPLEN_MODEL } = await withInstalled(['qwen3.5:latest'])
+    expect(await resolveGeneralModel()).toBe(SPLEN_MODEL)
+    expect(console.warn).not.toHaveBeenCalled()
+  })
+
   it('treats OLLAMA_MODEL as a preference, not a guarantee', async () => {
     // A stale .env pointing at an uninstalled model must not break every turn.
     process.env.OLLAMA_MODEL = 'llama3:8b'

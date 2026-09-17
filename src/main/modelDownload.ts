@@ -55,16 +55,18 @@ export interface CatalogModel {
   /**
    * Whose weights these are and under what licence, shown beside the model.
    * Apache-2.0 requires the attribution to travel with redistribution; showing
-   * it where the user downloads the model is also simply honest — "Splen" is
-   * OpenUI's assistant, running on a third party's open model, not weights we
-   * trained from scratch. Full text: resources/THIRD_PARTY_MODEL_NOTICES.md.
+   * it where the user downloads the model is also simply honest — Splen 4B is
+   * OpenUI's fine-tune of a third party's open model, not weights we trained
+   * from scratch. Full text: resources/THIRD_PARTY_MODEL_NOTICES.md.
    */
   attribution: string
 }
 
 /**
  * Sizes are the real model-layer size from the Ollama registry manifest, not an
- * estimate. Verified 2026-09-11. `about 2 GB` shipped here previously and was
+ * estimate. Verified 2026-09-11; Splen 4B's is the model layer
+ * `ollama create -q q4_K_M` produced (2026-09-17). `about 2 GB` shipped here
+ * previously and was
  * wrong by 3.3x for the default model, which is the worst place to be wrong: it
  * is the first download a new user starts, and someone on a metered or slow
  * connection consented to a figure that was not real.
@@ -80,7 +82,7 @@ export interface CatalogModel {
  * static.
  */
 export const MODEL_LAYER_BYTES: Record<string, number> = {
-  [DEFAULT_GENERAL_MODEL]: 6_594_462_816,
+  [DEFAULT_GENERAL_MODEL]: 2_790_000_288,
   [DEFAULT_CODE_MODEL]: 4_683_074_048
 }
 
@@ -101,7 +103,7 @@ export const MODEL_CATALOG: CatalogModel[] = [
     label: 'Splen',
     purpose: 'Reads, summarises and replies to your messages across WhatsApp, Telegram, Slack and Gmail.',
     approxSize: approxSizeLabel(MODEL_LAYER_BYTES[DEFAULT_GENERAL_MODEL]),
-    attribution: 'Runs Qwen3.5 by Alibaba Cloud · Apache License 2.0'
+    attribution: 'Splen 4B, fine-tuned by OpenUI from Qwen3.5-4B by Alibaba Cloud · Apache License 2.0'
   },
   {
     id: DEFAULT_CODE_MODEL,

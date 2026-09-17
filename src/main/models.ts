@@ -37,11 +37,20 @@ const OLLAMA_HOST = process.env.OLLAMA_HOST ?? 'http://127.0.0.1:11434'
 const POOL_CACHE_MS = 30_000
 
 /**
- * Preferred tags. These are only ever a *starting point* — `resolveOllamaModel`
- * maps them onto a model this machine really has, so a preference that was never
- * pulled (or a tag that does not exist in the registry) can't take the app down.
+ * Splen-4B: OpenUI's own texting model, a QLoRA fine-tune of Qwen3.5-4B
+ * (Apache-2.0), published to the Ollama registry so the in-app download is the
+ * same /api/pull as any other model. Checkpoint 40 of run 1 — the results and the
+ * launch decision are in docs/splen-4b.md.
  */
-export const DEFAULT_GENERAL_MODEL = 'qwen3.5:latest'
+export const SPLEN_MODEL = 'openui/splen:4b'
+
+/**
+ * Preferred tags. The code model is only a *starting point* — `resolveOllamaModel`
+ * maps it onto a model this machine really has, so a preference that was never
+ * pulled (or a tag that does not exist in the registry) can't take the app down.
+ * The general model is Splen and is NOT substituted; see resolveGeneralModel.
+ */
+export const DEFAULT_GENERAL_MODEL = SPLEN_MODEL
 export const DEFAULT_CODE_MODEL = 'qwen2.5-coder:7b'
 
 /**
@@ -62,9 +71,10 @@ function prettifyCloud(id: string): string {
   return dotted.replace(/-/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
 }
 
-/** Turn "llama3:8b" → "Llama 3 8B", "qwen2.5:latest" → "Qwen 2.5". */
+/** Turn "llama3:8b" → "Llama 3 8B", "qwen2.5:latest" → "Qwen 2.5", "openui/splen:4b" → "Splen 4B". */
 function prettifyOllama(name: string): string {
-  const base = name.split(':')[0]
+  // A registry namespace ("openui/") names the publisher, not the model.
+  const base = name.split(':')[0].replace(/^.*\//, '')
   const spaced = base.replace(/([a-z])(\d)/gi, '$1 $2').replace(/[-_]/g, ' ')
   const tag = name.includes(':') ? name.split(':')[1] : ''
   const size = tag && tag !== 'latest' ? ` ${tag.toUpperCase()}` : ''
@@ -177,9 +187,15 @@ export function invalidateModelPoolCache(): void {
  * configured-but-never-pulled tag is precisely what used to kill every turn.
  * Shared by the chat router (agent.ts) and the weekly prompt refiner so the two
  * can never disagree about which model ran.
+ *
+ * Without an override the answer is always Splen, even when it is not installed
+ * yet. Every v7.3.0 install has qwen3.5:latest on disk, and substituting that
+ * would leave those users on the old model forever. Returning Splen lets
+ * agent.ts's ensureModelAvailable download it once, with a heads-up in the chat.
  */
 export async function resolveGeneralModel(): Promise<string> {
-  return resolveOllamaModel(process.env.OLLAMA_MODEL ?? DEFAULT_GENERAL_MODEL)
+  const override = process.env.OLLAMA_MODEL
+  return override ? resolveOllamaModel(override) : DEFAULT_GENERAL_MODEL
 }
 
 // ── cloud (Anthropic) tier — bring-your-own-key ──────────────────────────────

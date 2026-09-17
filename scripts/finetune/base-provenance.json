@@ -114,6 +114,31 @@
       "licence_sha256": "4a99a6dd617d9f901f29fe91925d5032600fcd78f315a9fa78c1667c950a3a5f",
       "licence_first_line": "Apache License",
       "checked": "2026-09-13T15:09:37"
+    },
+    "openui/splen:4b": {
+      "source": "ollama",
+      "id": "openui/splen:4b",
+      "model_layer_digest": "sha256:0db1fd5a145d5496b06e1ad338a097c36c9fefabbd2fadf65d4a67cb9c779b85",
+      "licence_layer_digests": [
+        "sha256:eb28c3538bdcf5c21ebd7b04e74bf039e3787cff3d640d0bec1f73b8d8793005"
+      ],
+      "verdict": "apache",
+      "licence_sha256": "eb28c3538bdcf5c21ebd7b04e74bf039e3787cff3d640d0bec1f73b8d8793005",
+      "licence_first_line": "Splen is OpenUI's texting assistant model: a fine-tuned derivative of",
+      "checked": "2026-09-17T14:43:22"
+    },
+    "Qwen/Qwen3.5-4B": {
+      "source": "hf",
+      "id": "Qwen/Qwen3.5-4B",
+      "licence_files": [
+        "LICENSE",
+        "README.md front-matter"
+      ],
+      "snapshot": "851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a",
+      "verdict": "apache",
+      "licence_sha256": "b71a8b620be2b8afb4c58277be7b145b331190ef1f8195be30bba835a341bd06",
+      "licence_first_line": "Apache License",
+      "checked": "2026-09-17T14:43:22"
     }
   }
 }
