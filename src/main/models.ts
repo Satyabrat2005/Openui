@@ -38,19 +38,23 @@ const POOL_CACHE_MS = 30_000
 
 /**
  * Splen-4B: OpenUI's own texting model, a QLoRA fine-tune of Qwen3.5-4B
- * (Apache-2.0), published to the Ollama registry so the in-app download is the
- * same /api/pull as any other model. Checkpoint 40 of run 1 — the results and the
- * launch decision are in docs/splen-4b.md.
+ * (Apache-2.0). Results: docs/SPLEN-MODEL-CARD.md.
+ *
+ * NOT the default, and not on any public registry. The owner's requirement is
+ * that Splen runs only inside OpenUI: anything installed into the user's Ollama
+ * can be run from a terminal (`ollama run`) or by any other app on the machine.
+ * It ships once the app runs it in-process from a private, sign-in-gated
+ * download (planned v7.5.0). Until then this tag exists nowhere a user can pull
+ * it from, so it must not be what resolveGeneralModel returns.
  */
 export const SPLEN_MODEL = 'openui/splen:4b'
 
 /**
- * Preferred tags. The code model is only a *starting point* — `resolveOllamaModel`
- * maps it onto a model this machine really has, so a preference that was never
+ * Preferred tags. These are only ever a *starting point* — `resolveOllamaModel`
+ * maps them onto a model this machine really has, so a preference that was never
  * pulled (or a tag that does not exist in the registry) can't take the app down.
- * The general model is Splen and is NOT substituted; see resolveGeneralModel.
  */
-export const DEFAULT_GENERAL_MODEL = SPLEN_MODEL
+export const DEFAULT_GENERAL_MODEL = 'qwen3.5:latest'
 export const DEFAULT_CODE_MODEL = 'qwen2.5-coder:7b'
 
 /**
@@ -187,15 +191,9 @@ export function invalidateModelPoolCache(): void {
  * configured-but-never-pulled tag is precisely what used to kill every turn.
  * Shared by the chat router (agent.ts) and the weekly prompt refiner so the two
  * can never disagree about which model ran.
- *
- * Without an override the answer is always Splen, even when it is not installed
- * yet. Every v7.3.0 install has qwen3.5:latest on disk, and substituting that
- * would leave those users on the old model forever. Returning Splen lets
- * agent.ts's ensureModelAvailable download it once, with a heads-up in the chat.
  */
 export async function resolveGeneralModel(): Promise<string> {
-  const override = process.env.OLLAMA_MODEL
-  return override ? resolveOllamaModel(override) : DEFAULT_GENERAL_MODEL
+  return resolveOllamaModel(process.env.OLLAMA_MODEL ?? DEFAULT_GENERAL_MODEL)
 }
 
 // ── cloud (Anthropic) tier — bring-your-own-key ──────────────────────────────

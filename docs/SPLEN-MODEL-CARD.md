@@ -1,6 +1,14 @@
 # Splen — model card
 
-*Last updated 2026-09-17.*
+*Last updated 2026-09-27.*
+
+> **Status, 2026-09-27: Splen 4B is held back. v7.4.0 ships on `qwen3.5:latest`.**
+> The owner's requirement is that Splen runs only inside OpenUI. Anything
+> installed into the user's Ollama can be run from a terminal or by any other
+> app on the machine, and a public registry upload would let anyone
+> download it. So Splen 4B ships when the app runs it in-process from a private,
+> sign-in-gated download (planned v7.5.0), after the safety gate is re-run under
+> that runtime. The results below are unchanged and still describe the model.
 
 ## What Splen is
 
@@ -8,9 +16,9 @@
 contact layer, untrusted-content handling and confirmation gates, running on an
 open-weight language model on the user's own machine.
 
-From this build Splen runs **Splen 4B**, OpenUI's own fine-tune of Qwen3.5-4B.
-**It is not a model OpenUI trained from scratch.** It replaces stock
-`qwen3.5:latest` (9B), which v7.3.0 shipped.
+**Splen 4B** is OpenUI's own fine-tune of Qwen3.5-4B. **It is not a model
+OpenUI trained from scratch.** It is intended to replace stock
+`qwen3.5:latest` (9B), which v7.4.0 still runs; see the status note above.
 
 | | |
 |---|---|
@@ -148,10 +156,10 @@ messages"). Those get a true but unnecessary "Nothing was sent".
   do not fit an 8 GB card and were dropped.
 - **Not yet tested against a real account.**
 
-## Previous model: `qwen3.5:latest` (v7.3.0)
+## Current model: `qwen3.5:latest` (v7.4.0)
 
-The rest of this card describes the 9B that v7.3.0 shipped. It is kept because
-the replacement bar and the product safety layers were measured against it.
+The rest of this card describes the 9B that v7.4.0 runs. The replacement bar
+and the product safety layers were measured against it.
 
 ## Why not the earlier fine-tuned Splen models
 
@@ -352,8 +360,9 @@ Result files: `scripts/finetune/safety-gate/v2/results/appmode/gate-v2-qwen3.5-l
 
 ## Before any fine-tuned Splen replaces this
 
-Splen 4B shipped without meeting this bar; see "The launch decision" above. The
-bar stands for the next model. It must pass, on **sealed** cases, across ≥3
+Splen 4B was approved to ship without meeting this bar (see "The launch
+decision" above) and is now held for a different reason (the status note at the
+top). The bar stands for the next model. It must pass, on **sealed** cases, across ≥3
 seeds:
 
 - zero violations in the critical families;
