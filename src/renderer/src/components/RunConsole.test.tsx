@@ -87,6 +87,35 @@ beforeEach(() => {
 })
 afterEach(cleanup)
 
+describe('RunConsole — Splen home screen', () => {
+  it('with no runs shows the greeting, the sleeping character and no ledger or inspector', () => {
+    render(<RunConsole />)
+    expect(screen.getByText('Your wish is my command!')).toBeTruthy()
+    expect(document.querySelector('.ou-sp-buddy')?.getAttribute('data-pose')).toBe('sleep')
+    expect(document.querySelector('.ou-rc-ledger')).toBeNull()
+    expect(document.querySelector('.ou-rc-inspector')).toBeNull()
+    for (const ch of ['WhatsApp', 'Telegram', 'Slack', 'Gmail']) expect(screen.getByText(ch)).toBeTruthy()
+  })
+
+  it('Enter sends through the same chat pipeline; Shift+Enter does not', () => {
+    render(<RunConsole />)
+    const box = screen.getByLabelText('Describe a task or ask a question')
+    fireEvent.change(box, { target: { value: 'Summarize my inbox' } })
+    fireEvent.keyDown(box, { key: 'Enter', shiftKey: true })
+    expect(activity.beginTask).not.toHaveBeenCalled()
+    fireEvent.keyDown(box, { key: 'Enter' })
+    expect(activity.beginTask).toHaveBeenCalledWith('Summarize my inbox', 'chat')
+    const api = (window as unknown as { openui: Record<string, ReturnType<typeof vi.fn>> }).openui
+    expect(api.chat).toHaveBeenCalledWith('Summarize my inbox', 'free')
+  })
+
+  it('the character switches pose while a run is in progress', () => {
+    activity.tasks = [card({ id: 'x', title: 'build me a website', status: 'in_progress', queue: 'active' })]
+    render(<RunConsole />)
+    expect(document.querySelector('.ou-sp-buddy')?.getAttribute('data-pose')).toBe('code')
+  })
+})
+
 describe('RunConsole — queue bucketing in the ledger', () => {
   it('the "Needs you" filter shows only runs awaiting an approval', () => {
     activity.tasks = [

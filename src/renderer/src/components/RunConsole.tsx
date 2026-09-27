@@ -10,7 +10,9 @@ import type {
 import type { AppKind } from '../lib/appKind'
 import { useTaskActivity } from '../context/TaskActivityContext'
 import { useAuth } from '../context/AuthContext'
-import { queueOf, statusToken, resolveInspectorOpen, inlineApprovalVisible, connectedScope } from '../lib/runQueue'
+import { queueOf, statusToken, resolveInspectorOpen, inlineApprovalVisible } from '../lib/runQueue'
+import { poseForRuns, POSE_CAPTION, DONE_LINGER_MS } from '../lib/buddyPose'
+import SplenBuddy from './SplenBuddy'
 import ConnectAppsModal, { getConnections, subscribeConnections, type ConnectableApp } from './ConnectAppsModal'
 import SettingsModal from './SettingsModal'
 import ConversationList from './ConversationList'
@@ -57,6 +59,31 @@ const BADGE: Record<AppKind, string> = {
 const APP_LABEL: Record<AppKind, string> = {
   browser: 'Web', github: 'GitHub', figma: 'Figma', files: 'Files', clipboard: 'Clipboard',
   calendar: 'Calendar', screen: 'Screen', whatsapp: 'WhatsApp', messaging: 'Messaging', app: 'App', thinking: 'Thinking'
+}
+
+/** The messaging channels Splen works across, in sidebar order. */
+const CHANNELS: Array<{ id: string; name: string }> = [
+  { id: 'whatsapp', name: 'WhatsApp' },
+  { id: 'telegram', name: 'Telegram' },
+  { id: 'slack', name: 'Slack' },
+  { id: 'gmail', name: 'Gmail' }
+]
+
+/** The Splen mark — a single hooked brush stroke. */
+function SplenMark(): JSX.Element {
+  return (
+    <svg className="ou-sp-mark" width="30" height="30" viewBox="0 0 32 32" aria-hidden="true">
+      <path
+        d="M11 3.5c-1.6 3.4-3.2 8.6-3 13.4.2 5.2 3.4 9.6 8.6 9.6 4.8 0 8.2-3.5 8.2-7.8 0-4.1-3-7-6.8-7-3 0-5.4 1.8-6.4 4.4"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2.4"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <path d="M11 3.5l3.4 2.6" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" />
+    </svg>
+  )
 }
 
 /** Reused from ActivityPanel — elapsed/duration formatting (do not reimplement). */
@@ -148,7 +175,16 @@ export default function RunConsole({
   // Live connection store — single source of truth for CONNECTED + scope pills.
   const [conns, setConns] = useState<ConnectableApp[]>(getConnections())
   useEffect(() => subscribeConnections(() => setConns(getConnections())), [])
-  const connected = useMemo(() => connectedScope(conns), [conns])
+
+  // Gmail is connected through Settings (Google OAuth), not the MCP catalog, so
+  // its state is read separately. Telegram/Slack tokens also live in Settings;
+  // the sidebar only shows a dot for a channel it KNOWS is connected.
+  const [gmailOn, setGmailOn] = useState(false)
+  useEffect(() => {
+    window.openui.gmailStatus?.().then((s) => setGmailOn(Boolean(s?.connected))).catch(() => {})
+  }, [showSettings])
+  const channelOn = (id: string): boolean =>
+    id === 'gmail' ? gmailOn : conns.some((c) => c.id === id && c.state === 'connected')
 
   // The REAL model the backend reported for the most recent turn, or null before
   // any turn has run. This chip used to read "llama-3.3-70b" as a hardcoded
@@ -202,11 +238,25 @@ export default function RunConsole({
     window.addEventListener('resize', onResize)
     return () => window.removeEventListener('resize', onResize)
   }, [])
-  const inspectorOpen = resolveInspectorOpen(inspectorManual, narrow)
 
   // Newest run first.
   const runs = useMemo(() => [...tasks].reverse(), [tasks])
+  const hasRuns = runs.length > 0
+
+  // The character's pose follows REAL run state. `modes` remembers the
+  // Answer/Act toggle each run was started with; `tick` re-evaluates once the
+  // short "done" beat is over so Splen dozes off again.
+  const [modes, setModes] = useState<Record<string, Mode>>({})
+  const [, setTick] = useState(0)
+  const pose = poseForRuns(runs, modes, Date.now())
+  useEffect(() => {
+    if (pose !== 'done') return
+    const id = window.setTimeout(() => setTick((t) => t + 1), DONE_LINGER_MS)
+    return () => window.clearTimeout(id)
+  }, [pose, runs])
   const selected = runs.find((r) => r.id === focusedId) ?? runs[0] ?? null
+  // The home screen (no runs yet) is the clean greeting view — no inspector.
+  const inspectorOpen = hasRuns && resolveInspectorOpen(inspectorManual, narrow)
 
   const filtered = useMemo(
     () => runs.filter((r) => {
@@ -257,10 +307,11 @@ export default function RunConsole({
     if (!text) return
     // Reuse the existing pipeline exactly — beginTask opens the ledger row, and
     // window.openui.chat(message, tier) is the SAME send path AssistantPopup uses.
+    setModes((m) => ({ ...m, [text]: mode }))
     beginTask(text, 'chat')
     void window.openui.chat(text, tier).catch(() => {})
     setInput('')
-  }, [input, beginTask, tier])
+  }, [input, beginTask, tier, mode])
 
   const newRun = useCallback(() => {
     window.openui.clearHistory()
@@ -298,59 +349,72 @@ export default function RunConsole({
   return (
     <div className="ou-rc">
       {/* ── Sidebar ─────────────────────────────────────────────────────── */}
-      <aside className="ou-rc-sidebar">
-        <button type="button" className="ou-rc-newrun" onClick={newRun}>
-          <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><path d="M7 2v10M2 7h10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" /></svg>
+      <aside className="ou-rc-sidebar ou-sp-sidebar">
+        <div className="ou-sp-brand">
+          <SplenMark />
+          <span className="ou-sp-brand-name">Splen</span>
+        </div>
+
+        <button type="button" className="ou-sp-newrun" onClick={newRun}>
+          <svg width="12" height="12" viewBox="0 0 14 14" aria-hidden="true"><path d="M7 2v10M2 7h10" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" /></svg>
           <span>New run</span>
-          <span className="ou-rc-kbd">⌘N</span>
         </button>
 
-        <div className="ou-rc-group">
-          <div className="ou-rc-group-label">RUNS</div>
-          <QueueRow label="Active" count={runningCount} dot="running" active={filter === 'running'} onClick={() => setFilter('running')} />
-          <QueueRow label="Needs you" count={waitingCount} dot="waiting" active={filter === 'waiting'} onClick={() => setFilter('waiting')} />
-          <QueueRow label="Scheduled" count={workflows.length} dot="scheduled" active={false} onClick={() => setShowHistory(false)} />
-          <QueueRow label="Finished" count={finishedCount} dot="finished" active={filter === 'done'} onClick={() => setFilter('done')} />
-        </div>
-
-        <div className="ou-rc-group">
-          <div className="ou-rc-group-label ou-rc-group-label-row">
-            <span>CONNECTED</span>
-            <button type="button" className="ou-rc-add" onClick={() => setShowConnect(true)}>+ ADD</button>
-          </div>
-          {conns.map((app) => {
-            const on = app.state === 'connected'
+        <nav className="ou-sp-channels" aria-label="Channels">
+          <div className="ou-sp-section-label">Channels</div>
+          {CHANNELS.map((ch) => {
+            const on = channelOn(ch.id)
             return (
-              <div key={app.id} className="ou-rc-conn">
-                <span className="ou-rc-badge" aria-hidden="true">{BADGE[app.kind] ?? app.name.slice(0, 2).toUpperCase()}</span>
-                <span className="ou-rc-conn-name">{app.name}</span>
-                <span className={`ou-rc-conn-state ${on ? 'on' : 'off'}`} aria-label={`${app.name} ${on ? 'connected' : 'not connected'}`}>
-                  {on && <span className="ou-rc-conn-dot" />}
-                  {on ? 'ON' : 'OFF'}
-                </span>
-              </div>
+              <button
+                key={ch.id}
+                type="button"
+                className="ou-sp-channel"
+                onClick={() => setShowSettings(true)}
+                title={on ? `${ch.name} is connected` : `Set up ${ch.name} in Settings`}
+              >
+                <span className="ou-sp-channel-name">{ch.name}</span>
+                {on && <span className="ou-sp-channel-dot" aria-label={`${ch.name} connected`} />}
+              </button>
             )
           })}
-        </div>
+          <button type="button" className="ou-sp-channel ou-sp-channel-more" onClick={() => setShowConnect(true)}>
+            + More apps
+          </button>
+        </nav>
 
-        <div className="ou-rc-sidebar-footer">
+        {hasRuns && (
+          <div className="ou-sp-runs">
+            <div className="ou-sp-section-label">Runs</div>
+            <QueueRow label="Active" count={runningCount} dot="running" active={filter === 'running'} onClick={() => setFilter('running')} />
+            <QueueRow label="Needs you" count={waitingCount} dot="waiting" active={filter === 'waiting'} onClick={() => setFilter('waiting')} />
+            <QueueRow label="Finished" count={finishedCount} dot="finished" active={filter === 'done'} onClick={() => setFilter('done')} />
+          </div>
+        )}
+
+        <div className="ou-rc-sidebar-footer ou-sp-footer">
+          <button type="button" className="ou-rc-foot-row" onClick={() => setShowWorkflows(true)}>
+            <svg width="15" height="15" viewBox="0 0 15 15" aria-hidden="true"><path d="M3 3.5h9M3 7.5h9M3 11.5h5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" /></svg>
+            <span>Workflows{workflows.length > 0 ? ` · ${workflows.length}` : ''}</span>
+          </button>
           <button type="button" className="ou-rc-foot-row" onClick={() => setShowSettings(true)}>
-            <svg width="15" height="15" viewBox="0 0 15 15" aria-hidden="true"><path d="M2 4h11M2 7.5h11M2 11h11" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" /></svg>
+            <svg width="15" height="15" viewBox="0 0 15 15" aria-hidden="true"><circle cx="7.5" cy="7.5" r="2.2" fill="none" stroke="currentColor" strokeWidth="1.3" /><path d="M7.5 1.5v2M7.5 11.5v2M1.5 7.5h2M11.5 7.5h2M3.3 3.3l1.4 1.4M10.3 10.3l1.4 1.4M3.3 11.7l1.4-1.4M10.3 4.7l1.4-1.4" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" /></svg>
             <span>Settings</span>
           </button>
           <button type="button" className="ou-rc-account" onClick={() => setShowHistory(true)} title="Workspace history">
             <span className="ou-rc-avatar" aria-hidden="true">{(user?.name ?? user?.email ?? 'You').slice(0, 1).toUpperCase()}</span>
             <span className="ou-rc-account-body">
               <span className="ou-rc-account-name">{user?.name ?? user?.email ?? 'Guest'}</span>
-              <span className="ou-rc-account-sub">LOCAL · OLLAMA</span>
+              <span className="ou-rc-account-sub">RUNS ON THIS COMPUTER</span>
             </span>
           </button>
         </div>
       </aside>
 
       {/* ── Content (composer + ledger) ─────────────────────────────────── */}
-      <div className="ou-rc-content">
-        <div className="ou-rc-composer-wrap">
+      <div className={`ou-rc-content ou-sp-content${hasRuns ? ' has-runs' : ''}`}>
+        <div className="ou-rc-composer-wrap ou-sp-stage">
+          <h1 className="ou-sp-greeting" aria-live="polite">{POSE_CAPTION[pose]}</h1>
+          <SplenBuddy pose={pose} compact={hasRuns} />
           {pull && (
             <div
               className="ou-rc-pullbar"
@@ -387,48 +451,41 @@ export default function RunConsole({
               </div>
             </div>
           )}
-          <div className="ou-rc-composer">
-            <div className="ou-rc-composer-row1">
-              <span className="ou-rc-check" aria-hidden="true">
-                <svg width="12" height="12" viewBox="0 0 12 12"><path d="M2 6.2l2.6 2.6L10 3" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" /></svg>
-              </span>
-              <input
-                className="ou-rc-input"
-                value={input}
-                placeholder="Describe a task, or ask a question. @ to attach context"
-                aria-label="Describe a task or ask a question"
-                onChange={(e) => setInput(e.target.value)}
-                onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) startRun() }}
-              />
-              <div className="ou-rc-seg" role="radiogroup" aria-label="Run mode">
-                <button type="button" role="radio" aria-checked={mode === 'ask'} className={`ou-rc-seg-btn${mode === 'ask' ? ' on' : ''}`} onClick={() => setMode('ask')}>Answer</button>
-                <button type="button" role="radio" aria-checked={mode === 'do'} className={`ou-rc-seg-btn${mode === 'do' ? ' on' : ''}`} onClick={() => setMode('do')}>Act</button>
+          <div className="ou-sp-composer">
+            <textarea
+              className="ou-rc-input ou-sp-input"
+              value={input}
+              rows={3}
+              placeholder="Describe a task, or ask a question"
+              aria-label="Describe a task or ask a question"
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={(e) => {
+                // Enter sends; Shift+Enter is a new line (Ctrl/⌘+Enter still sends).
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault()
+                  startRun()
+                }
+              }}
+            />
+            <div className="ou-sp-composer-controls">
+              <div className="ou-sp-seg" role="radiogroup" aria-label="Run mode">
+                <button type="button" role="radio" aria-checked={mode === 'ask'} className={`ou-sp-seg-btn${mode === 'ask' ? ' on' : ''}`} onClick={() => setMode('ask')}>Answer</button>
+                <button type="button" role="radio" aria-checked={mode === 'do'} className={`ou-sp-seg-btn${mode === 'do' ? ' on' : ''}`} onClick={() => setMode('do')}>Act</button>
               </div>
+              <button type="button" className="ou-sp-send" onClick={startRun} disabled={!input.trim()} aria-label="Start run" title="Send (Enter)">
+                <svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><path d="M21.5 2.5L10.8 13.2M21.5 2.5l-6.8 19-3.9-8.3-8.3-3.9 19-6.8z" fill="currentColor" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" /></svg>
+              </button>
             </div>
-            <div className="ou-rc-cantouch">
-              <span className="ou-rc-cantouch-label">CAN TOUCH</span>
-              {connected.length === 0 && <span className="ou-rc-cantouch-empty">Nothing connected yet</span>}
-              {connected.map((app) => (
-                <span key={app.id} className="ou-rc-pill">
-                  <span className="ou-rc-pill-badge" aria-hidden="true">{BADGE[app.kind] ?? app.name.slice(0, 2).toUpperCase()}</span>
-                  <span className="ou-rc-pill-name">{app.name}</span>
-                  <span className="ou-rc-pill-perm">{app.kind === 'browser' ? 'browse' : 'read/write'}</span>
-                </span>
-              ))}
-              <button type="button" className="ou-rc-pill-add" onClick={() => setShowConnect(true)}>+ scope</button>
-              <div className="ou-rc-cantouch-right">
-                <span className="ou-rc-model" title={activeModel ?? 'No turn has run yet'}>
-                  {activeModel ? labelForModel(activeModel) : 'Local AI'}
-                </span>
-                <div className="ou-rc-cantouch-div" />
-                <button type="button" className="ou-rc-startrun" onClick={startRun} disabled={!input.trim()}>
-                  Start run <span className="ou-rc-kbd ou-rc-kbd-on">⌘↵</span>
-                </button>
-              </div>
+            <div className="ou-sp-composer-foot">
+              <span className="ou-rc-model" title={activeModel ?? 'No turn has run yet'}>
+                {activeModel ? labelForModel(activeModel) : 'Local AI'}
+              </span>
+              <span className="ou-sp-hint">Enter to send · Shift+Enter for a new line</span>
             </div>
           </div>
         </div>
 
+        {hasRuns && (
         <div className="ou-rc-ledger">
           <div className="ou-rc-ledger-head">
             <span className="ou-rc-ledger-title">Run ledger</span>
@@ -471,6 +528,7 @@ export default function RunConsole({
             </div>
           )}
         </div>
+        )}
       </div>
 
       {/* ── Inspector ───────────────────────────────────────────────────── */}
@@ -482,7 +540,7 @@ export default function RunConsole({
           onToggleGuard={(k) => selected && toggleGuard(selected.id, k)}
         />
       )}
-      {!inspectorOpen && (
+      {hasRuns && !inspectorOpen && (
         <button type="button" className="ou-rc-inspector-tab" onClick={() => setInspectorManual(true)} aria-label="Open inspector">
           ‹
         </button>

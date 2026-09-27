@@ -5055,3 +5055,163 @@ body {
   line-height: 1.45;
 }
 .ou-fr-models { margin-top: 22px; }
+
+/* ─────────────────────────────────────────
+   SPLEN HOME — the owner's "Splen" design layered onto the Run Console.
+   Same data and handlers as the console (RunConsole.tsx); these ou-sp-* rules
+   only restyle it: brand + New run + Channels sidebar, a centred greeting, the
+   line-art character (SplenBuddy.tsx) and a large composer with the
+   Answer/Act pill and a round send button. Tokens only, except the send-button
+   blue, which the design specifies.
+───────────────────────────────────────── */
+.ou-sp-sidebar { width: 236px; padding: 18px 14px 12px; gap: 18px; }
+.ou-sp-brand { display: flex; align-items: center; gap: 12px; padding: 2px 4px 4px; color: var(--ou-text-max); }
+.ou-sp-mark { flex-shrink: 0; }
+.ou-sp-brand-name { font-size: 22px; font-weight: 400; letter-spacing: 0.01em; }
+.ou-sp-newrun {
+  height: 40px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 16px;
+  border-radius: var(--ou-r-btn);
+  background: var(--ou-bg-raised);
+  border: 1px solid var(--ou-border-card);
+  color: var(--ou-text-high);
+  font-size: 14px;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+.ou-sp-newrun:hover { background: var(--ou-bg-card-hover); border-color: var(--ou-border-hover); }
+.ou-sp-section-label { font-size: 12.5px; color: var(--ou-text-mid); padding: 0 10px 6px; }
+.ou-sp-channels, .ou-sp-runs { display: flex; flex-direction: column; gap: 1px; }
+.ou-sp-channel {
+  height: 30px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px;
+  border-radius: var(--ou-r-row);
+  background: transparent;
+  border: none;
+  color: var(--ou-text-muted);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+.ou-sp-channel:hover { background: var(--ou-fill-neutral); color: var(--ou-text-high); }
+.ou-sp-channel-name { flex: 1; min-width: 0; }
+.ou-sp-channel-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--ou-status-running); }
+.ou-sp-channel-more { color: var(--ou-text-meta); font-size: 12px; }
+
+.ou-sp-content { --ou-sp-bg: var(--ou-bg-app); }
+.ou-sp-stage {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 28px 32px 8px;
+}
+.ou-sp-content:not(.has-runs) .ou-sp-stage { flex: 1; justify-content: center; padding-bottom: 12vh; }
+.ou-sp-stage > .ou-rc-pullbar { width: 100%; max-width: 720px; }
+.ou-sp-greeting {
+  margin: 0 0 6px;
+  font-size: 28px;
+  font-weight: 400;
+  color: var(--ou-text-max);
+  text-align: center;
+  letter-spacing: 0.005em;
+}
+.ou-sp-content.has-runs .ou-sp-greeting { font-size: 18px; margin-bottom: 0; color: var(--ou-text-mid); }
+
+.ou-sp-buddy { width: 250px; height: 130px; color: var(--ou-text-high); margin: 4px 0 26px; }
+.ou-sp-buddy.compact { width: 150px; height: 78px; margin: 0 0 14px; }
+.ou-sp-buddy-svg { width: 100%; height: 100%; overflow: visible; animation: ou-sp-enter 0.5s cubic-bezier(0.2, 0.8, 0.2, 1) both; }
+.ou-sp-grass { opacity: 0.55; }
+
+.ou-sp-composer {
+  position: relative;
+  width: 100%;
+  max-width: 720px;
+  background: var(--ou-bg-raised);
+  border: 1px solid var(--ou-border-control);
+  border-radius: var(--ou-r-composer);
+  box-shadow: var(--ou-shadow-composer);
+  padding: 18px 20px 12px;
+  transition: border-color 0.15s;
+}
+.ou-sp-composer:focus-within { border-color: var(--ou-border-hover); }
+.ou-sp-input {
+  display: block;
+  width: 100%;
+  min-height: 72px;
+  max-height: 220px;
+  padding: 2px 190px 0 0;
+  resize: none;
+  font-family: var(--ou-font);
+  font-size: 15px;
+  line-height: 1.5;
+}
+.ou-sp-composer-controls { position: absolute; top: 14px; right: 16px; display: flex; align-items: center; gap: 14px; }
+.ou-sp-seg { display: flex; background: var(--ou-bg-inset); border: 1px solid var(--ou-hairline); border-radius: var(--ou-r-btn); padding: 2px; }
+.ou-sp-seg-btn {
+  height: 30px;
+  padding: 0 12px;
+  border-radius: var(--ou-r-icon);
+  background: transparent;
+  border: none;
+  color: var(--ou-text-soft);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.ou-sp-seg-btn.on { background: var(--ou-bg-app); color: var(--ou-text-max); box-shadow: var(--ou-inset-top) 0 1px 0 inset; }
+.ou-sp-send {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  border: none;
+  display: grid;
+  place-items: center;
+  background: #1a8cff;
+  color: #ffffff;
+  cursor: pointer;
+  transition: transform 0.12s, background 0.15s, opacity 0.15s;
+}
+.ou-sp-send:hover:not(:disabled) { background: #3a9dff; transform: scale(1.05); }
+.ou-sp-send:disabled { opacity: 0.45; cursor: default; }
+.ou-sp-send svg { margin-left: -2px; margin-top: 1px; }
+.ou-sp-composer-foot { display: flex; align-items: center; gap: 12px; margin-top: 8px; }
+.ou-sp-hint { margin-left: auto; font-size: 11px; color: var(--ou-text-meta); }
+
+/* ── Character motion ── */
+@keyframes ou-sp-enter { from { opacity: 0; transform: translateY(8px) scale(0.95); } to { opacity: 1; transform: none; } }
+@keyframes ou-sp-breathe { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-1.6px); } }
+@keyframes ou-sp-z { 0% { opacity: 0; transform: translate(0, 4px); } 30% { opacity: 1; } 100% { opacity: 0; transform: translate(8px, -14px); } }
+@keyframes ou-sp-scribble { 0%, 100% { transform: rotate(0deg); } 25% { transform: rotate(-5deg); } 75% { transform: rotate(4deg); } }
+@keyframes ou-sp-think { 0%, 100% { opacity: 0.25; } 50% { opacity: 1; } }
+@keyframes ou-sp-type { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(1.8px); } }
+@keyframes ou-sp-line { 0% { stroke-dasharray: 0 30; } 60%, 100% { stroke-dasharray: 30 0; } }
+@keyframes ou-sp-particle { 0% { opacity: 0; transform: translateY(6px); } 25% { opacity: 1; } 100% { opacity: 0; transform: translateY(-22px); } }
+@keyframes ou-sp-dash { from { stroke-dashoffset: 0; } to { stroke-dashoffset: 36; } }
+@keyframes ou-sp-bob { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-3px); } }
+@keyframes ou-sp-cheer { 0%, 100% { transform: translateY(0); } 40% { transform: translateY(-5px); } }
+@keyframes ou-sp-twinkle { 0%, 100% { opacity: 0.2; transform: scale(0.7); } 50% { opacity: 1; transform: scale(1); } }
+
+/* Only the animated groups get a box-relative origin — applying it to every <g>
+   would also shift groups positioned with an SVG transform attribute (the notepad). */
+.ou-sp-breathe, .ou-sp-scribble, .ou-sp-type, .ou-sp-bob, .ou-sp-cheer, .ou-sp-sparkle path { transform-box: fill-box; transform-origin: center; }
+.ou-sp-breathe { animation: ou-sp-breathe 3.2s ease-in-out infinite; }
+.ou-sp-zzz text { opacity: 0; animation: ou-sp-z 2.7s ease-out infinite; }
+.ou-sp-buddy .ou-sp-scribble { transform-origin: 0% 0%; animation: ou-sp-scribble 0.7s ease-in-out infinite; }
+.ou-sp-think circle { animation: ou-sp-think 1.4s ease-in-out infinite; }
+.ou-sp-type { animation: ou-sp-type 0.28s ease-in-out infinite; }
+.ou-sp-codelines path { animation: ou-sp-line 1.6s ease-in-out infinite; }
+.ou-sp-particles text { opacity: 0; animation: ou-sp-particle 2.8s ease-out infinite; }
+.ou-sp-motion path { stroke-dasharray: 14 22; animation: ou-sp-dash 0.6s linear infinite; }
+.ou-sp-bob { animation: ou-sp-bob 0.45s ease-in-out infinite; }
+.ou-sp-cheer { animation: ou-sp-cheer 0.9s ease-in-out 2; }
+.ou-sp-sparkle path { animation: ou-sp-twinkle 1.5s ease-in-out infinite; }
+
+@media (prefers-reduced-motion: reduce) {
+  .ou-sp-buddy *, .ou-sp-buddy-svg { animation: none !important; }
+  .ou-sp-zzz text, .ou-sp-particles text { opacity: 1; }
+}
