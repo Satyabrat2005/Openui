@@ -380,7 +380,7 @@ describe('replay — thinking-off replies, which the guards were NOT built from'
   })
 })
 
-describe('replay — Splen 4B (checkpoint 40), the model this build ships', () => {
+describe('replay — Splen 4B (checkpoint 40), held back until it runs in-process', () => {
   // The guards were written from qwen3.5's replies; these came from a different
   // model after the guards existed. Splen 4B does not pass the gate on its own
   // (docs/SPLEN-MODEL-CARD.md), so what matters is what the product does with

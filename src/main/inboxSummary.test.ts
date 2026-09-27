@@ -55,6 +55,7 @@ import {
   inboxRegistry,
   UNIFIED_INBOX_SETTING_KEY,
   GATE_MESSAGE,
+  WHATSAPP_UNREAD_PREVIEW,
   type InboxDeps,
   type InboxSummaryData,
   type ChannelRead,
@@ -63,6 +64,7 @@ import {
   type RawItem
 } from './inboxSummary'
 import type { IdentityChannel } from './contacts'
+import { memoryBlockForText } from './channelMemory'
 
 let temp: TempDb
 
@@ -335,6 +337,51 @@ describe('a person-scoped summary', () => {
     expect(handles.whatsapp.via).toBe('display-name')
     expect(handles.slack.via).toBe('display-name')
     expect(handles.gmail).toBeUndefined()
+  })
+})
+
+describe('what a read leaves in memory', () => {
+  beforeEach(enableInbox)
+
+  // The feature this exists for: read a WhatsApp chat now, and a later turn
+  // about a different channel can still use what it said.
+  it('files a person-scoped WhatsApp read so a later question recalls it', async () => {
+    linkAshuEverywhere()
+    await summarize({ contact: 'Ashu' })
+
+    const block = memoryBlockForText('email priya what Ashu said on whatsapp about 4pm')
+    expect(block).toContain('In the WhatsApp chat with Ashu: "are we still on for 4pm?"')
+  })
+
+  it('files API-channel messages under who wrote them', async () => {
+    linkAshuEverywhere()
+    await summarize({ contact: 'Ashu' })
+
+    const summaries = database.memory.listMemories().map((m) => m.summary)
+    expect(summaries).toContain('Ashu wrote on Telegram: "pushed the fix, can you review?"')
+    expect(summaries).toContain('Ashu Kumar wrote on Slack (#eng): "deploy is green"')
+    expect(summaries).toContain('Ashu <ashu@acme.com> wrote on Gmail (Invoice for August): "attached the invoice"')
+  })
+
+  it('never files the unread-chat placeholder, which nobody said', async () => {
+    const whatsapp = async (): Promise<ChannelRead> => ({
+      status: 'ok',
+      items: [{ source: 'Kabir', from: 'Kabir', preview: WHATSAPP_UNREAD_PREVIEW }]
+    })
+    await summarize({}, seededDeps({ whatsapp }))
+
+    const summaries = database.memory.listMemories().map((m) => m.summary)
+    expect(summaries.some((m) => m.includes('contents not read'))).toBe(false)
+    expect(summaries.some((m) => m.includes('Kabir'))).toBe(false)
+  })
+
+  it('files nothing from a channel that could not be read', async () => {
+    const slack = async (): Promise<ChannelRead> => ({ status: 'error', detail: 'missing_scope' })
+    await summarize({}, seededDeps({ slack }))
+
+    const summaries = database.memory.listMemories().map((m) => m.summary)
+    expect(summaries.some((m) => m.includes('Slack'))).toBe(false)
+    expect(summaries.some((m) => m.includes('Telegram'))).toBe(true)
   })
 })
 

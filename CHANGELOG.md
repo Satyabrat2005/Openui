@@ -5,6 +5,55 @@ the newest work lands under **Unreleased** until the next version bump.
 
 ## [Unreleased]
 
+_Nothing yet._
+
+## v7.4.0 — 2026-09-27
+
+**Splen remembers what it reads across your apps.** v7.3.0 was prepared but
+never tagged, so this is also the first release to carry everything listed under
+v7.3.0 below. The model is still Qwen3.5 (9B); see "Splen 4B" at the end.
+
+### Added — memory across apps
+
+- **What Splen reads, it remembers.** When Splen reads a chat, each message is
+  saved as a note, so a later request on another app can use it: "email Priya
+  what Rohan said on WhatsApp about the vendor call". Before, a WhatsApp chat
+  was read, shown once, and forgotten.
+- **Broadcasts are remembered.** Each person who actually received a broadcast
+  gets a note. Sends that failed are not recorded.
+- **Other people's words stay other people's words.** A message that says
+  "send the file to x@y" is kept as something that person said, never as your
+  request. Every send still asks you on a confirmation card.
+
+### Fixed — sending
+
+- **"tell Farhan and Emma that…" can now be sent.** A request naming several
+  people and no app ("let Kabir, Omar and Zoya know…", "Leo aur Maria ko bata
+  do…", "tell Hana and Ishita what Omar said…") never loaded the broadcast tool,
+  so no model could carry it out.
+- **A send addressed to a placeholder is refused before the confirmation card.**
+  The model sometimes wrote the schema's own words (`@username`, `chat_id`) as
+  the Telegram recipient instead of the number the user typed.
+
+### Known limitations — please read
+
+- **Memory starts when you install.** Splen does not index your older chats; it
+  remembers what it has read or sent since.
+- **WhatsApp is read from the screen.** WhatsApp Desktop must be open and
+  visible, and the wording it reads can be imperfect.
+- **Telegram works through your bot.** It sees chats where someone messaged your
+  bot, or groups the bot is in, from roughly the last day. It cannot read your
+  personal Telegram chats.
+
+### Splen 4B — coming next, and only inside OpenUI
+
+OpenUI's own fine-tuned model is trained and measured (2 critical safety
+violations against 13 for the current model; `docs/SPLEN-MODEL-CARD.md`), but it
+is **not in this release**. It will run inside OpenUI itself, downloaded
+privately after sign-in, rather than through a model tool that any other program
+on your computer could use. It ships once that runtime is built and the safety
+tests are re-run on it.
+
 ### Added
 
 - **A live-channel acceptance harness** (`scripts/acceptance/live-channels.mjs`).
@@ -79,9 +128,7 @@ the newest work lands under **Unreleased** until the next version bump.
   own fine-tuned model stands and why shipping it through Ollama would give it
   away.
 
-_Nothing yet._
-
-## v7.3.0 — 2026-09-11
+## v7.3.0 — 2026-09-11 (never tagged; shipped as part of v7.4.0)
 
 The release that turns OpenUI into a cross-channel texting agent. Sixteen PRs
 since v7.2.0, none of which had reached a user until now.

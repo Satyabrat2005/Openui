@@ -39,6 +39,7 @@ import { isSlackConnected, readSlackInbox } from './slack'
 import { isGmailConnected, findEmailThread, sendGmailMessage } from './gmail'
 import type { ExecutorContext, ToolResult, ToolSchema } from './tools'
 import { defangIncoming, wrapUntrustedMessages } from './untrustedMessages'
+import { recordReadItems } from './channelMemory'
 
 /** Persisted setting key: see isUnifiedInboxEnabled. */
 export const UNIFIED_INBOX_SETTING_KEY = 'unified_inbox_enabled'
@@ -188,6 +189,9 @@ export const MAX_ITEM_LIMIT = 50
 /** Longest preview kept per item, so one long email can't dominate the payload. */
 export const MAX_PREVIEW_CHARS = 300
 
+/** The preview for a WhatsApp chat that looks unread but was not opened. */
+export const WHATSAPP_UNREAD_PREVIEW = '(unread chat — contents not read)'
+
 function clip(text: string): string {
   const flat = text.replace(/\s+/g, ' ').trim()
   return flat.length > MAX_PREVIEW_CHARS ? `${flat.slice(0, MAX_PREVIEW_CHARS)}…` : flat
@@ -243,7 +247,7 @@ export function defaultInboxDeps(whatsapp: WhatsAppReaders): InboxDeps {
         items: senders.slice(0, scope.limit).map((name) => ({
           source: name,
           from: name,
-          preview: '(unread chat — contents not read)'
+          preview: WHATSAPP_UNREAD_PREVIEW
         })),
         detail:
           'WhatsApp reports which chats look unread, not what they say. An empty list can also ' +
@@ -433,6 +437,15 @@ export async function summarizeInbox(
     if (report.status === 'ok') summary.totals.channelsRead++
     else if (report.status !== 'not_requested') summary.totals.channelsUnavailable++
   }
+
+  // File what was read, so a later turn on another channel can use it. Real
+  // message text only: the whole-inbox WhatsApp path returns sender names with
+  // a placeholder, which nobody said.
+  recordReadItems(
+    summary.channels.flatMap((report) =>
+      report.status === 'ok' ? report.items.filter((item) => item.preview !== WHATSAPP_UNREAD_PREVIEW) : []
+    )
+  )
 
   return { ok: true, output: renderSummary(summary) }
 }
