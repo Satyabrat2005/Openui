@@ -53,7 +53,8 @@ import {
   DEFAULT_CODE_MODEL,
   shouldRouteToCloud,
   resolveCloudModel,
-  streamAnthropic
+  streamAnthropic,
+  SPLEN_MODEL
 } from './models'
 import { pullModel } from './ollamaPull'
 import { generateSplen, SplenPromptTooLongError } from './splen/runtime'
@@ -1504,6 +1505,9 @@ async function runBuilderSession(win: BrowserWindow, tier: Tier, userMessage: st
  */
 async function modelForTier(_tier: Tier): Promise<string> {
   if (shouldRouteToCloud()) return resolveCloudModel()
+  // Same order as callModel: an installed Splen answers general turns, so the
+  // model tag and the analytics must name it rather than the Ollama model.
+  if (isSplenActive()) return SPLEN_MODEL
   return localGeneralModel()
 }
 

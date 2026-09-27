@@ -15,7 +15,7 @@
  * Ollama's qwen3.5 renderer (LeadingBOS ""), so none is added here.
  */
 import { SPLEN_SAMPLING } from './prompt'
-import { fitContextSize, SplenPromptTooLongError, type SplenBackend, type SplenGenerateRequest } from './runtime'
+import { fitContextSize, SplenPromptTooLongError, type SplenBackend, type SplenGenerateRequest } from './engine'
 
 /**
  * The slice of node-llama-cpp 3.x used here. Declared locally so this file
@@ -117,7 +117,7 @@ export async function createLlamaCppBackend(modelPath: string): Promise<SplenBac
       try {
         return await completion.generateCompletion(tokens, {
           onTextChunk: req.onText,
-          maxTokens: size - tokens.length,
+          maxTokens: Math.min(size - tokens.length, req.maxTokens ?? Infinity),
           temperature: SPLEN_SAMPLING.temperature,
           topK: SPLEN_SAMPLING.topK,
           topP: SPLEN_SAMPLING.topP,
