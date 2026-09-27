@@ -18,8 +18,8 @@ installer: each is downloaded on your machine when you choose to install it.
 |---|---|
 | Used for | Splen (reading, summarising and replying to messages), when downloaded |
 | Delivered by | OpenUI, after sign-in; runs inside OpenUI, not through Ollama |
-| Weights digest | `sha256:0db1fd5a145d5496b06e1ad338a097c36c9fefabbd2fadf65d4a67cb9c779b85` |
-| Made by | OpenUI: a LoRA fine-tune of Qwen3.5-4B, merged and quantised to Q4_K_M |
+| Weights digest | `sha256:e999fc33b5a9b32a4c4c68818203e50e06e486cc0806831d10539d929bb1fd5c` |
+| Made by | OpenUI: a LoRA fine-tune of Qwen3.5-4B (run 5), merged and quantised to Q4_K_M |
 | Base model | Qwen3.5-4B by Alibaba Cloud (Qwen team), Hugging Face `Qwen/Qwen3.5-4B` at `851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a` |
 | Licence | Apache License, Version 2.0 — full text in `licenses/Qwen3.5-4B-LICENSE.txt` beside this file |
 | Licence text digest | `sha256:bbedc3fda3305820b977265f01b8619d87570a6739de3a5582c3464840f1e57a` |

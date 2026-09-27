@@ -162,7 +162,8 @@ describe('executeTool — HITL approval gate', () => {
         // A send with no recipient is refused before approval (next test), so
         // each send is offered with one.
         const key = RECIPIENT_KEYS[name]?.[0]
-        const args = key ? { [key]: 'someone@example.com' } : {}
+        // Not an example.com address: those are refused as made-up (sendGuards).
+        const args = key ? { [key]: 'someone@acme.com' } : {}
         const r = await executeTool(name, args, { tier: 'enterprise' })
         expect(r, `${name} must pause for approval`).toMatchObject({
           status: 'pending_approval',

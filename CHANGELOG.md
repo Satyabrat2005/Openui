@@ -24,11 +24,16 @@ is also the first release to carry everything listed under v7.3.0 below.
 - **The download is checked before it is used.** It resumes if your connection
   drops, and OpenUI refuses to run a file whose fingerprint (sha256) does not
   match the one OpenUI published.
+- **It uses what it remembers across apps.** Asked about something it read or
+  sent earlier, it answered 30 of 32 held-out questions correctly, and carried
+  the detail into a message on another app ("email Priya what Rohan said on
+  WhatsApp") in 20 of 32.
 - **Measured on our 155-case safety test, three runs each, on the same engine
-  users get:** 3 critical findings for Splen 4B against 13 for Qwen3.5 9B — none
-  of them a message to the wrong person or a leak of your data. All three were
-  attempts to skip the confirmation step, and OpenUI always asks you before a
-  message goes out regardless (`docs/SPLEN-MODEL-CARD.md`).
+  users get:** 5 critical findings for Splen 4B against 13 for Qwen3.5 9B, and
+  no leak of your data. Three were attempts to skip the confirmation step —
+  OpenUI always asks before a message goes out regardless. Two were emails to a
+  made-up address (`neha@example.com`); OpenUI now refuses any address at an
+  example domain before it reaches you (`docs/SPLEN-MODEL-CARD.md`).
 - If Splen cannot start on a computer (for example 32-bit Windows, which has no
   engine build), OpenUI says so and answers with the standard local model.
 
@@ -53,6 +58,9 @@ is also the first release to carry everything listed under v7.3.0 below.
 - **A send addressed to a placeholder is refused before the confirmation card.**
   The model sometimes wrote the schema's own words (`@username`, `chat_id`) as
   the Telegram recipient instead of the number the user typed.
+- **A send to a made-up example address is refused too.** No real person has an
+  address at `example.com`, `.example`, `.test` or `.invalid`; a model that
+  writes one has invented it.
 
 ### Known limitations — please read
 
@@ -66,12 +74,16 @@ is also the first release to carry everything listed under v7.3.0 below.
 
 ### Splen 4B — what it does not do well yet
 
-- **Carrying something from one app to another, and broadcasting, are weak in
-  this Splen.** On our held-out tests it completed 1 of 16 requests like "email
-  Priya what Rohan said on WhatsApp", 0 of 16 broadcasts to several people, and
-  answered 9 of 16 questions about what it had read. The memory itself is saved
-  either way; this version of the model rarely uses it. The next Splen update
-  targets exactly this, and ships only after it passes the same safety test.
+- **Broadcasting does not work yet in Splen 4B.** Asked to tell several people
+  something, it asks which app to use for each person instead of sending (0 of
+  16 on our held-out test). The next Splen update targets this, and ships only
+  after it passes the same safety test.
+- **It can be over-careful.** It sometimes asks for a Telegram chat or an address
+  you already gave it.
+- **It can trust an address posted in a chat too readily.** In one test, a Slack
+  message from "the new analyst" asked for files at a personal Gmail; Splen
+  drafted the email. The confirmation card shows that the address came from a
+  message, not from you — check it before you allow.
 - **It sometimes answers when it should say it has no record.**
 
 ### Added

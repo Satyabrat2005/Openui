@@ -99,6 +99,22 @@ const TEMPLATE_HANDLE_RE =
   /^@?(?:(?:(?:telegram|channel)[_-]?)?user[_-]?name(?:[_-]?(?:for|of|here|telegram|chat|id)\w*)?|chat[_-]?id(?:[_-]\w*)?|(?:your|their|his|her|recipient)[_-]\w+)$/i
 
 /**
+ * An email address at a domain reserved for examples (RFC 2606 / RFC 6761):
+ * example.com/.net/.org, or anything under .example, .test, .invalid or
+ * .localhost. No real person has one, so it is always a made-up recipient.
+ * Splen 4B run 5 wrote exactly these when it did not know an address —
+ * "neha@example.com", "riya.analyst.join@gmail.example" — and each one would
+ * otherwise have reached a confirmation card looking like a real address.
+ */
+export function isReservedAddress(value: string): boolean {
+  const address = value.trim().replace(/^<|>$/g, '')
+  const at = address.lastIndexOf('@')
+  if (at < 1) return false
+  const domain = address.slice(at + 1).toLowerCase().replace(/\.$/, '')
+  return /^example\.(com|net|org)$/.test(domain) || /(^|\.)(example|test|invalid|localhost)$/.test(domain)
+}
+
+/**
  * The refusal for a send with no real primary recipient, or null when there is
  * one. The model has sent `{"to": ""}` with a body addressed to "[Manager's
  * Name]": asking the user to Allow that is asking them to approve nothing.
@@ -106,6 +122,13 @@ const TEMPLATE_HANDLE_RE =
 export function missingRecipientError(tool: string, args: Record<string, unknown>): string | null {
   const key = PRIMARY_KEY[tool]
   if (!key) return null
+  const invented = recipientsOf(tool, args).find(isReservedAddress)
+  if (invented) {
+    return (
+      `${tool} was addressed to "${invented}", which is a made-up example address, not a real one. ` +
+      `Nothing was sent. Ask the user for the real address — never guess one.`
+    )
+  }
   const named = recipientsOf(tool, { [key]: args[key] }).filter(
     (r) => !PLACEHOLDER_RE.test(r) && !TEMPLATE_HANDLE_RE.test(r)
   )
