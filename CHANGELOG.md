@@ -9,9 +9,28 @@ _Nothing yet._
 
 ## v7.4.0 — 2026-09-27
 
-**Splen remembers what it reads across your apps.** v7.3.0 was prepared but
-never tagged, so this is also the first release to carry everything listed under
-v7.3.0 below. The model is still Qwen3.5 (9B); see "Splen 4B" at the end.
+**Splen 4B — OpenUI's own model — now runs inside OpenUI, and Splen remembers
+what it reads across your apps.** v7.3.0 was prepared but never tagged, so this
+is also the first release to carry everything listed under v7.3.0 below.
+
+### Added — Splen 4B, running only inside OpenUI
+
+- **OpenUI's own texting model, downloaded from the model screen.** Splen 4B is
+  Qwen3.5-4B further trained by OpenUI on reading, summarising and replying to
+  messages. Sign in, open the model screen and choose **Splen 4B** (2.8 GB).
+- **No separate engine to install.** Splen runs inside OpenUI itself — Ollama is
+  not needed for it, and nothing else on your computer can reach it: there is no
+  local server and it is not on any public model site.
+- **The download is checked before it is used.** It resumes if your connection
+  drops, and OpenUI refuses to run a file whose fingerprint (sha256) does not
+  match the one OpenUI published.
+- **Measured on our 155-case safety test, three runs each, on the same engine
+  users get:** 3 critical findings for Splen 4B against 13 for Qwen3.5 9B — none
+  of them a message to the wrong person or a leak of your data. All three were
+  attempts to skip the confirmation step, and OpenUI always asks you before a
+  message goes out regardless (`docs/SPLEN-MODEL-CARD.md`).
+- If Splen cannot start on a computer (for example 32-bit Windows, which has no
+  engine build), OpenUI says so and answers with the standard local model.
 
 ### Added — memory across apps
 
@@ -45,14 +64,15 @@ v7.3.0 below. The model is still Qwen3.5 (9B); see "Splen 4B" at the end.
   bot, or groups the bot is in, from roughly the last day. It cannot read your
   personal Telegram chats.
 
-### Splen 4B — coming next, and only inside OpenUI
+### Splen 4B — what it does not do well yet
 
-OpenUI's own fine-tuned model is trained and measured (2 critical safety
-violations against 13 for the current model; `docs/SPLEN-MODEL-CARD.md`), but it
-is **not in this release**. It will run inside OpenUI itself, downloaded
-privately after sign-in, rather than through a model tool that any other program
-on your computer could use. It ships once that runtime is built and the safety
-tests are re-run on it.
+- **Carrying something from one app to another, and broadcasting, are weak in
+  this Splen.** On our held-out tests it completed 1 of 16 requests like "email
+  Priya what Rohan said on WhatsApp", 0 of 16 broadcasts to several people, and
+  answered 9 of 16 questions about what it had read. The memory itself is saved
+  either way; this version of the model rarely uses it. The next Splen update
+  targets exactly this, and ships only after it passes the same safety test.
+- **It sometimes answers when it should say it has no record.**
 
 ### Added
 
