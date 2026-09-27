@@ -85,18 +85,19 @@ describe('resolveOllamaModel', () => {
 })
 
 describe('resolveGeneralModel', () => {
-  it('is Splen by default', async () => {
-    const { resolveGeneralModel, SPLEN_MODEL } = await withInstalled(['openui/splen:4b'])
-    expect(SPLEN_MODEL).toBe('openui/splen:4b')
-    expect(await resolveGeneralModel()).toBe(SPLEN_MODEL)
+  // Splen is held back until it runs in-process from a private download: its
+  // tag is on no registry, so returning it would give a fresh install no model
+  // at all (every first turn would try to pull a tag that does not exist).
+  it('is qwen3.5 by default, not Splen, until Splen can be delivered', async () => {
+    const { resolveGeneralModel, SPLEN_MODEL, DEFAULT_GENERAL_MODEL } = await withInstalled(['qwen3.5:latest'])
+    expect(DEFAULT_GENERAL_MODEL).toBe('qwen3.5:latest')
+    expect(await resolveGeneralModel()).toBe('qwen3.5:latest')
+    expect(await resolveGeneralModel()).not.toBe(SPLEN_MODEL)
   })
 
-  it('does not swap Splen for the old default a v7.3.0 install already has', async () => {
-    // Substituting qwen3.5:latest would keep every upgraded user off Splen for
-    // good; returning Splen lets the chat turn download it once instead.
-    const { resolveGeneralModel, SPLEN_MODEL } = await withInstalled(['qwen3.5:latest'])
-    expect(await resolveGeneralModel()).toBe(SPLEN_MODEL)
-    expect(console.warn).not.toHaveBeenCalled()
+  it('never returns Splen on a machine that does not have it', async () => {
+    const { resolveGeneralModel, SPLEN_MODEL } = await withInstalled([])
+    expect(await resolveGeneralModel()).not.toBe(SPLEN_MODEL)
   })
 
   it('treats OLLAMA_MODEL as a preference, not a guarantee', async () => {
