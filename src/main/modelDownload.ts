@@ -29,9 +29,11 @@
  */
 import type { BrowserWindow } from 'electron'
 import { isPullInFlight, pullModel } from './ollamaPull'
-import { DEFAULT_CODE_MODEL, DEFAULT_GENERAL_MODEL, getAvailableModels } from './models'
+import { DEFAULT_CODE_MODEL, DEFAULT_GENERAL_MODEL, SPLEN_MODEL, getAvailableModels } from './models'
 import { hasAccountSession } from './auth/sessionManager'
 import { isCodingEnabled } from './capabilities'
+import { downloadSplen, getSplenOffer, isSplenDownloadInFlight } from './splen/download'
+import { readSplenInstall } from './splen/install'
 
 /** Where a user is sent to install the local engine, if they don't have it. */
 export const OLLAMA_INSTALL_URL = 'https://ollama.com/download'
@@ -245,11 +247,35 @@ export async function listModelStatus(): Promise<ModelStatus[]> {
   } catch {
     // Engine unreachable — nothing is installed as far as we can prove.
   }
-  return offeredModels().map((m) => ({
+  const rows: ModelStatus[] = offeredModels().map((m) => ({
     ...m,
     installed: installedIds.includes(m.id),
     downloading: isPullInFlight(m.id)
   }))
+  const splen = await splenStatus()
+  return splen ? [splen, ...rows] : rows
+}
+
+/**
+ * Splen's row: shown when it is already on this computer, or when the server
+ * offers it to this account (the owner's rollout switch — see
+ * supabase/functions/splen-download). Otherwise absent: a row for a download
+ * that would fail is worse than no row.
+ */
+async function splenStatus(): Promise<ModelStatus | null> {
+  const installed = readSplenInstall()
+  const offer = installed ? null : await getSplenOffer()
+  const bytes = installed?.bytes ?? offer?.bytes
+  if (!bytes) return null
+  return {
+    id: SPLEN_MODEL,
+    label: 'Splen 4B',
+    purpose: 'OpenUI’s own texting model. Runs only inside OpenUI — no separate engine to install.',
+    approxSize: approxSizeLabel(bytes),
+    attribution: 'Fine-tuned by OpenUI from Qwen3.5-4B by Alibaba Cloud · Apache License 2.0',
+    installed: installed !== null,
+    downloading: isSplenDownloadInFlight()
+  }
 }
 
 /**
@@ -265,6 +291,19 @@ export async function downloadModel(win: BrowserWindow | null, model: unknown): 
       code: 'unauthenticated',
       message: 'Sign in to download a model.'
     }
+  }
+  // Splen downloads from OpenUI's private storage into the app's own folder;
+  // it needs neither Ollama nor the catalog, and the server decides whether
+  // this account may have it.
+  if (model === SPLEN_MODEL) {
+    if (isSplenDownloadInFlight()) {
+      return {
+        ok: false,
+        code: 'already_in_progress',
+        message: 'Splen is already downloading — progress is shown above.'
+      }
+    }
+    return downloadSplen(win)
   }
   if (typeof model !== 'string' || !isCatalogModel(model)) {
     return {

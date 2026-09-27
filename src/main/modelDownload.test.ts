@@ -12,7 +12,24 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
 const H = vi.hoisted(() => ({
   session: { authed: true },
-  installed: [] as { id: string; provider: string; label: string }[]
+  installed: [] as { id: string; provider: string; label: string }[],
+  splenOffer: null as { version: string; bytes: number } | null,
+  splenInstall: null as { version: string; sha256: string; bytes: number } | null,
+  splenDownloads: 0
+}))
+
+// Splen downloads from OpenUI's own storage (splen/download.ts, tested there);
+// here only the routing and the list row matter.
+vi.mock('./splen/download', () => ({
+  getSplenOffer: async () => H.splenOffer,
+  isSplenDownloadInFlight: () => false,
+  downloadSplen: async () => {
+    H.splenDownloads++
+    return { ok: true, model: 'openui/splen:4b' }
+  }
+}))
+vi.mock('./splen/install', () => ({
+  readSplenInstall: () => H.splenInstall
 }))
 
 vi.mock('./auth/sessionManager', () => ({
@@ -40,7 +57,7 @@ import {
   OLLAMA_INSTALL_URL,
   offeredModels
 } from './modelDownload'
-import { DEFAULT_CODE_MODEL } from './models'
+import { DEFAULT_CODE_MODEL, SPLEN_MODEL } from './models'
 import { clearInFlightPullsForTests } from './ollamaPull'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -84,6 +101,9 @@ function mockFetch(opts: { tags?: boolean; pull?: () => Response | Promise<Respo
 beforeEach(() => {
   H.session.authed = true
   H.installed = []
+  H.splenOffer = null
+  H.splenInstall = null
+  H.splenDownloads = 0
   clearInFlightPullsForTests()
 })
 afterEach(() => {
@@ -353,5 +373,36 @@ describe('the texting-agent build offers only Splen', () => {
     H.installed = []
     expect((await listModelStatus()).map((m) => m.id)).toEqual([GENERAL, DEFAULT_CODE_MODEL])
     expect(isCatalogModel(DEFAULT_CODE_MODEL)).toBe(true)
+  })
+})
+
+describe('Splen — offered by the server, downloaded without Ollama', () => {
+  it('shows no Splen row until the server offers it or it is installed', async () => {
+    expect((await listModelStatus()).some((m) => m.id === SPLEN_MODEL)).toBe(false)
+  })
+
+  it('lists Splen first, not installed, sized from the offer', async () => {
+    H.splenOffer = { version: '4b-run4', bytes: 2_790_000_288 }
+    const [first] = await listModelStatus()
+    expect(first).toMatchObject({ id: SPLEN_MODEL, installed: false, approxSize: 'about 2.8 GB' })
+    expect(first.attribution).toMatch(/Apache License 2\.0/)
+  })
+
+  it('keeps showing an installed Splen even when the server no longer offers it', async () => {
+    H.splenInstall = { version: '4b-run4', sha256: 'a'.repeat(64), bytes: 2_790_000_288 }
+    const [first] = await listModelStatus()
+    expect(first).toMatchObject({ id: SPLEN_MODEL, installed: true })
+  })
+
+  it('downloads Splen with the engine unreachable — it does not need Ollama', async () => {
+    mockFetch({ tags: false })
+    expect(await downloadModel(null, SPLEN_MODEL)).toEqual({ ok: true, model: SPLEN_MODEL })
+    expect(H.splenDownloads).toBe(1)
+  })
+
+  it('still requires a session to download Splen', async () => {
+    H.session.authed = false
+    expect(await downloadModel(null, SPLEN_MODEL)).toMatchObject({ ok: false, code: 'unauthenticated' })
+    expect(H.splenDownloads).toBe(0)
   })
 })
