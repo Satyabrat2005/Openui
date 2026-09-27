@@ -40,47 +40,12 @@ const isMac = window.openui.platform === 'darwin'
  * rendering our own controls there and just reserve space via CSS
  * (.ou-titlebar-mac) so the brand label doesn't sit underneath them.
  */
-/** 9px chevron used in the workspace switcher. */
-function Chevron(): JSX.Element {
-  return (
-    <svg className="ou-tb-switcher-chevron" width="9" height="9" viewBox="0 0 9 9" aria-hidden="true">
-      <path d="M2 3.4L4.5 5.9L7 3.4" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  )
-}
-
 /**
- * The 38px window chrome (handoff § A). Two left-side variants:
- *   • `setup`   — accent mark + "OpenUI" wordmark + mono "SETUP" (First Run).
- *   • `console` — workspace switcher + a live mono counter of running / waiting
- *     runs (sourced from TaskActivityContext, never hardcoded) + a ⌘K search
- *     affordance. The right-side window controls are shared.
- *
- * The minimize / maximize / close IPC and the isMac / hiddenInset handling are
- * unchanged — only the visual chrome differs.
+ * The 38px window chrome. The setup/auth variant shows the OpenUI mark; the
+ * console variant (the Splen home screen) is deliberately bare — just a drag
+ * region and the window controls, so the owner's design is all that shows.
  */
-/**
- * The live run counters. Split out of TitleBar because it is the only part that
- * reads TaskActivityContext, and the title bar also has to render on the
- * signed-out screen — which sits OUTSIDE the provider (useTaskActivity throws
- * there). Rendering it only for the console variant keeps that legal.
- */
-function RunCounters(): JSX.Element {
-  const { runningCount, waitingCount } = useTaskActivity()
-  return (
-    <div className="ou-tb-counters" aria-live="polite">
-      <span className="ou-tb-count-running">{runningCount} running</span>
-      {waitingCount > 0 && (
-        <>
-          <span className="ou-tb-count-sep">/</span>
-          <span className="ou-tb-count-waiting">{waitingCount} waiting on you</span>
-        </>
-      )}
-    </div>
-  )
-}
-
-function TitleBar({ variant, onWorkspaceClick }: { variant: 'setup' | 'console' | 'auth'; onWorkspaceClick?: () => void }): JSX.Element {
+function TitleBar({ variant }: { variant: 'setup' | 'console' | 'auth' }): JSX.Element {
   const [maximized, setMaximized] = useState(false)
 
   useEffect(() => {
@@ -96,44 +61,11 @@ function TitleBar({ variant, onWorkspaceClick }: { variant: 'setup' | 'console' 
           <span className="ou-tb-wordmark">OpenUI</span>
           {variant === 'setup' && <span className="ou-tb-setup-tag">SETUP</span>}
         </div>
-      ) : (
-        <div className="ou-tb-console">
-          {/* Workspace switcher — opens the conversation/workspace history drawer
-              (runs + conversations coexist: the ledger shows runs, this browses
-              full chat threads by day and resumes them). */}
-          <button type="button" className="ou-tb-switcher" aria-label="Switch workspace" title="Workspace & history" onClick={onWorkspaceClick}>
-            <div className="ou-tb-mark" aria-hidden="true" />
-            <span className="ou-tb-switcher-name">Work</span>
-            <Chevron />
-          </button>
-          <div className="ou-tb-divider" aria-hidden="true" />
-          {/* Live run counters — real, from TaskActivityContext. */}
-          <RunCounters />
-        </div>
-      )}
+      ) : null}
       <div
         className="ou-titlebar-drag"
         onDoubleClick={isMac ? undefined : () => window.openui.toggleMaximizeWindow()}
       />
-      {variant === 'console' && (
-        // ⌘K search affordance — a real control, intentionally a no-op for now.
-        // TODO: wire to a command palette / run search once that surface exists.
-        <button
-          type="button"
-          className="ou-tb-search"
-          aria-label="Search (Cmd K)"
-          title="Search"
-          onClick={() => {
-            /* no-op: search surface not built yet */
-          }}
-        >
-          <svg width="11" height="11" viewBox="0 0 11 11" aria-hidden="true">
-            <circle cx="4.6" cy="4.6" r="3.1" fill="none" stroke="currentColor" strokeWidth="1.3" />
-            <path d="M6.9 6.9L9.4 9.4" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
-          </svg>
-          <span className="ou-tb-search-kbd">{isMac ? '⌘K' : 'Ctrl K'}</span>
-        </button>
-      )}
       {!isMac && (
         <div className="ou-winctl">
           <button
@@ -304,10 +236,7 @@ function AppShell(): JSX.Element {
     <div ref={overlayRef} className="openui-overlay">
       {/* Setup chrome during onboarding/loading; console chrome once the app is
           in the working surface (drives the workspace switcher + live counters). */}
-      <TitleBar
-        variant={showChat ? 'console' : 'setup'}
-        onWorkspaceClick={showChat ? () => setHistoryOpen(true) : undefined}
-      />
+      <TitleBar variant={showChat ? 'console' : 'setup'} />
       {/* Always-on WhatsApp auto-reply indicator + kill switch + draft review.
           Self-hides unless the watcher is active or a draft is waiting. */}
       <ErrorBoundary label="WhatsApp auto-reply" compact>

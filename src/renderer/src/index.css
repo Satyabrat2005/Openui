@@ -5057,14 +5057,23 @@ body {
 .ou-fr-models { margin-top: 22px; }
 
 /* ─────────────────────────────────────────
-   SPLEN HOME — the owner's "Splen" design layered onto the Run Console.
-   Same data and handlers as the console (RunConsole.tsx); these ou-sp-* rules
-   only restyle it: brand + New run + Channels sidebar, a centred greeting, the
-   line-art character (SplenBuddy.tsx) and a large composer with the
-   Answer/Act pill and a round send button. Tokens only, except the send-button
-   blue, which the design specifies.
+   SPLEN HOME — the owner's "Splen" design, and nothing else: a sidebar (mark,
+   New run, Channels, Settings) and a centred greeting, character
+   (SplenBuddy.tsx) and composer with the Answer/Act pill and a round send
+   button. Tokens only, except the send-button blue the design specifies.
 ───────────────────────────────────────── */
-.ou-sp-sidebar { width: 236px; padding: 18px 14px 12px; gap: 18px; }
+.ou-sp { --ou-sp-bg: var(--ou-bg-app); }
+.ou-sp-sidebar {
+  width: 236px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+  padding: 18px 14px 14px;
+  background: var(--ou-bg-chrome);
+  border-right: 1px solid var(--ou-hairline);
+  overflow-y: auto;
+}
 .ou-sp-brand { display: flex; align-items: center; gap: 12px; padding: 2px 4px 4px; color: var(--ou-text-max); }
 .ou-sp-mark { flex-shrink: 0; }
 .ou-sp-brand-name { font-size: 22px; font-weight: 400; letter-spacing: 0.01em; }
@@ -5084,7 +5093,7 @@ body {
 }
 .ou-sp-newrun:hover { background: var(--ou-bg-card-hover); border-color: var(--ou-border-hover); }
 .ou-sp-section-label { font-size: 12.5px; color: var(--ou-text-mid); padding: 0 10px 6px; }
-.ou-sp-channels, .ou-sp-runs { display: flex; flex-direction: column; gap: 1px; }
+.ou-sp-channels { display: flex; flex-direction: column; gap: 1px; }
 .ou-sp-channel {
   height: 30px;
   display: flex;
@@ -5102,29 +5111,26 @@ body {
 .ou-sp-channel:hover { background: var(--ou-fill-neutral); color: var(--ou-text-high); }
 .ou-sp-channel-name { flex: 1; min-width: 0; }
 .ou-sp-channel-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--ou-status-running); }
-.ou-sp-channel-more { color: var(--ou-text-meta); font-size: 12px; }
+.ou-sp-footer { margin-top: auto; }
 
-.ou-sp-content { --ou-sp-bg: var(--ou-bg-app); }
+.ou-sp-main { flex: 1; min-width: 0; min-height: 0; overflow-y: auto; display: flex; }
 .ou-sp-stage {
+  flex: 1;
   display: flex;
   flex-direction: column;
   align-items: center;
-  padding: 28px 32px 8px;
+  justify-content: center;
+  padding: 32px 32px 10vh;
 }
-.ou-sp-content:not(.has-runs) .ou-sp-stage { flex: 1; justify-content: center; padding-bottom: 12vh; }
-.ou-sp-stage > .ou-rc-pullbar { width: 100%; max-width: 720px; }
 .ou-sp-greeting {
-  margin: 0 0 6px;
+  margin: 0 0 8px;
   font-size: 28px;
   font-weight: 400;
   color: var(--ou-text-max);
   text-align: center;
   letter-spacing: 0.005em;
 }
-.ou-sp-content.has-runs .ou-sp-greeting { font-size: 18px; margin-bottom: 0; color: var(--ou-text-mid); }
-
-.ou-sp-buddy { width: 250px; height: 130px; color: var(--ou-text-high); margin: 4px 0 26px; }
-.ou-sp-buddy.compact { width: 150px; height: 78px; margin: 0 0 14px; }
+.ou-sp-buddy { width: 250px; height: 130px; color: var(--ou-text-high); margin: 4px 0 30px; flex-shrink: 0; }
 .ou-sp-buddy-svg { width: 100%; height: 100%; overflow: visible; animation: ou-sp-enter 0.5s cubic-bezier(0.2, 0.8, 0.2, 1) both; }
 .ou-sp-grass { opacity: 0.55; }
 
@@ -5132,26 +5138,31 @@ body {
   position: relative;
   width: 100%;
   max-width: 720px;
+  min-height: 146px;
   background: var(--ou-bg-raised);
   border: 1px solid var(--ou-border-control);
   border-radius: var(--ou-r-composer);
-  box-shadow: var(--ou-shadow-composer);
-  padding: 18px 20px 12px;
+  padding: 20px 22px;
   transition: border-color 0.15s;
 }
 .ou-sp-composer:focus-within { border-color: var(--ou-border-hover); }
 .ou-sp-input {
   display: block;
   width: 100%;
-  min-height: 72px;
-  max-height: 220px;
+  min-height: 100px;
+  max-height: 240px;
   padding: 2px 190px 0 0;
   resize: none;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--ou-text-high);
   font-family: var(--ou-font);
   font-size: 15px;
   line-height: 1.5;
 }
-.ou-sp-composer-controls { position: absolute; top: 14px; right: 16px; display: flex; align-items: center; gap: 14px; }
+.ou-sp-input::placeholder { color: var(--ou-text-meta); }
+.ou-sp-composer-controls { position: absolute; top: 16px; right: 20px; display: flex; align-items: center; gap: 14px; }
 .ou-sp-seg { display: flex; background: var(--ou-bg-inset); border: 1px solid var(--ou-hairline); border-radius: var(--ou-r-btn); padding: 2px; }
 .ou-sp-seg-btn {
   height: 30px;
@@ -5163,7 +5174,7 @@ body {
   font-size: 12.5px;
   cursor: pointer;
 }
-.ou-sp-seg-btn.on { background: var(--ou-bg-app); color: var(--ou-text-max); box-shadow: var(--ou-inset-top) 0 1px 0 inset; }
+.ou-sp-seg-btn.on { background: var(--ou-bg-app); color: var(--ou-text-max); }
 .ou-sp-send {
   width: 34px;
   height: 34px;
@@ -5179,8 +5190,31 @@ body {
 .ou-sp-send:hover:not(:disabled) { background: #3a9dff; transform: scale(1.05); }
 .ou-sp-send:disabled { opacity: 0.45; cursor: default; }
 .ou-sp-send svg { margin-left: -2px; margin-top: 1px; }
-.ou-sp-composer-foot { display: flex; align-items: center; gap: 12px; margin-top: 8px; }
-.ou-sp-hint { margin-left: auto; font-size: 11px; color: var(--ou-text-meta); }
+
+.ou-sp-answer {
+  width: 100%;
+  max-width: 720px;
+  margin-top: 18px;
+  padding: 16px 20px;
+  border-radius: var(--ou-r-composer);
+  background: var(--ou-bg-card);
+  border: 1px solid var(--ou-hairline);
+  color: var(--ou-text-base);
+  font-size: 14.5px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* Splen download progress — only visible while the one-time download runs. */
+.ou-sp-pull { width: 100%; max-width: 720px; margin-bottom: 14px; font-size: 12.5px; color: var(--ou-text-muted); }
+.ou-sp-pull-top { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 6px; }
+.ou-sp-pull-meta { font-family: var(--ou-font-mono); color: var(--ou-text-meta); }
+.ou-sp-pull-track { height: 4px; border-radius: 2px; background: var(--ou-fill-neutral); overflow: hidden; }
+.ou-sp-pull-fill { height: 100%; background: #1a8cff; transition: width 0.3s; }
+.ou-sp-pull-fill.idle { width: 30%; animation: ou-sp-idlebar 1.2s ease-in-out infinite; }
+.ou-sp-pull-error { margin-top: 6px; color: var(--ou-status-danger-text); }
+@keyframes ou-sp-idlebar { from { transform: translateX(-100%); } to { transform: translateX(340%); } }
 
 /* ── Character motion ── */
 @keyframes ou-sp-enter { from { opacity: 0; transform: translateY(8px) scale(0.95); } to { opacity: 1; transform: none; } }

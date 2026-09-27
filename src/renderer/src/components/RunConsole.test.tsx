@@ -1,13 +1,11 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, fireEvent, cleanup, within, act } from '@testing-library/react'
-import type { TaskCard, TouchedResource, HitlRequestPayload, PlanRequestPayload } from '../env'
+import { render, screen, fireEvent, cleanup, act } from '@testing-library/react'
+import type { TaskCard, HitlRequestPayload } from '../env'
 
-// RunConsole owns the highest-stakes glue of the redesign: queue bucketing in the
-// ledger, the approval callout (HITL vs plan copy + which handler fires), and the
-// TOUCHED audit list. Its pure derivations live in lib/runQueue (already tested);
-// these tests exercise the COMPONENT behaviour on top of that — real render +
-// real clicks — with the data sources and child modals mocked at the boundary.
+// RunConsole is the Splen home screen: sidebar, greeting, character, composer.
+// These tests exercise the component with real renders and real key presses,
+// with the data sources and child modals mocked at the boundary.
 
 // ── Controllable task-activity state (the ledger's data source) ────────────────
 const activity: {
@@ -87,14 +85,25 @@ beforeEach(() => {
 })
 afterEach(cleanup)
 
-describe('RunConsole — Splen home screen', () => {
-  it('with no runs shows the greeting, the sleeping character and no ledger or inspector', () => {
+describe("RunConsole — Splen home screen (the owner's design, nothing extra)", () => {
+  it('shows the sidebar, greeting, sleeping character and composer — and nothing else', () => {
     render(<RunConsole />)
+    expect(screen.getByText('Splen')).toBeTruthy()
+    expect(screen.getByRole('button', { name: /New run/ })).toBeTruthy()
+    for (const ch of ['Channels', 'WhatsApp', 'Telegram', 'Slack', 'Gmail', 'Settings']) expect(screen.getByText(ch)).toBeTruthy()
     expect(screen.getByText('Your wish is my command!')).toBeTruthy()
     expect(document.querySelector('.ou-sp-buddy')?.getAttribute('data-pose')).toBe('sleep')
+    expect(screen.getByRole('radio', { name: 'Answer' })).toBeTruthy()
+    expect(screen.getByRole('radio', { name: 'Act' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Send' })).toBeTruthy()
+  })
+
+  it('adds no ledger, inspector or run list even when runs exist', () => {
+    activity.tasks = [card({ id: 'x', title: 'Summarize my inbox', status: 'in_progress', queue: 'active' })]
+    render(<RunConsole />)
     expect(document.querySelector('.ou-rc-ledger')).toBeNull()
     expect(document.querySelector('.ou-rc-inspector')).toBeNull()
-    for (const ch of ['WhatsApp', 'Telegram', 'Slack', 'Gmail']) expect(screen.getByText(ch)).toBeTruthy()
+    expect(screen.queryByText('Run ledger')).toBeNull()
   })
 
   it('Enter sends through the same chat pipeline; Shift+Enter does not', () => {
@@ -114,195 +123,29 @@ describe('RunConsole — Splen home screen', () => {
     render(<RunConsole />)
     expect(document.querySelector('.ou-sp-buddy')?.getAttribute('data-pose')).toBe('code')
   })
-})
 
-describe('RunConsole — queue bucketing in the ledger', () => {
-  it('the "Needs you" filter shows only runs awaiting an approval', () => {
+  it("shows the latest run's answer under the composer", () => {
     activity.tasks = [
-      card({ id: 'r1', title: 'Running one', status: 'in_progress', queue: 'active' }),
-      card({ id: 'r2', title: 'Waiting one', status: 'in_progress', queue: 'waiting' }),
-      card({ id: 'r3', title: 'Finished one', status: 'done', queue: 'done' })
+      card({ id: 'old', title: 'first', status: 'done', answer: 'old answer', endedAt: 1 }),
+      card({ id: 'new', title: 'second', status: 'done', answer: 'Three things happened today.', endedAt: 2 })
     ]
     render(<RunConsole />)
-
-    // 'All' shows everything.
-    const ledger = document.querySelector('.ou-rc-ledger') as HTMLElement
-    expect(within(ledger).getByText('Running one')).toBeTruthy()
-    expect(within(ledger).getByText('Waiting one')).toBeTruthy()
-    expect(within(ledger).getByText('Finished one')).toBeTruthy()
-
-    // Click the ledger's "Needs you" filter.
-    fireEvent.click(within(ledger).getByRole('button', { name: 'Needs you' }))
-    expect(within(ledger).getByText('Waiting one')).toBeTruthy()
-    expect(within(ledger).queryByText('Running one')).toBeNull()
-    expect(within(ledger).queryByText('Finished one')).toBeNull()
-  })
-
-  it('the "Running" filter excludes a run that is paused on an approval', () => {
-    activity.tasks = [
-      card({ id: 'r1', title: 'Truly running', status: 'in_progress', queue: 'active' }),
-      card({ id: 'r2', title: 'Paused on approval', status: 'in_progress', queue: 'waiting' })
-    ]
-    render(<RunConsole />)
-    const ledger = document.querySelector('.ou-rc-ledger') as HTMLElement
-    fireEvent.click(within(ledger).getByRole('button', { name: 'Running' }))
-    expect(within(ledger).getByText('Truly running')).toBeTruthy()
-    // A waiting run is in_progress but must NOT show under Running.
-    expect(within(ledger).queryByText('Paused on approval')).toBeNull()
-  })
-
-  it('the "Finished" filter shows completed and failed runs, not in-progress ones', () => {
-    activity.tasks = [
-      card({ id: 'r1', title: 'Still going', status: 'in_progress', queue: 'active' }),
-      card({ id: 'r2', title: 'All done', status: 'done', queue: 'done' }),
-      card({ id: 'r3', title: 'Broke', status: 'failed', queue: 'done' })
-    ]
-    render(<RunConsole />)
-    const ledger = document.querySelector('.ou-rc-ledger') as HTMLElement
-    fireEvent.click(within(ledger).getByRole('button', { name: 'Finished' }))
-    expect(within(ledger).getByText('All done')).toBeTruthy()
-    expect(within(ledger).getByText('Broke')).toBeTruthy()
-    expect(within(ledger).queryByText('Still going')).toBeNull()
+    expect(screen.getByTestId('latest-answer').textContent).toBe('Three things happened today.')
+    expect(screen.queryByText('old answer')).toBeNull()
   })
 })
 
-describe('RunConsole — approval callout (HITL vs plan)', () => {
-  const waitingRun = card({ id: 'w', title: 'Needs approval', status: 'in_progress', queue: 'waiting' })
-
-  it('renders PLAN copy with the step count and calls onRespondPlan(true) on Approve', () => {
-    activity.tasks = [waitingRun]
-    const onRespondPlan = vi.fn()
-    const onRespondHitl = vi.fn()
-    const planRequest: PlanRequestPayload = {
-      id: 'p1',
-      summary: 'Book a table for two',
-      steps: [{ id: 's1', title: 'a' }, { id: 's2', title: 'b' }, { id: 's3', title: 'c' }]
-    }
-    render(
-      <RunConsole planRequest={planRequest} onRespondPlan={onRespondPlan} onRespondHitl={onRespondHitl} />
-    )
-    const callout = document.querySelector('.ou-rc-callout') as HTMLElement
-    expect(callout).toBeTruthy()
-    expect(within(callout).getByText('Approve the plan')).toBeTruthy()
-    expect(within(callout).getByText(/Book a table for two \(3 steps\)/)).toBeTruthy()
-
-    fireEvent.click(within(callout).getByRole('button', { name: 'Approve' }))
-    expect(onRespondPlan).toHaveBeenCalledWith(true)
-    expect(onRespondHitl).not.toHaveBeenCalled()
-  })
-
-  it('singularises a one-step plan', () => {
-    activity.tasks = [waitingRun]
-    const planRequest: PlanRequestPayload = { id: 'p', summary: 'One thing', steps: [{ id: 's', title: 'x' }] }
-    render(<RunConsole planRequest={planRequest} onRespondPlan={vi.fn()} />)
-    expect(screen.getByText(/One thing \(1 step\)/)).toBeTruthy()
-  })
-
-  it('renders HITL copy from the request label and calls onRespondHitl(false) on Deny', () => {
-    activity.tasks = [waitingRun]
-    const onRespondHitl = vi.fn()
-    const onRespondPlan = vi.fn()
-    const hitlRequest: HitlRequestPayload = {
-      id: 'h1',
-      tool: 'send_whatsapp_message',
-      args: {},
-      label: 'Send WhatsApp message to Mom'
-    }
-    render(
-      <RunConsole hitlRequest={hitlRequest} onRespondHitl={onRespondHitl} onRespondPlan={onRespondPlan} />
-    )
-    const callout = document.querySelector('.ou-rc-callout') as HTMLElement
-    expect(within(callout).getByText('Approve this action')).toBeTruthy()
-    expect(within(callout).getByText('Send WhatsApp message to Mom')).toBeTruthy()
-
-    fireEvent.click(within(callout).getByRole('button', { name: 'Deny' }))
-    expect(onRespondHitl).toHaveBeenCalledWith(false)
-    expect(onRespondPlan).not.toHaveBeenCalled()
-  })
-
-  it('plan takes precedence when both a plan and a hitl request are present', () => {
-    activity.tasks = [waitingRun]
-    const planRequest: PlanRequestPayload = { id: 'p', summary: 'Plan wins', steps: [{ id: 's', title: 'x' }] }
-    const hitlRequest: HitlRequestPayload = { id: 'h', tool: 't', args: {}, label: 'hitl label' }
-    render(<RunConsole planRequest={planRequest} hitlRequest={hitlRequest} onRespondPlan={vi.fn()} onRespondHitl={vi.fn()} />)
-    expect(screen.getByText('Approve the plan')).toBeTruthy()
+// Safety: with no inline approval surface, EVERY confirmation must go to App's
+// blocking modal. RunConsole therefore always reports "not shown inline".
+describe('RunConsole — approvals always use the modal', () => {
+  it('reports onApprovalInline(false) even while a run waits on an approval', () => {
+    activity.tasks = [card({ id: 'w', title: 'Send it', status: 'in_progress', queue: 'waiting' })]
+    const onApprovalInline = vi.fn()
+    const hitlRequest: HitlRequestPayload = { id: 'h', tool: 'send_whatsapp_message', args: {}, label: 'Send WhatsApp message to Mom' }
+    render(<RunConsole hitlRequest={hitlRequest} onApprovalInline={onApprovalInline} onRespondHitl={vi.fn()} />)
+    expect(onApprovalInline).toHaveBeenCalledWith(false)
+    expect(onApprovalInline).not.toHaveBeenCalledWith(true)
     expect(screen.queryByText('Approve this action')).toBeNull()
-  })
-
-  it('renders NO callout when there is a request but no run is waiting', () => {
-    activity.tasks = [card({ id: 'a', title: 'Active', status: 'in_progress', queue: 'active' })]
-    const planRequest: PlanRequestPayload = { id: 'p', summary: 's', steps: [{ id: 's', title: 'x' }] }
-    render(<RunConsole planRequest={planRequest} onRespondPlan={vi.fn()} />)
-    expect(document.querySelector('.ou-rc-callout')).toBeNull()
-  })
-})
-
-describe('RunConsole — TOUCHED audit list in the inspector', () => {
-  it('renders each touched resource with its operation label', () => {
-    const touched: TouchedResource[] = [
-      { app: 'whatsapp', resource: 'Mom', operation: 'POST' },
-      { app: 'files', resource: '~/report.pdf', operation: 'READ' },
-      { app: 'github', resource: 'openui#12', operation: 'HELD' }
-    ]
-    const run = card({ id: 'sel', title: 'Audited run', status: 'done', queue: 'done', touched })
-    activity.tasks = [run]
-    activity.focusedId = 'sel'
-    render(<RunConsole />)
-
-    const inspector = document.querySelector('.ou-rc-inspector') as HTMLElement
-    expect(inspector).toBeTruthy()
-    const rows = inspector.querySelectorAll('.ou-rc-touched')
-    expect(rows.length).toBe(3)
-    expect(within(inspector).getByText('Mom')).toBeTruthy()
-    expect(within(inspector).getByText('~/report.pdf')).toBeTruthy()
-    // Operation labels render verbatim from the enum.
-    expect(within(inspector).getByText('POST')).toBeTruthy()
-    expect(within(inspector).getByText('READ')).toBeTruthy()
-    expect(within(inspector).getByText('HELD')).toBeTruthy()
-  })
-
-  it('shows the empty state when a run has touched nothing', () => {
-    const run = card({ id: 'sel', title: 'Clean run', status: 'done', queue: 'done', touched: [] })
-    activity.tasks = [run]
-    activity.focusedId = 'sel'
-    render(<RunConsole />)
-    const inspector = document.querySelector('.ou-rc-inspector') as HTMLElement
-    expect(within(inspector).getByText('Nothing touched yet.')).toBeTruthy()
-    expect(inspector.querySelectorAll('.ou-rc-touched').length).toBe(0)
-  })
-})
-
-/**
- * The model chip and the first-run download bar.
- *
- * The chip used to render the literal string "llama-3.3-70b" while the app has
- * only ever run qwen models — a plain untruth in the UI, and the thing
- * LocalAIStatus.tsx deliberately avoids. The download bar is new: a user with
- * Ollama but no model pulled previously got a raw 404 and no indication that a
- * multi-gigabyte download was needed.
- */
-describe('RunConsole — model chip honesty', () => {
-  /** Grab the callback RunConsole handed to a subscription, and fire it. */
-  // The subscription callback is invoked from outside React, so it must be
-  // wrapped in act() or the resulting setState never flushes to the DOM.
-  function fire<T>(name: string, payload: T): void {
-    const api = (window as unknown as { openui: Record<string, ReturnType<typeof vi.fn>> }).openui
-    const cb = api[name].mock.calls[0][0] as (p: T) => void
-    act(() => cb(payload))
-  }
-
-  it('never shows a fabricated model name before a turn has run', () => {
-    render(<RunConsole />)
-    const chip = document.querySelector('.ou-rc-model') as HTMLElement
-    expect(chip.textContent).not.toMatch(/llama/i)
-    expect(chip.textContent).toBe('Local AI')
-  })
-
-  it('shows the real model once the backend reports it', () => {
-    render(<RunConsole />)
-    fire('onChatModel', { model: 'qwen2.5-coder:7b', tier: 'free' })
-    const chip = document.querySelector('.ou-rc-model') as HTMLElement
-    expect(chip.textContent).toBe('Qwen 2.5 Coder 7B')
   })
 })
 
@@ -337,7 +180,7 @@ describe('RunConsole — first-run model download', () => {
     expect(bar.textContent).toContain('42%')
     expect(bar.textContent).toContain('1.9 GB')
     expect(bar.textContent).toContain('4.4 GB')
-    const fill = bar.querySelector('.ou-rc-pullbar-fill') as HTMLElement
+    const fill = bar.querySelector('.ou-sp-pull-fill') as HTMLElement
     expect(fill.style.width).toBe('42%')
   })
 
@@ -357,7 +200,7 @@ describe('RunConsole — first-run model download', () => {
     const bar = document.querySelector('[data-testid="model-pull"]') as HTMLElement
     expect(bar.textContent).toContain('pulling manifest')
     expect(bar.textContent).not.toContain('0%')
-    expect(bar.querySelector('.ou-rc-pullbar-fill-idle')).toBeTruthy()
+    expect(bar.querySelector('.ou-sp-pull-fill.idle')).toBeTruthy()
   })
 
   it('surfaces a download failure instead of silently clearing', () => {
