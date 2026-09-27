@@ -56,6 +56,8 @@ import {
   streamAnthropic
 } from './models'
 import { pullModel } from './ollamaPull'
+import { generateSplen, SplenPromptTooLongError } from './splen/runtime'
+import { isSplenInstalled } from './splen/install'
 import {
   TrajectoryRecorder,
   applyQualitySignal,
@@ -1942,6 +1944,59 @@ async function callOllama(
 }
 
 /**
+ * Is Splen the model for general turns? Only once its download has been
+ * verified (splen/install.ts). An explicit OLLAMA_MODEL still wins, so a
+ * developer can point the app at another model without removing Splen.
+ */
+function isSplenActive(): boolean {
+  if (process.env.OLLAMA_MODEL) return false
+  try {
+    return isSplenInstalled()
+  } catch {
+    return false
+  }
+}
+
+/**
+ * One Splen turn in-process. Sized exactly as an Ollama turn is (resolveNumCtx)
+ * so the same prompt gets the same window on either engine.
+ *
+ * Returns null — and says why — only when the engine could not start before
+ * any text was shown (no usable GPU/CPU binary, unreadable weights): the caller
+ * then answers on Ollama instead of leaving the user with a dead turn. Anything
+ * after the first streamed token, or a conversation too long to read, is thrown
+ * like any other model failure.
+ */
+async function callSplen(
+  win: BrowserWindow,
+  messages: Message[],
+  systemPrompt: string,
+  onDelta: (delta: string) => void
+): Promise<string | null> {
+  const promptChars = systemPrompt.length + messages.reduce((n, m) => n + m.content.length, 0)
+  let streamed = 0
+  try {
+    return await generateSplen({
+      systemPrompt,
+      turns: messages,
+      numCtx: resolveNumCtx(false, promptChars),
+      onDelta: (delta) => {
+        streamed += delta.length
+        onDelta(delta)
+      }
+    })
+  } catch (err) {
+    if (streamed > 0 || err instanceof SplenPromptTooLongError) throw err
+    const reason = err instanceof Error ? err.message : String(err)
+    console.warn(`[agent] Splen could not start (${reason}); answering with the Ollama model instead.`)
+    emit(win, 'openui:chat:warning', {
+      message: `Splen couldn't start on this computer (${reason}). Answering with the standard local model instead.`
+    })
+    return null
+  }
+}
+
+/**
  * The model router. OpenUI is local-first: by default every tier, the planner,
  * and the autonomous agent stream from a local / self-hosted Ollama server, with
  * no per-message metering or credit balance that can run out. Start it once with
@@ -1992,6 +2047,14 @@ export async function callModel(
       })
       // fall through to the local path below
     }
+  }
+
+  // Splen runs inside this process from its verified download — no Ollama, no
+  // port (splen/runtime.ts). Coding turns keep the code-tuned model.
+  if (!opts.coding && isSplenActive()) {
+    const reply = await callSplen(win, messages, systemPrompt, onDelta)
+    if (reply !== null) return reply
+    // Splen could not start on this machine; the warning is already shown.
   }
 
   // Code-heavy callers (the autonomous coding agent) get the code-tuned model;
