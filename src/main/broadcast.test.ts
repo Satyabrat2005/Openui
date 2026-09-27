@@ -28,6 +28,15 @@ vi.mock('./gmail', () => ({
   isGmailConnected: () => H.connectivity.gmail,
   sendGmailMessage: vi.fn(async () => ({ ok: true, output: 'mail sent' }))
 }))
+const memory = vi.hoisted(() => ({
+  calls: [] as Array<{ message: string; deliveries: Array<{ channel: string; contact: string; status: string }> }>
+}))
+vi.mock('./channelMemory', () => ({
+  recordBroadcast: (message: string, deliveries: Array<{ channel: string; contact: string; status: string }>) => {
+    memory.calls.push({ message, deliveries: deliveries.map(({ channel, contact, status }) => ({ channel, contact, status })) })
+    return 0
+  }
+}))
 vi.mock('./inboxSummary', () => ({
   isUnifiedInboxEnabled: () => H.gateOpen,
   GATE_MESSAGE: 'GATE CLOSED'
@@ -103,6 +112,7 @@ function payload(text: string): {
 }
 
 beforeEach(() => {
+  memory.calls = []
   H.gateOpen = true
   H.connectivity = { telegram: true, slack: true, gmail: true }
   H.contacts.clear()
@@ -351,5 +361,28 @@ describe('argument parsing', () => {
     expect(parseBroadcastChannels([])).toEqual({
       channels: ['whatsapp', 'telegram', 'slack', 'gmail']
     })
+  })
+})
+
+describe('what a broadcast leaves in memory', () => {
+  it('hands every attempted destination to memory, with what happened to it', async () => {
+    const s = senders({ slack: vi.fn(async () => ({ ok: false, error: 'channel_not_found' })) })
+    await broadcastMessage({ message: 'Standup moves to 11', to: ['Ashu'] }, s, connectivity)
+
+    expect(memory.calls).toHaveLength(1)
+    expect(memory.calls[0].message).toBe('Standup moves to 11')
+    // channelMemory files only the 'sent' ones; the failed Slack send is passed
+    // with its status so it can be left out.
+    expect(memory.calls[0].deliveries).toEqual(
+      expect.arrayContaining([
+        { channel: 'whatsapp', contact: 'Ashu', status: 'sent' },
+        { channel: 'slack', contact: 'Ashu', status: 'failed' }
+      ])
+    )
+  })
+
+  it('records nothing when it refuses before sending', async () => {
+    await broadcastMessage({ message: 'hi', to: ['Nobody'] }, senders(), connectivity)
+    expect(memory.calls).toHaveLength(0)
   })
 })

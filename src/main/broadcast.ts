@@ -47,6 +47,7 @@ import { isTelegramConnected, send_telegram_message } from './telegram'
 import { isSlackConnected, slackRegistry } from './slack'
 import { isGmailConnected, sendGmailMessage } from './gmail'
 import { isUnifiedInboxEnabled, GATE_MESSAGE } from './inboxSummary'
+import { recordBroadcast } from './channelMemory'
 import type { ExecutorContext, ToolResult, ToolSchema } from './tools'
 
 /**
@@ -323,6 +324,9 @@ export async function broadcastMessage(
       detail: result.ok ? (result.output ?? 'Sent.') : (result.error ?? 'Send failed.')
     })
   }
+
+  // Only destinations that actually received it; a failed send did not happen.
+  recordBroadcast(message, outcomes)
 
   const sent = outcomes.filter((o) => o.status === 'sent').length
   const failed = outcomes.length - sent

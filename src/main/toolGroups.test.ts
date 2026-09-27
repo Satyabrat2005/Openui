@@ -227,7 +227,9 @@ describe('selectToolGroups — the expected tool is always in the loaded surface
     { prompt: 'tell Priya and Dev that the venue moved', expected: 'broadcast_message' },
     { prompt: 'let Ana, Ravi and Kim know rent is due', expected: 'broadcast_message' },
     { prompt: 'message Arjun and Neha: running late', expected: 'broadcast_message' },
-    { prompt: 'Priya aur Dev ko bata do ki meeting 5 baje hai', expected: 'broadcast_message' }
+    { prompt: 'Priya aur Dev ko bata do ki meeting 5 baje hai', expected: 'broadcast_message' },
+    // Found rendering corpus v3.3 (2026-09-27): relaying what someone said.
+    { prompt: 'tell Hana and Ishita what Omar said about payroll', expected: 'broadcast_message' }
   ]
 
   // Wrapped in withCoding so the github rows still assert something real: this
@@ -285,6 +287,7 @@ describe('selectToolGroups — picks the right surface', () => {
   it('does not read a pronoun pair as a list of people to broadcast to', () => {
     expect(selectToolGroups('let it build and then tell me that it passed').has('inbox')).toBe(false)
     expect(selectToolGroups('tell me and you decide that later').has('inbox')).toBe(false)
+    expect(selectToolGroups('tell me and them what you found').has('inbox')).toBe(false)
   })
 
   it('loads several surfaces for a request that spans them', () => {
