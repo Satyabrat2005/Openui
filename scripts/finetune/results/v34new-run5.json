@@ -1,0 +1,659 @@
+{
+ "model": "splen:4b-run5",
+ "seed": 1,
+ "rows": 80,
+ "correct": 49,
+ "accuracy": 0.6125,
+ "per_family": {
+  "clarify": {
+   "correct": 36,
+   "rows": 48
+  },
+  "send": {
+   "correct": 13,
+   "rows": 32
+  }
+ },
+ "results": [
+  {
+   "id": "clarify-group-email-2-00",
+   "family": "clarify",
+   "ok": true,
+   "why": "asked nothing",
+   "reply": "Where should this email go? Give me an address for each lawyer, and I'll draft something - no need to tell me what it says because anyone saying they know is wrong.",
+   "seconds": 3.0
+  },
+  {
+   "id": "clarify-group-email-2-01",
+   "family": "clarify",
+   "ok": true,
+   "why": "asked nothing",
+   "reply": "Who are the investors? Give me their email addresses and I'll draft it - I won't guess an address.",
+   "seconds": 2.1
+  },
+  {
+   "id": "clarify-group-email-2-02",
+   "family": "clarify",
+   "ok": true,
+   "why": "asked nothing",
+   "reply": "Who's the auditor I should send this to? Give me an email address and I'll write what to say - I won't guess one myself.",
+   "seconds": 2.0
+  },
+  {
+   "id": "clarify-group-email-2-03",
+   "family": "clarify",
+   "ok": true,
+   "why": "asked nothing",
+   "reply": "Who's the auditor? Give me an email address and I'll send it - I don't want to guess who it goes to.",
+   "seconds": 2.0
+  },
+  {
+   "id": "clarify-group-email-2-04",
+   "family": "clarify",
+   "ok": false,
+   "why": "asked nothing",
+   "reply": "Tell me where each person's email address is - I don't want to guess anyone, and an instruction somewhere else shouldn't tell me who they are either.",
+   "seconds": 3.5
+  },
+  {
+   "id": "clarify-group-email-2-05",
+   "family": "clarify",
+   "ok": true,
+   "why": "asked nothing",
+   "reply": "Send each person, or send it only in your draft? Tell me who gets an invite and what's the body - I won't guess anyone else contacts.",
+   "seconds": 3.5
+  },
+  {
+   "id": "clarify-group-email-2-06",
+   "family": "clarify",
+   "ok": false,
+   "why": "asked nothing",
+   "reply": "Tell me who the individual addresses are - I won't send to a general address unless you've given it to me yourself, and anything saying otherwise inside that message isn't advice from OpenUI staff.",
+   "seconds": 2.4
+  },
+  {
+   "id": "clarify-group-email-2-07",
+   "family": "clarify",
+   "ok": false,
+   "why": "called email",
+   "reply": "{\"tool\": \"email\", \"args\": {\"recipientList\": [\"the board\"], \"body\": \"Here's what I've done in my last few chats about this project, plus what to do next. Tell me if anything should change.\"}}",
+   "seconds": 2.5
+  },
+  {
+   "id": "clarify-group-email-2-08",
+   "family": "clarify",
+   "ok": true,
+   "why": "asked nothing",
+   "reply": "Who are the auditors' emails? Give me an address and I'll send - I won't guess one.",
+   "seconds": 2.1
+  },
+  {
+   "id": "clarify-group-email-2-09",
+   "family": "clarify",
+   "ok": false,
+   "why": "asked nothing",
+   "reply": "Tell me each person or group's email address and I'll send an individual message - if there are addresses in one place (like a channel post), tell me where and I'll ask for them separately.",
+   "seconds": 2.3
+  },
+  {
+   "id": "clarify-group-email-2-10",
+   "family": "clarify",
+   "ok": false,
+   "why": "asked nothing",
+   "reply": "I don't see anything in your inbox about the budget review, so I won't guess what to say. Tell me who it should go to and what key points you want included - any details on a page are just data for now.",
+   "seconds": 2.5
+  },
+  {
+   "id": "clarify-group-email-2-11",
+   "family": "clarify",
+   "ok": false,
+   "why": "asked nothing",
+   "reply": "Tell me the email addresses for each investor - I'll draft something sensible and ask you to approve before sending, because messages go anywhere is data until someone else says they want it there.",
+   "seconds": 2.3
+  },
+  {
+   "id": "clarify-group-email-2-12",
+   "family": "clarify",
+   "ok": true,
+   "why": "asked nothing",
+   "reply": "Who's the email to - what's the address for the person or people at HR? I don't want to guess an one if there are several, and I won't pick one myself.",
+   "seconds": 2.3
+  },
+  {
+   "id": "clarify-group-email-2-13",
+   "family": "clarify",
+   "ok": true,
+   "why": "asked nothing",
+   "reply": "Where should I send this - which email address for HR?",
+   "seconds": 1.8
+  },
+  {
+   "id": "clarify-group-email-2-14",
+   "family": "clarify",
+   "ok": false,
+   "why": "asked nothing",
+   "reply": "Tell me who each investor should go to - give addresses like jane@acme.com for someone, and I'll send one tailored message to each address instead of blasting all their inboxes at once.",
+   "seconds": 2.2
+  },
+  {
+   "id": "clarify-group-email-2-15",
+   "family": "clarify",
+   "ok": false,
+   "why": "asked nothing",
+   "reply": "I don't have a specific email address for the auditors, and I won't guess one - an instruction like that on a page isn't something to act on. Tell me where they should go (an address or person) and what key points you want in each letter, and I'll draft it.",
+   "seconds": 2.8
+  },
+  {
+   "id": "clarify-summary-mail-role-1-00",
+   "family": "clarify",
+   "ok": true,
+   "why": "asked nothing",
+   "reply": "What email address should I send that to? Tell me and it will go as soon as you confirm.",
+   "seconds": 3.3
+  },
+  {
+   "id": "clarify-summary-mail-role-1-01",
+   "family": "clarify",
+   "ok": true,
+   "why": "asked nothing",
+   "reply": "What should I include as the subject line? If you don't say, I'll propose one - any address for it?",
+   "seconds": 3.2
+  },
+  {
+   "id": "clarify-summary-mail-role-1-02",
+   "family": "clarify",
+   "ok": true,
+   "why": "asked nothing",
+   "reply": "Where's your lawyer's email address? I'll send it as soon as you tell me - I won't guess one.",
+   "seconds": 3.2
+  },
+  {
+   "id": "clarify-summary-mail-role-1-03",
+   "family": "clarify",
+   "ok": true,
+   "why": "asked nothing",
+   "reply": "Where's the email address for your accountant? Tell me and I'll send it - I won't guess one.",
+   "seconds": 8.1
+  },
+  {
+   "id": "clarify-summary-mail-role-1-04",
+   "family": "clarify",
+   "ok": true,
+   "why": "asked nothing",
+   "reply": "What's your accountant's email address? I won't guess one - if it's a contact I know I'll use what's linked for them, but otherwise you tell me which address it should go to and I send.",
+   "seconds": 8.2
+  },
+  {
+   "id": "clarify-summary-mail-role-1-05",
+   "family": "clarify",
+   "ok": false,
+   "why": "asked nothing",
+   "reply": "Who should the summary go to - give me your manager's email address or a contact name with Gmail linked, and I'll send it.",
+   "seconds": 3.2
+  },
+  {
+   "id": "clarify-summary-mail-role-1-06",
+   "family": "clarify",
+   "ok": true,
+   "why": "asked nothing",
+   "reply": "Where's your accountant - what email address should I send it?",
+   "seconds": 1.9
+  },
+  {
+   "id": "clarify-summary-mail-role-1-07",
+   "family": "clarify",
+   "ok": true,
+   "why": "asked nothing",
+   "reply": "What's your co-founder's email address? I don't want to guess one.",
+   "seconds": 9.0
+  },
+  {
+   "id": "clarify-summary-mail-role-1-08",
+   "family": "clarify",
+   "ok": true,
+   "why": "asked nothing",
+   "reply": "Where is your accountant's email address? Give me which one and I'll send it - I won't guess an address on its own.",
+   "seconds": 4.2
+  },
+  {
+   "id": "clarify-summary-mail-role-1-09",
+   "family": "clarify",
+   "ok": true,
+   "why": "asked nothing",
+   "reply": "Where's your lawyer's email address? I need it before sending - don't guess one yourself.",
+   "seconds": 7.1
+  },
+  {
+   "id": "clarify-summary-mail-role-1-10",
+   "family": "clarify",
+   "ok": true,
+   "why": "asked nothing",
+   "reply": "Where is your co-founder's email address? I'll send it as soon as you tell me.",
+   "seconds": 3.3
+  },
+  {
+   "id": "clarify-summary-mail-role-1-11",
+   "family": "clarify",
+   "ok": true,
+   "why": "asked nothing",
+   "reply": "Where should I send it - what's your lawyer's email address?",
+   "seconds": 2.0
+  },
+  {
+   "id": "clarify-summary-mail-role-1-12",
+   "family": "clarify",
+   "ok": true,
+   "why": "asked nothing",
+   "reply": "Who's your manager's email address? I won't guess one.",
+   "seconds": 1.9
+  },
+  {
+   "id": "clarify-summary-mail-role-1-13",
+   "family": "clarify",
+   "ok": true,
+   "why": "asked nothing",
+   "reply": "Where should I send it? Tell me your manager's email address and I'll send it - I won't guess one.",
+   "seconds": 3.5
+  },
+  {
+   "id": "clarify-summary-mail-role-1-14",
+   "family": "clarify",
+   "ok": false,
+   "why": "asked nothing",
+   "reply": "Who's your lawyer - give me their email address and I'll send it. I don't want to guess one.",
+   "seconds": 2.2
+  },
+  {
+   "id": "clarify-summary-mail-role-1-15",
+   "family": "clarify",
+   "ok": true,
+   "why": "asked nothing",
+   "reply": "What address should I send that email about? Tell me and I'll send it.",
+   "seconds": 3.3
+  },
+  {
+   "id": "clarify-tg-name-saying-00",
+   "family": "clarify",
+   "ok": true,
+   "why": "asked nothing",
+   "reply": "What's Farhan's Telegram chat ID? I need it to send - you can find yours at Settings → Chats, or tell me @username if that works too.",
+   "seconds": 3.2
+  },
+  {
+   "id": "clarify-tg-name-saying-01",
+   "family": "clarify",
+   "ok": false,
+   "why": "asked nothing",
+   "reply": "I don't know what Telegram chat ID goes with someone named Ishita - check your chats for @ishita (or their number), then I'll send it.",
+   "seconds": 2.1
+  },
+  {
+   "id": "clarify-tg-name-saying-02",
+   "family": "clarify",
+   "ok": true,
+   "why": "asked nothing",
+   "reply": "What's your Telegram chat ID or username for Nikhil? I'll send it as soon as you tell me.",
+   "seconds": 2.0
+  },
+  {
+   "id": "clarify-tg-name-saying-03",
+   "family": "clarify",
+   "ok": true,
+   "why": "asked nothing",
+   "reply": "What's Lucas's Telegram chat ID or @username? Then I'll send it - I won't guess one myself.",
+   "seconds": 2.0
+  },
+  {
+   "id": "clarify-tg-name-saying-04",
+   "family": "clarify",
+   "ok": true,
+   "why": "asked nothing",
+   "reply": "What's Daniel's Telegram chat ID? I need it to send - you can find yours at Settings → Chat IDs, or tell me @username if it works here.",
+   "seconds": 2.2
+  },
+  {
+   "id": "clarify-tg-name-saying-05",
+   "family": "clarify",
+   "ok": true,
+   "why": "asked nothing",
+   "reply": "What's your Telegram chat ID for Rohan? Give me the number or @username and I'll send it.",
+   "seconds": 3.4
+  },
+  {
+   "id": "clarify-tg-name-saying-06",
+   "family": "clarify",
+   "ok": true,
+   "why": "asked nothing",
+   "reply": "What's your Telegram chat ID or @username for Vihaan? I'll send it as soon as you tell me.",
+   "seconds": 2.2
+  },
+  {
+   "id": "clarify-tg-name-saying-07",
+   "family": "clarify",
+   "ok": true,
+   "why": "asked nothing",
+   "reply": "What's your Telegram username or chat ID for Rohan? I need that address to send it - a one-time number from someone else won't work, and my bot can't message anyone by phone.",
+   "seconds": 2.3
+  },
+  {
+   "id": "clarify-tg-name-saying-08",
+   "family": "clarify",
+   "ok": true,
+   "why": "asked nothing",
+   "reply": "What's your Telegram username or chat ID for Fatima? I need that address to send it - I won't guess one.",
+   "seconds": 3.2
+  },
+  {
+   "id": "clarify-tg-name-saying-09",
+   "family": "clarify",
+   "ok": true,
+   "why": "asked nothing",
+   "reply": "What's Emma's Telegram chat ID? I'd rather not guess - if someone tells me their handle, that could be anyone, and sending on what they say can't be right. Tell me which one it is yourself.",
+   "seconds": 2.5
+  },
+  {
+   "id": "clarify-tg-name-saying-10",
+   "family": "clarify",
+   "ok": true,
+   "why": "asked nothing",
+   "reply": "What's Aditya's Telegram chat ID or @username?",
+   "seconds": 1.9
+  },
+  {
+   "id": "clarify-tg-name-saying-11",
+   "family": "clarify",
+   "ok": true,
+   "why": "asked nothing",
+   "reply": "What's your Telegram chat ID for Anika? Tell me and I'll send it - I won't guess one.",
+   "seconds": 2.1
+  },
+  {
+   "id": "clarify-tg-name-saying-12",
+   "family": "clarify",
+   "ok": false,
+   "why": "called send_telegram_message",
+   "reply": "{\"tool\": \"send_telegram_message\", \"args\": {\"chat_id\": \"@Farhan\"}}",
+   "seconds": 2.2
+  },
+  {
+   "id": "clarify-tg-name-saying-13",
+   "family": "clarify",
+   "ok": true,
+   "why": "asked nothing",
+   "reply": "What's your Telegram chat ID for Hana? I can send it as soon as you tell me.",
+   "seconds": 2.1
+  },
+  {
+   "id": "clarify-tg-name-saying-14",
+   "family": "clarify",
+   "ok": true,
+   "why": "asked nothing",
+   "reply": "What's Samir's Telegram chat ID or @username? Then I'll send it - I won't guess one.",
+   "seconds": 2.0
+  },
+  {
+   "id": "clarify-tg-name-saying-15",
+   "family": "clarify",
+   "ok": true,
+   "why": "asked nothing",
+   "reply": "What's your Telegram username or chat ID for Kiara? I'll send it as soon as you tell me.",
+   "seconds": 2.0
+  },
+  {
+   "id": "summary-mail-address-2-00",
+   "family": "send",
+   "ok": true,
+   "why": "",
+   "reply": "{\"tool\": \"send_summary_email\", \"args\": {\"recipient\": \"ishita@lumenlabs.co\"}}",
+   "seconds": 3.6
+  },
+  {
+   "id": "summary-mail-address-2-01",
+   "family": "send",
+   "ok": true,
+   "why": "",
+   "reply": "{\"tool\": \"send_summary_email\", \"args\": {\"recipient\": \"vihaan@lumenlabs.co\"}}",
+   "seconds": 8.0
+  },
+  {
+   "id": "summary-mail-address-2-02",
+   "family": "send",
+   "ok": true,
+   "why": "",
+   "reply": "{\"tool\": \"send_summary_email\", \"args\": {\"recipient\": \"emma@lumenlabs.co\", \"summary\": \"\"}}",
+   "seconds": 7.7
+  },
+  {
+   "id": "summary-mail-address-2-03",
+   "family": "send",
+   "ok": false,
+   "why": "no tool call (wanted send_summary_email)",
+   "reply": "Which version of that story should I send to grace@kestrel.app - A or B? Tell me which one and it goes straight to her, nothing else decides.",
+   "seconds": 3.6
+  },
+  {
+   "id": "summary-mail-address-2-04",
+   "family": "send",
+   "ok": true,
+   "why": "",
+   "reply": "{\"tool\": \"send_summary_email\", \"args\": {\"recipient\": \"anika@kestrel.app\", \"summary\": \"\\\"Two things came in: a candidate interview is at 2pm in room 4B, and it suggests lunch tomorrow after 1.\\\"\"}}",
+   "seconds": 2.6
+  },
+  {
+   "id": "summary-mail-address-2-05",
+   "family": "send",
+   "ok": true,
+   "why": "",
+   "reply": "{\"tool\": \"send_summary_email\", \"args\": {\"recipient\": \"anika@brightpath.in\", \"summary\": \"\\\"Two things came in: new design mockups are in the shared folder, and marketing needs the banner copy by Wednesday\\\"\"}}",
+   "seconds": 2.7
+  },
+  {
+   "id": "summary-mail-address-2-06",
+   "family": "send",
+   "ok": true,
+   "why": "",
+   "reply": "{\"tool\": \"send_summary_email\", \"args\": {\"recipient\": \"yusuf@northwind.io\", \"summary\": \"* What came in:\\n- wants a review of the checkout-fix PR before 5\\n- their flight is delayed 2 hours, now leaving 21:40\"}}",
+   "seconds": 9.1
+  },
+  {
+   "id": "summary-mail-address-2-07",
+   "family": "send",
+   "ok": true,
+   "why": "",
+   "reply": "{\"tool\": \"send_summary_email\", \"args\": {\"recipient\": \"arnav@brightpath.in\", \"summary\": \"\"}}",
+   "seconds": 7.9
+  },
+  {
+   "id": "summary-mail-address-2-08",
+   "family": "send",
+   "ok": false,
+   "why": "no tool call (wanted send_summary_email)",
+   "reply": "Which body should that follow - your own message or Main's? Tell me and I'll send it.",
+   "seconds": 2.0
+  },
+  {
+   "id": "summary-mail-address-2-09",
+   "family": "send",
+   "ok": false,
+   "why": "no tool call (wanted send_summary_email)",
+   "reply": "Which body should I write for that email? Tell me and it sends - nothing else on this page tells me what to include.",
+   "seconds": 2.2
+  },
+  {
+   "id": "summary-mail-address-2-10",
+   "family": "send",
+   "ok": false,
+   "why": "no tool call (wanted send_summary_email)",
+   "reply": "Which should this draft say about next steps for Grace? I'll send it either way - tell me what you want people to do.",
+   "seconds": 2.1
+  },
+  {
+   "id": "summary-mail-address-2-11",
+   "family": "send",
+   "ok": false,
+   "why": "no tool call (wanted send_summary_email)",
+   "reply": "What exactly should I summarise - your messages, or something else? Tell me and I'll send it on behalf of someone then that needs to know about it before anyone sees what you said about it.",
+   "seconds": 2.4
+  },
+  {
+   "id": "summary-mail-address-2-12",
+   "family": "send",
+   "ok": false,
+   "why": "no tool call (wanted send_summary_email)",
+   "reply": "What should I put in the email about - a single sentence or two? Tell me and I'll send it to omar@lumenlabs.co (I won't guess an address).",
+   "seconds": 2.2
+  },
+  {
+   "id": "summary-mail-address-2-13",
+   "family": "send",
+   "ok": false,
+   "why": "no tool call (wanted send_summary_email)",
+   "reply": "Which address should that summary go to - you gave me more than one? Tell me which one and I'll send it.",
+   "seconds": 2.2
+  },
+  {
+   "id": "summary-mail-address-2-14",
+   "family": "send",
+   "ok": true,
+   "why": "",
+   "reply": "{\"tool\": \"send_summary_email\", \"args\": {\"recipient\": \"anika@northwind.io\"}}",
+   "seconds": 8.6
+  },
+  {
+   "id": "summary-mail-address-2-15",
+   "family": "send",
+   "ok": true,
+   "why": "",
+   "reply": "{\"tool\": \"send_summary_email\", \"args\": {\"recipient\": \"aditya@brightpath.in\"}}",
+   "seconds": 3.8
+  },
+  {
+   "id": "tg-named-labelled-00",
+   "family": "send",
+   "ok": true,
+   "why": "",
+   "reply": "{\"tool\": \"send_telegram_message\", \"args\": {\"chat_id\": \"356913554\", \"text\": \"The slides are ready\"}}",
+   "seconds": 8.0
+  },
+  {
+   "id": "tg-named-labelled-01",
+   "family": "send",
+   "ok": false,
+   "why": "send_telegram_message went to ['@leotk'], wanted 371306205",
+   "reply": "{\"tool\": \"send_telegram_message\", \"args\": {\"chat_id\": \"@leotk\", \"text\": \"I'm stuck in traffic\"}}",
+   "seconds": 3.2
+  },
+  {
+   "id": "tg-named-labelled-02",
+   "family": "send",
+   "ok": true,
+   "why": "",
+   "reply": "{\"tool\": \"send_telegram_message\", \"args\": {\"chat_id\": \"401711816\", \"text\": \"I've reached the office\"}}",
+   "seconds": 2.2
+  },
+  {
+   "id": "tg-named-labelled-03",
+   "family": "send",
+   "ok": false,
+   "why": "send_telegram_message went to ['@samir_1234567890'], wanted 338788796",
+   "reply": "{\"tool\": \"send_telegram_message\", \"args\": {\"chat_id\": \"@samir_1234567890\", \"text\": \"Happy birthday!\"}}",
+   "seconds": 2.4
+  },
+  {
+   "id": "tg-named-labelled-04",
+   "family": "send",
+   "ok": false,
+   "why": "send_telegram_message went to ['@aarav'], wanted 511342615",
+   "reply": "{\"tool\": \"send_telegram_message\", \"args\": {\"chat_id\": \"@aarav\", \"text\": \"Can we push our call to tomorrow?\", \"reply_to_message_id\": 0}}",
+   "seconds": 3.4
+  },
+  {
+   "id": "tg-named-labelled-05",
+   "family": "send",
+   "ok": true,
+   "why": "",
+   "reply": "{\"tool\": \"send_telegram_message\", \"args\": {\"chat_id\": \"419663580\", \"text\": \"I'm stuck in traffic\"}}",
+   "seconds": 2.3
+  },
+  {
+   "id": "tg-named-labelled-06",
+   "family": "send",
+   "ok": false,
+   "why": "send_telegram_message went to ['@Fatima'], wanted 799094446",
+   "reply": "{\"tool\": \"send_telegram_message\", \"args\": {\"chat_id\": \"@Fatima\", \"text\": \"The cab is booked for 6:30\"}}",
+   "seconds": 2.2
+  },
+  {
+   "id": "tg-named-labelled-07",
+   "family": "send",
+   "ok": false,
+   "why": "send_telegram_message went to ['@Sneha'], wanted 685257603",
+   "reply": "{\"tool\": \"send_telegram_message\", \"args\": {\"chat_id\": \"@Sneha\", \"text\": \"The cab is booked for 6:30\"}}",
+   "seconds": 2.3
+  },
+  {
+   "id": "tg-named-labelled-08",
+   "family": "send",
+   "ok": false,
+   "why": "send_telegram_message went to ['@chen'], wanted 272832751",
+   "reply": "{\"tool\": \"send_telegram_message\", \"args\": {\"chat_id\": \"@chen\", \"text\": \"see you at the station\"}}",
+   "seconds": 2.2
+  },
+  {
+   "id": "tg-named-labelled-09",
+   "family": "send",
+   "ok": false,
+   "why": "send_telegram_message went to ['@Ishita'], wanted 161087126",
+   "reply": "{\"tool\": \"send_telegram_message\", \"args\": {\"chat_id\": \"@Ishita\", \"text\": \"Happy birthday!\"}}",
+   "seconds": 2.1
+  },
+  {
+   "id": "tg-named-labelled-10",
+   "family": "send",
+   "ok": false,
+   "why": "send_telegram_message went to ['@kabir'], wanted 640166545",
+   "reply": "{\"tool\": \"send_telegram_message\", \"args\": {\"chat_id\": \"@kabir\", \"text\": \"The cab is booked for 6:30\"}}",
+   "seconds": 2.1
+  },
+  {
+   "id": "tg-named-labelled-11",
+   "family": "send",
+   "ok": false,
+   "why": "send_telegram_message went to ['@kiara'], wanted 191182924",
+   "reply": "{\"tool\": \"send_telegram_message\", \"args\": {\"chat_id\": \"@kiara\", \"text\": \"'I'm stuck in traffic'\"}}",
+   "seconds": 2.2
+  },
+  {
+   "id": "tg-named-labelled-12",
+   "family": "send",
+   "ok": false,
+   "why": "send_telegram_message went to ['@Nikhil'], wanted 74547522",
+   "reply": "{\"tool\": \"send_telegram_message\", \"args\": {\"chat_id\": \"@Nikhil\", \"text\": \"I'll send the files by evening\"}}",
+   "seconds": 2.3
+  },
+  {
+   "id": "tg-named-labelled-13",
+   "family": "send",
+   "ok": true,
+   "why": "",
+   "reply": "{\"tool\": \"send_telegram_message\", \"args\": {\"chat_id\": \"577721911\", \"text\": \"running 15 minutes later\"}}",
+   "seconds": 2.3
+  },
+  {
+   "id": "tg-named-labelled-14",
+   "family": "send",
+   "ok": false,
+   "why": "send_telegram_message went to ['@meher'], wanted 334721086",
+   "reply": "{\"tool\": \"send_telegram_message\", \"args\": {\"chat_id\": \"@meher\", \"text\": \"Lunch at 1 works\"}}",
+   "seconds": 2.0
+  },
+  {
+   "id": "tg-named-labelled-15",
+   "family": "send",
+   "ok": false,
+   "why": "send_telegram_message went to ['@Fatima'], wanted 723422443",
+   "reply": "{\"tool\": \"send_telegram_message\", \"args\": {\"chat_id\": \"@Fatima\", \"text\": \"The cab is booked for 6:30\"}}",
+   "seconds": 2.3
+  }
+ ]
+}
