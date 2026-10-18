@@ -101,10 +101,9 @@ export default function ModelManager(): JSX.Element {
 
   return (
     <div className="ou-models" data-testid="model-manager">
-      <div className="ou-settings-label">Local model</div>
+      <div className="ou-settings-label">Model</div>
       <div className="ou-settings-desc" style={{ marginBottom: 10 }}>
-        OpenUI runs its models on your machine. Download them here — this is the only step, and it
-        only has to happen once per model.
+        Splen runs on this computer. Download its model once, here.
       </div>
 
       {models.map((m) => {

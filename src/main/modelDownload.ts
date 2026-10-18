@@ -100,8 +100,8 @@ export function approxSizeLabel(bytes: number): string {
 export const MODEL_CATALOG: CatalogModel[] = [
   {
     id: DEFAULT_GENERAL_MODEL,
-    label: 'Splen',
-    purpose: 'Reads, summarises and replies to your messages across WhatsApp, Telegram, Slack and Gmail.',
+    label: 'Standard model',
+    purpose: 'Answers until Splen 4B is installed, and steps in if Splen cannot start. Runs on the local AI engine (Ollama).',
     approxSize: approxSizeLabel(MODEL_LAYER_BYTES[DEFAULT_GENERAL_MODEL]),
     attribution: 'Runs Qwen3.5 by Alibaba Cloud · Apache License 2.0'
   },

@@ -13,7 +13,7 @@ const THEME_OPTIONS: { value: ThemePref; label: string }[] = [
 const AUTONOMY_OPTIONS: { value: AutonomyLevel; label: string; hint: string }[] = [
   { value: 'ask-each', label: 'Ask each', hint: 'Confirm every action before it runs.' },
   { value: 'approve-plan', label: 'Approve plan', hint: 'Review the plan once, then it runs on its own.' },
-  { value: 'full-auto', label: 'Full auto', hint: 'Run everything without asking. Highest risk.' }
+  { value: 'full-auto', label: 'Full auto', hint: 'Runs steps without asking. Sending a message, deleting or linking a contact still always asks.' }
 ]
 
 // Languages the local (free-tier) screen OCR can read. "auto" detects from the
@@ -59,6 +59,11 @@ function memoryAge(createdAt: number): string {
 // OPENUI_ENABLE_CLOUD in the main process (models.ts). Flip both back to restore
 // the frontier tier (built under PR #107).
 const CLOUD_TIER_ENABLED = false
+
+// Sections that belong to the older all-purpose assistant (design tools, code
+// hosting, calendar/Drive, screen OCR, AI improvement). The Splen build is a
+// texting agent, so Settings shows only what it uses. Flip to bring them back.
+const SHOW_EXTRA_SETTINGS = false
 
 interface Props {
   onClose: () => void
@@ -629,6 +634,8 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
           </div>
         </div>
 
+        <div className="ou-settings-group">Splen</div>
+
         {/* Local model: the in-app download path. This is the ONLY place the app
             documents how to get a model — there is no terminal instruction
             anywhere in the product. */}
@@ -636,110 +643,7 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
           <ModelManager />
         </div>
 
-        {/* Privacy: anonymous usage analytics */}
-        <div className="ou-settings-row ou-settings-section">
-          <div className="ou-settings-grow">
-            <div className="ou-settings-label">Anonymous Usage Analytics</div>
-            <div className="ou-settings-desc">
-              Help us improve OpenUI by sharing anonymous usage data. No personal data is ever
-              collected.
-            </div>
-          </div>
-          <Switch
-            on={enabled}
-            disabled={busy}
-            label="Anonymous Usage Analytics"
-            onClick={() => void toggle()}
-          />
-        </div>
-
-        {/* AI Improvement: local self-improvement loop */}
-        <div className="ou-settings-row ou-settings-section">
-          <div className="ou-settings-grow">
-            <div className="ou-settings-label">AI Improvement</div>
-            <div className="ou-settings-desc">
-              OpenUI learns from your usage patterns to improve its responses over time. No data
-              leaves your machine — improvement happens locally.
-            </div>
-          </div>
-          <Switch
-            on={aiImprovement}
-            disabled={false}
-            label="AI Improvement"
-            onClick={toggleAiImprovement}
-          />
-        </div>
-
-        {/* Automation: how autonomous the agent is when carrying out tasks */}
-        <div className="ou-settings-section">
-          <div className="ou-settings-label">Automation</div>
-          <div className="ou-settings-desc" style={{ marginBottom: 10 }}>
-            How much OpenUI does on its own when running a multi-step task.
-          </div>
-          <div className="ou-seg">
-            {AUTONOMY_OPTIONS.map((opt) => (
-              <button
-                key={opt.value}
-                type="button"
-                onClick={() => chooseAutonomy(opt.value)}
-                className={`ou-seg-btn${autonomy === opt.value ? ' active' : ''}`}
-              >
-                {opt.label}
-              </button>
-            ))}
-          </div>
-          <div className="ou-seg-hint">
-            {AUTONOMY_OPTIONS.find((o) => o.value === autonomy)?.hint}
-          </div>
-        </div>
-
-        {/* Integrations: Figma personal access token */}
-        <div className="ou-settings-section">
-          <div className="ou-settings-headrow">
-            <div className="ou-settings-label">Figma</div>
-            {figmaSaved && <span className="ou-settings-saved">Saved</span>}
-          </div>
-          <div className="ou-settings-desc" style={{ marginBottom: 8 }}>
-            Paste a personal access token to let OpenUI review your Figma designs, export their
-            design tokens, and build frames as code. Create one at figma.com → Settings → Security →
-            Personal access tokens. Read-only access is enough. Stored locally on this device.
-          </div>
-          <input
-            type="password"
-            className="ou-settings-input"
-            value={figmaToken}
-            onChange={(e) => setFigmaToken(e.target.value)}
-            onBlur={saveFigmaToken}
-            placeholder="figd_…"
-            aria-label="Figma personal access token"
-            autoComplete="off"
-            spellCheck={false}
-          />
-        </div>
-
-        {/* Screen OCR language (free-tier local OCR) */}
-        <div className="ou-settings-section">
-          <div className="ou-settings-headrow">
-            <div className="ou-settings-label">Screen OCR language</div>
-            {ocrLangSaved && <span className="ou-settings-saved">Saved</span>}
-          </div>
-          <div className="ou-settings-desc" style={{ marginBottom: 8 }}>
-            Language used to read your screen with local OCR (free tier). Pick the language your
-            apps are in so non-English text is read correctly; “Auto” follows your system language.
-          </div>
-          <select
-            className="ou-settings-input"
-            value={ocrLanguage}
-            onChange={(e) => chooseOcrLanguage(e.target.value)}
-            aria-label="Screen OCR language"
-          >
-            {OCR_LANGUAGE_OPTIONS.map((o) => (
-              <option key={o.value} value={o.value}>
-                {o.label}
-              </option>
-            ))}
-          </select>
-        </div>
+        <div className="ou-settings-group">Channels</div>
 
         {/* WhatsApp allowlisted auto-reply. Compose-and-click by design: the
             watcher only drafts suggestions for these contacts; sending is always
@@ -765,7 +669,7 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
               </div>
             </div>
             <div className="ou-settings-desc" style={{ marginBottom: 10 }}>
-              When on, OpenUI watches for new WhatsApp messages from the contacts you list below and{' '}
+              When on, Splen watches for new WhatsApp messages from the contacts you list below and{' '}
               <strong style={{ color: 'var(--ou-text)' }}>drafts a suggested reply</strong> for each. It never sends on its
               own — you review every draft and click to send. Nothing runs for anyone not on this list.
             </div>
@@ -863,6 +767,151 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
           </div>
         )}
 
+        {/* Integrations: Telegram bot token (created via @BotFather) */}
+        <div className="ou-settings-section">
+          <div className="ou-settings-headrow">
+            <div className="ou-settings-label">Telegram</div>
+            {telegramSaved && <span className="ou-settings-saved">Saved</span>}
+          </div>
+          <div className="ou-settings-desc" style={{ marginBottom: 8 }}>
+            Paste a bot token to let Splen read and send Telegram messages through your own bot.
+            Create one by messaging @BotFather → /newbot. Note: a bot can only message people who have
+            started a chat with it first. Stored locally on this device.
+          </div>
+          <input
+            type="password"
+            className="ou-settings-input"
+            value={telegramToken}
+            onChange={(e) => setTelegramToken(e.target.value)}
+            onBlur={saveTelegramToken}
+            placeholder="123456789:AA…"
+            aria-label="Telegram bot token"
+            autoComplete="off"
+            spellCheck={false}
+          />
+        </div>
+
+        {/* Integrations: Slack bot/user token */}
+        <div className="ou-settings-section">
+          <div className="ou-settings-headrow">
+            <div className="ou-settings-label">Slack</div>
+            {slackSaved && <span className="ou-settings-saved">Saved</span>}
+          </div>
+          <div className="ou-settings-desc" style={{ marginBottom: 8 }}>
+            Paste a Slack token to let Splen read, search and send Slack messages. A bot token
+            (xoxb-) with chat:write, channels:read and channels:history covers most tasks; search
+            needs a user token (xoxp-) with search:read. Create one at api.slack.com/apps. Stored
+            locally on this device.
+          </div>
+          <input
+            type="password"
+            className="ou-settings-input"
+            value={slackToken}
+            onChange={(e) => setSlackToken(e.target.value)}
+            onBlur={saveSlackToken}
+            placeholder="xoxb-…"
+            aria-label="Slack token"
+            autoComplete="off"
+            spellCheck={false}
+          />
+        </div>
+
+        {/* Gmail: holds the Google OAuth client (Calendar/Drive reuse it when shown) */}
+        <div className="ou-settings-section">
+          <div className="ou-settings-headrow">
+            <div className="ou-settings-label">Gmail</div>
+            <span className={`ou-settings-status${gmailConnected ? ' ok' : ''}`}>
+              {gmailConnected ? 'Connected' : 'Not connected'}
+            </span>
+          </div>
+          <div className="ou-settings-desc" style={{ marginBottom: 8 }}>
+            Lets Splen read, summarise and reply to your email. Create an OAuth &quot;Desktop
+            app&quot; client at console.cloud.google.com (enable the Gmail API), paste its Client ID
+            and Secret below, then click Connect. Stored locally on this device.
+          </div>
+          <input
+            type="password"
+            className="ou-settings-input"
+            value={gcalClientId}
+            onChange={(e) => setGcalClientId(e.target.value)}
+            onBlur={saveGcalClientId}
+            placeholder="Client ID (…apps.googleusercontent.com)"
+            aria-label="Google OAuth client ID"
+            autoComplete="off"
+            spellCheck={false}
+          />
+          <input
+            type="password"
+            className="ou-settings-input"
+            value={gcalClientSecret}
+            onChange={(e) => setGcalClientSecret(e.target.value)}
+            onBlur={saveGcalClientSecret}
+            placeholder="Client Secret"
+            aria-label="Google OAuth client secret"
+            autoComplete="off"
+            spellCheck={false}
+          />
+          <div className="ou-settings-btnrow">
+            <button
+              type="button"
+              className="ou-settings-btn"
+              onClick={() => void connectGmail()}
+              disabled={gmailConnecting || !gcalClientId.trim() || !gcalClientSecret.trim()}
+            >
+              {gmailConnecting ? 'Connecting…' : gmailConnected ? 'Reconnect' : 'Connect'}
+            </button>
+            {gmailMessage && <span className="ou-settings-msg">{gmailMessage}</span>}
+          </div>
+        </div>
+
+        {/* Unified inbox — now ON by default (see isUnifiedInboxEnabled). What
+            keeps it safe is not this switch: every channel reports its own
+            read status, a person-scoped read refuses an unresolved name rather
+            than widening, and every outbound action confirms with the resolved
+            recipients shown. Contact linking is unaffected either way — it only
+            writes to the local database. */}
+        <div className="ou-settings-row ou-settings-section">
+          <div className="ou-settings-grow">
+            <div className="ou-settings-label">Unified inbox</div>
+            <div className="ou-settings-desc">
+              Lets Splen read WhatsApp, Telegram, Slack and Gmail in one pass for questions like
+              “what’s my summary?”, and send one message to people across them. Anything outbound
+              shows you the exact recipients and asks first.
+            </div>
+          </div>
+          <Switch
+            on={unifiedInboxEnabled}
+            disabled={false}
+            label="Unified inbox"
+            onClick={toggleUnifiedInbox}
+          />
+        </div>
+
+        <div className="ou-settings-group">Safety</div>
+
+        {/* Automation: how autonomous the agent is when carrying out tasks */}
+        <div className="ou-settings-section">
+          <div className="ou-settings-label">Approvals</div>
+          <div className="ou-settings-desc" style={{ marginBottom: 10 }}>
+            How much Splen does on its own during a multi-step task.
+          </div>
+          <div className="ou-seg">
+            {AUTONOMY_OPTIONS.map((opt) => (
+              <button
+                key={opt.value}
+                type="button"
+                onClick={() => chooseAutonomy(opt.value)}
+                className={`ou-seg-btn${autonomy === opt.value ? ' active' : ''}`}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+          <div className="ou-seg-hint">
+            {AUTONOMY_OPTIONS.find((o) => o.value === autonomy)?.hint}
+          </div>
+        </div>
+
         {/* Cross-channel memory. Listed in full and individually deletable by
             design: the feature carries what happened on one channel into a
             reply on another, and that is only acceptable if the user can see
@@ -878,18 +927,16 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
             </span>
           </div>
           <div className="ou-settings-desc" style={{ marginBottom: 10 }}>
-            After OpenUI sends or reads a message on WhatsApp, Telegram, Slack or Gmail, it keeps a
-            one-line note of what happened, filed under that contact or topic. Those notes are
-            offered back as context on later requests — including on a{' '}
-            <strong style={{ color: 'var(--ou-text)' }}>different channel</strong>, which is how
-            &ldquo;tell #eng what I promised Ashu&rdquo; works. Stored locally in this app&rsquo;s
-            database; never uploaded. Delete anything below and it stops being used immediately.
+            After Splen reads or sends a message, it keeps a one-line note under that contact or
+            topic and uses it as context later — even on a{' '}
+            <strong style={{ color: 'var(--ou-text)' }}>different channel</strong> (&ldquo;tell
+            #eng what I promised Ashu&rdquo;). Stored only on this computer. Forget anything below
+            and it stops being used immediately.
           </div>
 
           {memories.length === 0 ? (
             <div className="ou-settings-desc" style={{ fontStyle: 'italic' }}>
-              Nothing remembered yet. Notes appear here after OpenUI acts on one of your messaging
-              channels.
+              Nothing remembered yet.
             </div>
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 10 }}>
@@ -998,6 +1045,55 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
           )}
         </div>
 
+        <div className="ou-settings-group">Privacy &amp; app</div>
+
+        {/* Privacy: anonymous usage analytics */}
+        <div className="ou-settings-row ou-settings-section">
+          <div className="ou-settings-grow">
+            <div className="ou-settings-label">Anonymous Usage Analytics</div>
+            <div className="ou-settings-desc">
+              Help us improve OpenUI by sharing anonymous usage data. No personal data is ever
+              collected.
+            </div>
+          </div>
+          <Switch
+            on={enabled}
+            disabled={busy}
+            label="Anonymous Usage Analytics"
+            onClick={() => void toggle()}
+          />
+        </div>
+
+        {/* App version & update check */}
+        <div className="ou-settings-row ou-settings-section" style={{ alignItems: 'center', justifyContent: 'space-between' }}>
+          <div>
+            <div className="ou-settings-label">App Version</div>
+            <div className="ou-settings-desc" style={{ marginTop: 2 }}>
+              OpenUI{appVersion ? ` v${appVersion}` : ''}
+            </div>
+          </div>
+          <div style={{ textAlign: 'right' }}>
+            {updateStatus === 'checking' ? (
+              <span className="ou-settings-status">Checking…</span>
+            ) : updateStatus === 'latest' ? (
+              <span className="ou-settings-status ok">Up to date</span>
+            ) : updateStatus === 'available' || updateStatus === 'downloaded' ? (
+              <span className="ou-settings-status info">
+                {updateStatus === 'downloaded' ? 'Ready to install' : 'Update available'}
+              </span>
+            ) : (
+              <button
+                type="button"
+                className="ou-settings-link"
+                onClick={onCheckForUpdates}
+                disabled={!onCheckForUpdates}
+              >
+                Check for updates
+              </button>
+            )}
+          </div>
+        </div>
+
         {/* Cloud AI: bring-your-own-key frontier model (opt-in). Hidden for the
             Ollama-only launch; see CLOUD_TIER_ENABLED above. */}
         {CLOUD_TIER_ENABLED && (
@@ -1040,6 +1136,74 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
         </div>
         )}
 
+        {/* Not part of the Splen texting product; kept behind SHOW_EXTRA_SETTINGS. */}
+        {SHOW_EXTRA_SETTINGS && (
+          <>
+        {/* AI Improvement: local self-improvement loop */}
+        <div className="ou-settings-row ou-settings-section">
+          <div className="ou-settings-grow">
+            <div className="ou-settings-label">AI Improvement</div>
+            <div className="ou-settings-desc">
+              OpenUI learns from your usage patterns to improve its responses over time. No data
+              leaves your machine — improvement happens locally.
+            </div>
+          </div>
+          <Switch
+            on={aiImprovement}
+            disabled={false}
+            label="AI Improvement"
+            onClick={toggleAiImprovement}
+          />
+        </div>
+
+        {/* Integrations: Figma personal access token */}
+        <div className="ou-settings-section">
+          <div className="ou-settings-headrow">
+            <div className="ou-settings-label">Figma</div>
+            {figmaSaved && <span className="ou-settings-saved">Saved</span>}
+          </div>
+          <div className="ou-settings-desc" style={{ marginBottom: 8 }}>
+            Paste a personal access token to let OpenUI review your Figma designs, export their
+            design tokens, and build frames as code. Create one at figma.com → Settings → Security →
+            Personal access tokens. Read-only access is enough. Stored locally on this device.
+          </div>
+          <input
+            type="password"
+            className="ou-settings-input"
+            value={figmaToken}
+            onChange={(e) => setFigmaToken(e.target.value)}
+            onBlur={saveFigmaToken}
+            placeholder="figd_…"
+            aria-label="Figma personal access token"
+            autoComplete="off"
+            spellCheck={false}
+          />
+        </div>
+
+        {/* Screen OCR language (free-tier local OCR) */}
+        <div className="ou-settings-section">
+          <div className="ou-settings-headrow">
+            <div className="ou-settings-label">Screen OCR language</div>
+            {ocrLangSaved && <span className="ou-settings-saved">Saved</span>}
+          </div>
+          <div className="ou-settings-desc" style={{ marginBottom: 8 }}>
+            Language used to read your screen with local OCR (free tier). Pick the language your
+            apps are in so non-English text is read correctly; “Auto” follows your system language.
+          </div>
+          <select
+            className="ou-settings-input"
+            value={ocrLanguage}
+            onChange={(e) => chooseOcrLanguage(e.target.value)}
+            aria-label="Screen OCR language"
+          >
+            {OCR_LANGUAGE_OPTIONS.map((o) => (
+              <option key={o.value} value={o.value}>
+                {o.label}
+              </option>
+            ))}
+          </select>
+        </div>
+
         {/* Integrations: GitHub personal access token */}
         <div className="ou-settings-section">
           <div className="ou-settings-headrow">
@@ -1064,55 +1228,6 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
           />
         </div>
 
-        {/* Integrations: Telegram bot token (created via @BotFather) */}
-        <div className="ou-settings-section">
-          <div className="ou-settings-headrow">
-            <div className="ou-settings-label">Telegram</div>
-            {telegramSaved && <span className="ou-settings-saved">Saved</span>}
-          </div>
-          <div className="ou-settings-desc" style={{ marginBottom: 8 }}>
-            Paste a bot token to let OpenUI send and read Telegram messages through your own bot.
-            Create one by messaging @BotFather → /newbot. Note: a bot can only message people who have
-            started a chat with it first. Stored locally on this device.
-          </div>
-          <input
-            type="password"
-            className="ou-settings-input"
-            value={telegramToken}
-            onChange={(e) => setTelegramToken(e.target.value)}
-            onBlur={saveTelegramToken}
-            placeholder="123456789:AA…"
-            aria-label="Telegram bot token"
-            autoComplete="off"
-            spellCheck={false}
-          />
-        </div>
-
-        {/* Integrations: Slack bot/user token */}
-        <div className="ou-settings-section">
-          <div className="ou-settings-headrow">
-            <div className="ou-settings-label">Slack</div>
-            {slackSaved && <span className="ou-settings-saved">Saved</span>}
-          </div>
-          <div className="ou-settings-desc" style={{ marginBottom: 8 }}>
-            Paste a Slack token to let OpenUI send, read, and search Slack messages. A bot token
-            (xoxb-) with chat:write, channels:read and channels:history covers most tasks; search
-            needs a user token (xoxp-) with search:read. Create one at api.slack.com/apps. Stored
-            locally on this device.
-          </div>
-          <input
-            type="password"
-            className="ou-settings-input"
-            value={slackToken}
-            onChange={(e) => setSlackToken(e.target.value)}
-            onBlur={saveSlackToken}
-            placeholder="xoxb-…"
-            aria-label="Slack token"
-            autoComplete="off"
-            spellCheck={false}
-          />
-        </div>
-
         {/* Integrations: Google Calendar (dedicated OAuth for invites + Meet links) */}
         <div className="ou-settings-section">
           <div className="ou-settings-headrow">
@@ -1122,32 +1237,10 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
             </span>
           </div>
           <div className="ou-settings-desc" style={{ marginBottom: 8 }}>
-            Lets OpenUI email calendar invites and attach Google Meet links. Create an OAuth
-            &quot;Desktop app&quot; client at console.cloud.google.com (enable the Google Calendar API),
-            paste its Client ID and Secret below, then click Connect. Stored locally on this device.
+            Lets OpenUI email calendar invites and attach Google Meet links. Uses the same Google
+            OAuth Client ID and Secret entered under Gmail (enable the Google Calendar API on that
+            project), then click Connect.
           </div>
-          <input
-            type="password"
-            className="ou-settings-input"
-            value={gcalClientId}
-            onChange={(e) => setGcalClientId(e.target.value)}
-            onBlur={saveGcalClientId}
-            placeholder="Client ID (…apps.googleusercontent.com)"
-            aria-label="Google OAuth client ID"
-            autoComplete="off"
-            spellCheck={false}
-          />
-          <input
-            type="password"
-            className="ou-settings-input"
-            value={gcalClientSecret}
-            onChange={(e) => setGcalClientSecret(e.target.value)}
-            onBlur={saveGcalClientSecret}
-            placeholder="Client Secret"
-            aria-label="Google OAuth client secret"
-            autoComplete="off"
-            spellCheck={false}
-          />
           <div className="ou-settings-btnrow">
             <button
               type="button"
@@ -1185,57 +1278,6 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
           />
         </div>
 
-        {/* Unified inbox — now ON by default (see isUnifiedInboxEnabled). What
-            keeps it safe is not this switch: every channel reports its own
-            read status, a person-scoped read refuses an unresolved name rather
-            than widening, and every outbound action confirms with the resolved
-            recipients shown. Contact linking is unaffected either way — it only
-            writes to the local database. */}
-        <div className="ou-settings-row ou-settings-section">
-          <div className="ou-settings-grow">
-            <div className="ou-settings-label">Unified inbox</div>
-            <div className="ou-settings-desc">
-              Lets OpenUI answer “what’s my summary” and “is there anything from him” by reading
-              WhatsApp, Telegram, Slack and Gmail in one pass, send one message to everyone across
-              all of them, and email a summary on. Every channel reports whether it could actually
-              be read, and anything outbound asks you to confirm the exact recipients first.
-              Teaching OpenUI who your contacts are still works with this off.
-            </div>
-          </div>
-          <Switch
-            on={unifiedInboxEnabled}
-            disabled={false}
-            label="Unified inbox"
-            onClick={toggleUnifiedInbox}
-          />
-        </div>
-
-        {/* Integrations: Gmail (shares the Calendar OAuth client above, own refresh token) */}
-        <div className="ou-settings-section">
-          <div className="ou-settings-headrow">
-            <div className="ou-settings-label">Gmail</div>
-            <span className={`ou-settings-status${gmailConnected ? ' ok' : ''}`}>
-              {gmailConnected ? 'Connected' : 'Not connected'}
-            </span>
-          </div>
-          <div className="ou-settings-desc" style={{ marginBottom: 8 }}>
-            Lets OpenUI send email and follow up on threads. Uses the same Google OAuth Client ID
-            and Secret entered above for Google Calendar (enable the Gmail API on that same
-            project), just click Connect.
-          </div>
-          <div className="ou-settings-btnrow" style={{ marginTop: 0 }}>
-            <button
-              type="button"
-              className="ou-settings-btn"
-              onClick={() => void connectGmail()}
-              disabled={gmailConnecting || !gcalClientId.trim() || !gcalClientSecret.trim()}
-            >
-              {gmailConnecting ? 'Connecting…' : gmailConnected ? 'Reconnect' : 'Connect'}
-            </button>
-            {gmailMessage && <span className="ou-settings-msg">{gmailMessage}</span>}
-          </div>
-        </div>
-
         {/* Integrations: Google Drive (shares the Calendar OAuth client above, own refresh token) */}
         <div className="ou-settings-section">
           <div className="ou-settings-headrow">
@@ -1246,7 +1288,7 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
           </div>
           <div className="ou-settings-desc" style={{ marginBottom: 8 }}>
             Lets OpenUI upload, download and share files in Drive. Uses the same Google OAuth Client
-            ID and Secret entered above for Google Calendar (enable the Drive API on that same
+            ID and Secret entered under Gmail (enable the Drive API on that same
             project). Requests only the narrow drive.file scope — access to files OpenUI creates or
             you open with it, never your whole Drive.
           </div>
@@ -1262,36 +1304,8 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
             {driveMessage && <span className="ou-settings-msg">{driveMessage}</span>}
           </div>
         </div>
-
-        {/* App version & update check */}
-        <div className="ou-settings-row ou-settings-section" style={{ alignItems: 'center', justifyContent: 'space-between' }}>
-          <div>
-            <div className="ou-settings-label">App Version</div>
-            <div className="ou-settings-desc" style={{ marginTop: 2 }}>
-              OpenUI{appVersion ? ` v${appVersion}` : ''}
-            </div>
-          </div>
-          <div style={{ textAlign: 'right' }}>
-            {updateStatus === 'checking' ? (
-              <span className="ou-settings-status">Checking…</span>
-            ) : updateStatus === 'latest' ? (
-              <span className="ou-settings-status ok">Up to date</span>
-            ) : updateStatus === 'available' || updateStatus === 'downloaded' ? (
-              <span className="ou-settings-status info">
-                {updateStatus === 'downloaded' ? 'Ready to install' : 'Update available'}
-              </span>
-            ) : (
-              <button
-                type="button"
-                className="ou-settings-link"
-                onClick={onCheckForUpdates}
-                disabled={!onCheckForUpdates}
-              >
-                Check for updates
-              </button>
-            )}
-          </div>
-        </div>
+          </>
+        )}
       </div>
     </div>
   )

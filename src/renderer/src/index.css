@@ -3609,6 +3609,20 @@ body {
   padding-top: 14px;
   margin-top: 14px;
 }
+.ou-settings-group {
+  margin-top: 26px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--ou-border);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ou-text-faint);
+}
+.ou-settings-group + .ou-settings-section {
+  border-top: none;
+  margin-top: 4px;
+}
 .ou-settings-grow {
   flex: 1;
   min-width: 0;
