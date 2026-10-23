@@ -217,7 +217,9 @@ describe('executeTool — HITL approval gate', () => {
     // approve an action they could not actually run.
     expect(STATE_CHANGING_TOOLS.has('computer_use')).toBe(true)
     expect(TIER_TOOL_REQUIREMENTS.computer_use).toBe('pro')
+    process.env.OPENUI_ENABLE_PAID_PLANS = '1'
     const denied = await executeTool('computer_use', { goal: 'x' }, { tier: 'free' })
+    delete process.env.OPENUI_ENABLE_PAID_PLANS
     expect(denied).toMatchObject({ ok: false })
     expect((denied as { error: string }).error).toMatch(/requires a pro subscription/i)
     // The structured flag lets the agent loop surface the upgrade reason to the
@@ -425,9 +427,22 @@ describe('browser tools — require an approved connect_browser first', () => {
   }
 
   it('browser_vision_act is tier-gated to pro before anything else', async () => {
+    process.env.OPENUI_ENABLE_PAID_PLANS = '1'
     const r = await executeTool('browser_vision_act', { goal: 'x' }, { tier: 'free', bypassHitl: true })
+    delete process.env.OPENUI_ENABLE_PAID_PLANS
     expect(r).toMatchObject({ ok: false })
     expect((r as { error: string }).error).toMatch(/pro subscription/i)
+  })
+
+  it('with paid plans off, a screen-control refusal never tells the user to upgrade', async () => {
+    delete process.env.OPENUI_ENABLE_PAID_PLANS
+    for (const tool of ['computer_use', 'browser_vision_act']) {
+      const r = await executeTool(tool, { goal: 'x' }, { tier: 'free', bypassHitl: true })
+      expect(r).toMatchObject({ ok: false })
+      expect((r as { tierRequired?: string }).tierRequired).toBeUndefined()
+      expect((r as { error: string }).error).toMatch(/not available in this version/i)
+      expect((r as { error: string }).error).not.toMatch(/upgrade|subscription|pro\b/i)
+    }
   })
 
   it('connect_browser is state-changing: pending approval without bypassHitl', async () => {

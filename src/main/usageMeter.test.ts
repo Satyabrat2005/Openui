@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
 // The meter reads and writes one table, so the database is the boundary that
 // gets faked. Everything else here is pure date arithmetic and tier lookup,
@@ -51,6 +51,21 @@ beforeEach(() => {
   H.days.clear()
   H.throwOnRead = false
   H.throwOnWrite = false
+  // The metering mechanism is tested with paid plans ON, the state it returns
+  // to when Pro launches. The launch default (off = unlimited) is tested below.
+  process.env.OPENUI_ENABLE_PAID_PLANS = '1'
+})
+afterEach(() => {
+  delete process.env.OPENUI_ENABLE_PAID_PLANS
+})
+
+describe('paid plans switched off (launch default)', () => {
+  it('gives a free user unlimited turns, however many they have used', () => {
+    delete process.env.OPENUI_ENABLE_PAID_PLANS
+    seed(localDay(), 500)
+    const a = checkAllowance('free')
+    expect(a).toMatchObject({ allowed: true, unlimited: true, limit: null, remaining: null })
+  })
 })
 
 describe('localDay', () => {

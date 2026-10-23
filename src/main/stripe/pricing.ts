@@ -34,7 +34,7 @@ export const TIERS = {
     price: 0,
     description: 'Get started with AI assistance — no setup required',
     features: [
-      '10 messages per day on your own machine',
+      'Unlimited messages on your own machine',
       '5 cloud messages per day',
       '120 voice minutes per month',
       'Basic OS automation',
@@ -129,7 +129,20 @@ export function dailyMessageLimit(tier: TierId): number {
  * as anything stronger.
  */
 export function localDailyMessageLimit(tier: TierId): number {
+  if (!arePaidPlansEnabled()) return Infinity
   return TIERS[tier]?.localDailyMessageLimit ?? TIERS.free.localDailyMessageLimit
+}
+
+/**
+ * LAUNCH SWITCH: are paid plans live? OFF for now — the owner's decision is that
+ * everyone uses OpenUI as much as they want until the model is upgraded, and
+ * Pro/upgrade comes back then. While off, local turns are unlimited for every
+ * account and nothing tells a user to upgrade. Set OPENUI_ENABLE_PAID_PLANS=1 to
+ * restore the per-tier limits with no code change. Read at call time so tests
+ * can flip it per case.
+ */
+export function arePaidPlansEnabled(): boolean {
+  return process.env.OPENUI_ENABLE_PAID_PLANS === '1'
 }
 
 /** The maximum voice/interview minutes a tier may use per calendar month (Infinity = unlimited). */

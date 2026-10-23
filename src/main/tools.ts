@@ -20,6 +20,8 @@
  * installed. A missing or unsupported package surfaces as a friendly
  * ToolResult error instead of crashing the agent loop.
  */
+import { TIER_TOOL_REQUIREMENTS, toolAllowedForTier, type Tier } from './toolTiers'
+import { arePaidPlansEnabled } from './stripe/pricing'
 import { execFile, spawn } from 'node:child_process'
 import { CODING_DISABLED_MESSAGE, isCodingEnabled, isCodingTool } from './capabilities'
 import { promisify } from 'node:util'
@@ -30,7 +32,15 @@ import { homedir } from 'node:os'
 import { SENSITIVE_PATH_RE, resolveSafePath } from './fs/pathSafety'
 import { app, desktopCapturer, clipboard, shell, BrowserWindow } from 'electron'
 import { checkAccessibility, checkScreenRecording, type PermissionTarget } from './permissions'
-import { ocrImage, ocrLines, isSupportedOcrLang, localeToOcrLang } from './ocr'
+import { ocrImage, ocrImageLines, ocrLines, isSupportedOcrLang, localeToOcrLang } from './ocr'
+import {
+  FALLBACK_SPLIT,
+  conversationLines,
+  findBadgeRows,
+  findPaneSplit,
+  parseChatList,
+  type ListedChat
+} from './whatsappLayout'
 import { database } from './database'
 import { runOsLoop, describe as describeVisionAction, type CapturedFrame } from './osLoop/loop'
 import { decodePngToRawFrame } from './osLoop/capture'
@@ -181,7 +191,7 @@ export interface ToolSchema {
 }
 
 /** Which backend tier the agent is running under. */
-export type Tier = 'free' | 'pro' | 'enterprise'
+export type { Tier } from './toolTiers'
 
 /** Runtime context injected by the agent loop into every tool execution. */
 export interface ExecutorContext {
@@ -469,25 +479,10 @@ export interface PendingApprovalResult {
   args: Record<string, unknown>
 }
 
-/**
- * Minimum tier required to call specific tool variants. When a tool call is
- * gated here and the context tier is insufficient, executeTool returns an error
- * message that the LLM can forward to the user in plain language.
- *
- * 'read_screen_cloud_vision' is a logical name used for gating documentation;
- * the actual branching (OCR vs Vision) is handled inside read_screen() based
- * on context.tier.
- */
-export const TIER_TOOL_REQUIREMENTS: Partial<Record<string, Tier>> = {
-  read_screen_cloud_vision: 'pro',
-  // The visual fallback loop reasons over screenshots with cloud vision (same
-  // path as read_screen's pro branch), so it requires a paid tier.
-  computer_use: 'pro',
-  // Same vision loop as computer_use, driven inside the automation browser.
-  browser_vision_act: 'pro'
-}
-
-const TIER_ORDER: Tier[] = ['free', 'pro', 'enterprise']
+// Minimum tier per tool. When a call is gated and the context tier is too low,
+// executeTool returns an error the LLM can forward in plain language. The
+// table lives in toolTiers.ts so the prompt builder can read it too.
+export { TIER_TOOL_REQUIREMENTS } from './toolTiers'
 
 type Executor = (args: Record<string, unknown>, context?: ExecutorContext) => Promise<ToolResult>
 
@@ -2294,6 +2289,94 @@ export async function readWhatsAppChatText(
     return { fullText: recent.length > 0 ? recent[recent.length - 1] : '', recentContext: recent }
   } catch {
     return { fullText: '', recentContext: [] }
+  }
+}
+
+/**
+ * WhatsApp's window split at the chat-list | conversation divider.
+ *
+ * The whole window must never be OCR'd as one image for reading: tesseract reads
+ * straight across, so every line spliced a chat name onto a message from the
+ * open chat (measured 2026-10-23 — see whatsappLayout.ts). Returns null when no
+ * WhatsApp window can be captured.
+ */
+async function captureWhatsAppPanes(): Promise<{
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  list: any
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  conversation: any
+} | null> {
+  const png = await captureWhatsAppWindowPng()
+  if (!png) return null
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const Jimp = require('jimp') as any
+  const image = await Jimp.read(png)
+  const { width: W, height: H } = image.bitmap as { width: number; height: number }
+  const split = Math.round(W * (findPaneSplit(image.bitmap) ?? FALLBACK_SPLIT))
+  // The left ~7% is WhatsApp's icon rail (chats, calls, status, settings).
+  const railEnd = Math.round(W * 0.07)
+  return {
+    list: image.clone().crop(railEnd, 0, Math.max(1, split - railEnd), H),
+    // Below the chat header and above the "Type a message" bar.
+    conversation: image
+      .clone()
+      .crop(split + 2, Math.round(H * 0.12), Math.max(1, W - split - 2), Math.round(H * 0.78))
+  }
+}
+
+/**
+ * The chats WhatsApp's list is showing, each marked unread or not by its green
+ * badge. Reads the screen only — nothing is opened, so nothing is marked read.
+ * Never throws: [] when WhatsApp cannot be focused or captured.
+ */
+export async function readWhatsAppChatList(): Promise<ListedChat[]> {
+  if (!checkAccessibility()) return []
+  try {
+    await launchAndFocusWhatsApp()
+    await delay(400)
+    const panes = await captureWhatsAppPanes()
+    if (!panes) return []
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const Jimp = require('jimp') as any
+    const lines = await ocrImageLines(await panes.list.getBufferAsync(Jimp.MIME_PNG), configuredOcrLang())
+    // Everything down to the filter chips ("All", "Unread 183") is header; the
+    // green "All" chip would otherwise read as an unread badge.
+    const chip = lines.find((l) => /\bunread\b|^all\b/i.test(l.text))
+    const headerBottom = chip ? chip.y1 + 4 : Math.round(panes.list.bitmap.height * 0.25)
+    const chats = parseChatList(lines, findBadgeRows(panes.list.bitmap, headerBottom), headerBottom)
+    // Chat names and previews are written by other people: defang both.
+    return chats.map((c) => ({ ...c, name: defangIncoming(c.name), preview: defangIncoming(c.preview) }))
+  } catch {
+    return []
+  }
+}
+
+/**
+ * Open one WhatsApp chat (verified, like send_whatsapp_message) and read the
+ * visible conversation, oldest line first. For summaries: the conversation pane
+ * only, up to `maxLines` lines. Never throws: [] when the contact can't be
+ * matched unambiguously or WhatsApp can't be read.
+ */
+export async function readWhatsAppConversation(name: string, maxLines = 40): Promise<string[]> {
+  if (!checkAccessibility()) return []
+  try {
+    const nut = loadNut()
+    const resolution = await resolveWhatsAppContact(name, nut)
+    if (!resolution.resolved) return []
+    await searchWhatsAppFor(resolution.resolved, nut)
+    await openTopWhatsAppSearchResult(nut)
+    await delay(800)
+    const panes = await captureWhatsAppPanes()
+    if (!panes) return []
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const Jimp = require('jimp') as any
+    const lines = await ocrImageLines(
+      await panes.conversation.getBufferAsync(Jimp.MIME_PNG),
+      configuredOcrLang()
+    )
+    return conversationLines(lines).slice(-maxLines).map(defangIncoming)
+  } catch {
+    return []
   }
 }
 
@@ -7537,7 +7620,9 @@ const registry: Record<string, Executor> = {
   // unified-inbox registry is built here with them injected.
   ...inboxRegistry({
     unreadSenders: readWhatsAppUnreadSenders,
-    readChat: readWhatsAppChatText
+    readChat: readWhatsAppChatText,
+    chatList: readWhatsAppChatList,
+    readConversation: readWhatsAppConversation
   }),
   // Same reason as inboxRegistry: the WhatsApp half is screen automation
   // defined in this file, so the cross-channel send is built here with it.
@@ -7602,7 +7687,18 @@ export async function executeTool(
   // (e.g. a free user should be told computer_use needs Pro, not asked to Allow
   // it and only then be refused). This runs before the HITL gate below.
   const requiredTier = TIER_TOOL_REQUIREMENTS[name]
-  if (requiredTier && TIER_ORDER.indexOf(context.tier) < TIER_ORDER.indexOf(requiredTier)) {
+  if (requiredTier && !toolAllowedForTier(name, context.tier)) {
+    // With paid plans switched off there is nothing to upgrade to, so the
+    // refusal says the feature is not available yet instead of selling Pro.
+    // These tools need the cloud vision service, which this build does not run.
+    if (!arePaidPlansEnabled()) {
+      return {
+        ok: false,
+        error:
+          `"${name}" (screen control) is not available in this version of OpenUI yet. ` +
+          `Use the app's dedicated tools instead, or tell the user it can't be done here yet.`
+      }
+    }
     return {
       ok: false,
       tierRequired: requiredTier,

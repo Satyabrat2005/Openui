@@ -258,3 +258,24 @@ describe('retargetToolSection — the refined-prompt path', () => {
     expect(out).not.toContain('old_tool')
   })
 })
+
+// A free user was offered computer_use (Pro-only) on every turn, reached for it
+// on WhatsApp requests, and hit the refusal instead of the WhatsApp tools beside
+// it. With the caller's tier, the prompt only offers what that tier can run.
+describe('tier-filtered prompt', () => {
+  const groups = selectToolGroups('send a message to Ashu on whatsapp')
+
+  it('a free user is not offered the Pro-only screen-control tools', () => {
+    const free = buildDefaultSystemPrompt(groups, 'free')
+    expect(free).not.toMatch(/- computer_use\(/)
+    expect(free).not.toContain('Visual fallback (computer_use)')
+    expect(free).toContain('send_whatsapp_message')
+  })
+
+  it('a Pro user, and the untiered eval/CI prompt, still are', () => {
+    for (const p of [buildDefaultSystemPrompt(groups, 'pro'), buildDefaultSystemPrompt(groups)]) {
+      expect(p).toMatch(/- computer_use\(/)
+      expect(p).toContain('Visual fallback (computer_use)')
+    }
+  })
+})
