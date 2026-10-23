@@ -56,6 +56,9 @@ import {
   UNIFIED_INBOX_SETTING_KEY,
   GATE_MESSAGE,
   WHATSAPP_UNREAD_PREVIEW,
+  WHATSAPP_CONVERSATION_LINES,
+  WHATSAPP_DEEP_READS,
+  defaultInboxDeps,
   type InboxDeps,
   type InboxSummaryData,
   type ChannelRead,
@@ -601,5 +604,95 @@ describe('tool surface', () => {
     const schema = inboxToolSchemas.find((s) => s.name === 'send_summary_email')
     expect(schema?.description).toMatch(/never invent an address/i)
     expect(schema?.description).toMatch(/refuses/i)
+  })
+})
+
+// Live test 2026-10-19: "summarise my unseen texts" got bare chat names and a
+// one-chat summary got 6 jumbled OCR lines. These cover the pane-split readers.
+describe('WhatsApp readers built on the chat list and conversation pane', () => {
+  const base = {
+    unreadSenders: async () => ['should not be used'],
+    readChat: async () => ({ fullText: '', recentContext: ['should not be used'] })
+  }
+
+  it('reads a whole conversation for one chat, keeping the newest lines', async () => {
+    const lines = Array.from({ length: 45 }, (_, i) => `line ${i + 1}`)
+    const deps = defaultInboxDeps({ ...base, readConversation: async () => lines })
+    const read = await deps.whatsapp({ handle: 'Ashu', limit: 10 })
+    expect(read.status).toBe('ok')
+    const items = read.status === 'ok' ? read.items : []
+    expect(items).toHaveLength(WHATSAPP_CONVERSATION_LINES)
+    expect(items[items.length - 1].preview).toBe('line 45')
+  })
+
+  it('opens the first unread chats, previews the rest, and says which were marked read', async () => {
+    const opened: string[] = []
+    const deps = defaultInboxDeps({
+      ...base,
+      chatList: async () => [
+        { name: 'Mom', preview: 'call me', unread: true },
+        { name: 'Coding Club I...', preview: '~coding club', unread: true },
+        { name: 'Work', preview: 'standup moved', unread: true },
+        { name: 'AMS', preview: 'Ascent', unread: true },
+        { name: 'Old friend', preview: 'haha', unread: false }
+      ],
+      readConversation: async (name) => {
+        opened.push(name)
+        return [`${name}: latest message`]
+      }
+    })
+    const read = await deps.whatsapp({ limit: 10 })
+    expect(opened).toEqual(['Mom', 'Coding Club I', 'Work'].slice(0, WHATSAPP_DEEP_READS))
+    const items = read.status === 'ok' ? read.items : []
+    expect(items.map((i) => i.source)).toEqual(['Mom', 'Coding Club I...', 'Work', 'AMS'])
+    expect(items.find((i) => i.source === 'AMS')?.preview).toBe('Ascent')
+    expect(items.some((i) => i.source === 'Old friend')).toBe(false)
+    expect(read.status === 'ok' && read.detail).toMatch(/4 unread.*first 3.*now shows them as read.*other 1/s)
+  })
+
+  it('with nothing unread, reports the recent chats instead of an empty answer', async () => {
+    const deps = defaultInboxDeps({
+      ...base,
+      chatList: async () => [{ name: 'Mom', preview: 'ok', unread: false }],
+      readConversation: async () => {
+        throw new Error('must not open anything')
+      }
+    })
+    const read = await deps.whatsapp({ limit: 10 })
+    expect(read.status === 'ok' && read.items.map((i) => i.preview)).toEqual(['ok'])
+    expect(read.status === 'ok' && read.detail).toMatch(/no unread/i)
+  })
+
+  it('says plainly when the chat list could not be read', async () => {
+    const deps = defaultInboxDeps({ ...base, chatList: async () => [] })
+    const read = await deps.whatsapp({ limit: 10 })
+    expect(read.status === 'ok' && read.detail).toMatch(/could not read the whatsapp chat list/i)
+  })
+})
+
+// Live test 2026-10-19: a new user has no saved contacts, so "summarise my chat
+// with Ashu" was refused before WhatsApp was ever read.
+describe('a person who is not saved as a contact', () => {
+  it('is read on WhatsApp and Slack by the name typed; Telegram and Gmail never guess', async () => {
+    const seen: Record<string, string | undefined> = {}
+    const spy = (channel: IdentityChannel) => async (scope: ChannelScope): Promise<ChannelRead> => {
+      seen[channel] = scope.handle
+      return { status: 'ok', items: [] }
+    }
+    const summary = await summarize(
+      { contact: 'Ashu Tklu' },
+      { whatsapp: spy('whatsapp'), telegram: spy('telegram'), slack: spy('slack'), gmail: spy('gmail') }
+    )
+    expect(seen.whatsapp).toBe('Ashu Tklu')
+    expect(seen.slack).toBe('Ashu Tklu')
+    expect(seen.telegram).toBeUndefined()
+    expect(seen.gmail).toBeUndefined()
+    expect(report(summary, 'telegram').status).toBe('no_handle')
+    expect(report(summary, 'gmail').status).toBe('no_handle')
+  })
+
+  it('still refuses a pronoun, which names nobody', async () => {
+    const result = await summarizeInbox({ contact: 'him' }, seededDeps())
+    expect(result.ok).toBe(false)
   })
 })

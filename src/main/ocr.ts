@@ -176,7 +176,12 @@ type Recognizer = (
   image: Buffer,
   lang: string,
   options: Record<string, unknown>
-) => Promise<{ data: { text?: string } }>
+) => Promise<{
+  data: {
+    text?: string
+    lines?: Array<{ text: string; bbox: { x0: number; y0: number; x1: number; y1: number } }>
+  }
+}>
 
 // Test seam: inject a fake recognizer so unit tests never spin up the real OCR
 // engine. `null` restores the lazy-required tesseract.js. Mirrors
@@ -208,6 +213,38 @@ export async function ocrImage(
   pngBuffer: Buffer,
   lang: string = DEFAULT_OCR_LANG
 ): Promise<string> {
+  const data = await recognize(pngBuffer, lang)
+  return data.text ?? ''
+}
+
+/** One recognised line and its box, in pixels of the image that was read. */
+export interface OcrLineBox {
+  text: string
+  x0: number
+  y0: number
+  x1: number
+  y1: number
+}
+
+/**
+ * OCR a PNG and return each line WITH its position. Same engine, languages and
+ * failure behaviour as ocrImage; used where layout matters (WhatsApp's chat
+ * list, where a line's height decides which chat a badge belongs to).
+ */
+export async function ocrImageLines(
+  pngBuffer: Buffer,
+  lang: string = DEFAULT_OCR_LANG
+): Promise<OcrLineBox[]> {
+  const data = await recognize(pngBuffer, lang)
+  return (data.lines ?? [])
+    .filter((l) => l.text.trim())
+    .map((l) => ({ text: l.text.trim(), x0: l.bbox.x0, y0: l.bbox.y0, x1: l.bbox.x1, y1: l.bbox.y1 }))
+}
+
+async function recognize(
+  pngBuffer: Buffer,
+  lang: string
+): Promise<Awaited<ReturnType<Recognizer>>['data']> {
   const code = normalizeLang(lang)
   if (!isSupportedOcrLang(code)) {
     throw new Error(
@@ -243,7 +280,7 @@ export async function ocrImage(
   }
 
   const { data } = await getRecognizer()(pngBuffer, code, options)
-  return data.text ?? ''
+  return data
 }
 
 /**
