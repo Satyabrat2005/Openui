@@ -289,13 +289,32 @@ describe('the session gate itself', () => {
       error: null
     })
     await signInWithEmail(null, 'rin@example.com', 'pw')
-    // The refresh token is no longer accepted.
-    supabase.auth.refreshSession.mockResolvedValue({ data: { session: null }, error: new Error('bad') })
+    // The refresh token is no longer accepted: Supabase answers 400.
+    supabase.auth.refreshSession.mockResolvedValue({
+      data: { session: null },
+      error: Object.assign(new Error('Invalid Refresh Token'), { status: 400 })
+    })
 
     expect(hasAccountSession()).toBe(false)
     // And the stale profile must not be handed back as a signed-in user.
     await expect(getCurrentUser()).resolves.toBeNull()
     expect(settings.get(ACTIVE_USER_KEY)).toBeUndefined()
+  })
+
+  // 2026-10-19: the free-plan project went to sleep, every refresh failed with a
+  // network error, and the app wiped the session — the user had to sign in again.
+  it('an expired session while Supabase is UNREACHABLE is kept for the next launch', async () => {
+    supabase.auth.signInWithPassword.mockResolvedValue({
+      data: { user: user(), session: session({ expires_at: now() - 10 }) },
+      error: null
+    })
+    await signInWithEmail(null, 'rin@example.com', 'pw')
+    supabase.auth.refreshSession.mockRejectedValue(new TypeError('fetch failed'))
+
+    await expect(getCurrentUser()).resolves.toBeNull()
+    // Not signed in right now (no valid token)… but nothing was destroyed.
+    expect(settings.get(ACTIVE_USER_KEY)).toBe('u1')
+    expect(db.users.getUserById('u1')?.refresh_token).toBeTruthy()
   })
 
   it('an expired session that CAN be refreshed stays signed in', async () => {

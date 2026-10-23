@@ -98,16 +98,29 @@ export function isAuthenticated(): boolean {
  * refresh token is no longer valid.
  */
 export async function refreshSession(): Promise<boolean> {
+  return (await refreshSessionOutcome()) === 'refreshed'
+}
+
+/**
+ * Why a refresh did or did not work. Only 'rejected' means the session is over:
+ * Supabase answered and said the refresh token is no good. 'unreachable' — no
+ * internet, DNS failure, a paused project, a 5xx — says nothing about the
+ * session, and signing the user out for it is how a free-plan project going to
+ * sleep for a day logged every user out (2026-10-19).
+ */
+export type RefreshOutcome = 'refreshed' | 'rejected' | 'unreachable' | 'no_session'
+
+export async function refreshSessionOutcome(): Promise<RefreshOutcome> {
   const id = getActiveUserId()
-  if (!id) return false
+  if (!id) return 'no_session'
   const row = database.users.getUserById(id)
-  if (!row?.refresh_token) return false
+  if (!row?.refresh_token) return 'no_session'
 
   try {
     const supabase = getSupabaseClient()
     const { data, error } = await supabase.auth.refreshSession({ refresh_token: row.refresh_token })
     const session = data?.session
-    if (error || !session) return false
+    if (error || !session) return isRejection(error) ? 'rejected' : 'unreachable'
 
     // Supabase's session.expires_at is already epoch SECONDS.
     const expiresAtSec = session.expires_at ?? nowSeconds() + (session.expires_in ?? 3600)
@@ -116,11 +129,21 @@ export async function refreshSession(): Promise<boolean> {
     const tier = (session.user?.app_metadata as Record<string, unknown> | undefined)?.tier
     if (typeof tier === 'string') cacheUserTier(id, tier)
 
-    return true
+    return 'refreshed'
   } catch (err) {
     console.error('[openui] refreshSession failed:', err)
-    return false
+    return 'unreachable'
   }
+}
+
+/**
+ * Did Supabase itself refuse the refresh token? Its auth errors carry the HTTP
+ * status: a 4xx (400 invalid_grant, 401, 403) is a real "no"; a network failure
+ * has no status (or 0), and a 5xx is the server's problem, not the session's.
+ */
+export function isRejection(error: unknown): boolean {
+  const status = (error as { status?: unknown } | null)?.status
+  return typeof status === 'number' && status >= 400 && status < 500
 }
 
 /**
@@ -237,11 +260,16 @@ export async function getCurrentUser(): Promise<UserProfile | null> {
   if (!row) return null
 
   if (row.token_expires_at && row.token_expires_at <= nowSeconds() + EXPIRY_SKEW_SEC) {
-    const refreshed = await refreshSession()
-    if (!refreshed && !database.users.getValidToken(id)) {
-      // The access token is past its expiry and the refresh token is dead.
-      database.users.updateAuthTokens(id, '', '', 0)
-      database.settings.deleteSetting(ACTIVE_USER_KEY)
+    const outcome = await refreshSessionOutcome()
+    if (outcome !== 'refreshed' && !database.users.getValidToken(id)) {
+      // Only a refresh Supabase REJECTED clears the session. Unreachable
+      // (offline, paused project) keeps the refresh token, so the next launch
+      // with a connection signs the user straight back in — wiping it here is
+      // how a sleeping free-plan project logged everyone out (2026-10-19).
+      if (outcome === 'rejected') {
+        database.users.updateAuthTokens(id, '', '', 0)
+        database.settings.deleteSetting(ACTIVE_USER_KEY)
+      }
       return null
     }
   }
@@ -329,8 +357,9 @@ async function tick(win?: BrowserWindow | null): Promise<void> {
   // Only spend a network call when the token would expire before the next tick.
   if (row.token_expires_at > nowSeconds() + REFRESH_INTERVAL_MS / 1000 + EXPIRY_SKEW_SEC) return
 
-  const ok = await refreshSession()
-  if (!ok) {
+  // Only a refresh Supabase REJECTED ends the session. When it is unreachable
+  // the user stays signed in and the next tick (or request) tries again.
+  if ((await refreshSessionOutcome()) === 'rejected') {
     // The refresh token is dead — force a clean logout so the UI reflects it.
     await logout(win)
   }
