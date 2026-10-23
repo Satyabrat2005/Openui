@@ -33,6 +33,11 @@ export default defineConfig(({ mode }) => {
 
   bake('SUPABASE_URL', env.SUPABASE_URL)
   bake('SUPABASE_ANON_KEY', env.SUPABASE_ANON_KEY)
+  // OpenUI's own Google OAuth client (a "Desktop app" client). With it baked,
+  // Connect Gmail is one click; without it Settings asks for the user's own.
+  // Google treats a desktop client's secret as non-confidential by design.
+  bake('GOOGLE_OAUTH_CLIENT_ID', env.GOOGLE_OAUTH_CLIENT_ID)
+  bake('GOOGLE_OAUTH_CLIENT_SECRET', env.GOOGLE_OAUTH_CLIENT_SECRET)
   // The main process reads the non-VITE names; CI only sets the VITE_ copies, so
   // fall back to those to keep the upgrade/checkout flow working.
   bake('STRIPE_PRO_PRICE_ID', env.STRIPE_PRO_PRICE_ID ?? env.VITE_STRIPE_PRO_PRICE_ID)

@@ -105,7 +105,10 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
   // and pastes here; read by the main-process Telegram tools (never a proxy —
   // a bot token is inherently user-owned, like the Figma/GitHub PATs).
   const [telegramToken, setTelegramToken] = useState('')
-  const [telegramSaved, setTelegramSaved] = useState(false)
+  // The bot Telegram confirmed for the pasted token (verifyTelegramToken).
+  const [telegramBot, setTelegramBot] = useState<string | null>(null)
+  const [telegramBusy, setTelegramBusy] = useState(false)
+  const [telegramMessage, setTelegramMessage] = useState('')
   // Slack bot/user token — read by the main-process Slack tools when the
   // SLACK_TOKEN env var is absent. Same per-user credential reasoning as Figma/GitHub.
   const [slackToken, setSlackToken] = useState('')
@@ -136,6 +139,9 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
   const [gmailConnected, setGmailConnected] = useState(false)
   const [gmailConnecting, setGmailConnecting] = useState(false)
   const [gmailMessage, setGmailMessage] = useState('')
+  // This build ships OpenUI's own Google client: Connect needs no Client ID.
+  const [gmailBuiltIn, setGmailBuiltIn] = useState(false)
+  const [gmailOwnClient, setGmailOwnClient] = useState(false)
   // Google Drive — same shared OAuth client as Calendar/Gmail, own refresh token
   // and Connect button (the narrow drive.file scope is its own OAuth grant).
   const [driveConnected, setDriveConnected] = useState(false)
@@ -284,7 +290,10 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
     window.openui
       .gmailStatus()
       .then((s) => {
-        if (!cancelled) setGmailConnected(Boolean(s?.connected))
+        if (!cancelled) {
+          setGmailConnected(Boolean(s?.connected))
+          setGmailBuiltIn(Boolean(s?.builtInClient))
+        }
       })
       .catch(() => {})
 
@@ -405,14 +414,24 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
       .catch(() => {})
   }
 
-  const saveTelegramToken = (): void => {
-    void window.openui
-      .setSetting('telegram_bot_token', telegramToken.trim())
-      .then(() => {
-        setTelegramSaved(true)
-        window.setTimeout(() => setTelegramSaved(false), 1500)
-      })
-      .catch(() => {})
+  const connectTelegram = async (): Promise<void> => {
+    if (telegramBusy || !telegramToken.trim()) return
+    setTelegramBusy(true)
+    setTelegramMessage('Checking with Telegram…')
+    try {
+      const result = await window.openui.telegramConnect(telegramToken.trim())
+      if (result.ok) {
+        setTelegramBot(result.username)
+        setTelegramMessage('')
+      } else {
+        setTelegramBot(null)
+        setTelegramMessage(result.error)
+      }
+    } catch {
+      setTelegramMessage('Could not check the token. Try again.')
+    } finally {
+      setTelegramBusy(false)
+    }
   }
 
   const saveSlackToken = (): void => {
@@ -531,10 +550,12 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
     setGmailConnecting(true)
     setGmailMessage('Waiting for Google sign-in in your browser…')
     try {
-      // Same shared client id/secret as Google Calendar — persist the latest
-      // values first so the main-process flow can read them.
-      await window.openui.setSetting('google_oauth_client_id', gcalClientId.trim())
-      await window.openui.setSetting('google_oauth_client_secret', gcalClientSecret.trim())
+      // With the built-in client there is nothing to save; otherwise persist the
+      // user's own client first so the main-process flow can read it.
+      if (!gmailBuiltIn || gmailOwnClient) {
+        await window.openui.setSetting('google_oauth_client_id', gcalClientId.trim())
+        await window.openui.setSetting('google_oauth_client_secret', gcalClientSecret.trim())
+      }
       const result = await window.openui.connectGmail()
       setGmailConnected(result.ok)
       setGmailMessage(result.ok ? 'Connected.' : result.error || 'Connection failed.')
@@ -767,28 +788,72 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
           </div>
         )}
 
-        {/* Integrations: Telegram bot token (created via @BotFather) */}
+        {/* Telegram: a bot the user owns. Guided, and the token is checked with
+            Telegram before it is saved, so a typo fails here and not mid-task. */}
         <div className="ou-settings-section">
           <div className="ou-settings-headrow">
             <div className="ou-settings-label">Telegram</div>
-            {telegramSaved && <span className="ou-settings-saved">Saved</span>}
+            <span className={`ou-settings-status${telegramBot ? ' ok' : ''}`}>
+              {telegramBot ? `Connected as @${telegramBot}` : telegramToken.trim() ? 'Token saved' : 'Not connected'}
+            </span>
           </div>
           <div className="ou-settings-desc" style={{ marginBottom: 8 }}>
-            Paste a bot token to let Splen read and send Telegram messages through your own bot.
-            Create one by messaging @BotFather → /newbot. Note: a bot can only message people who have
-            started a chat with it first. Stored locally on this device.
+            Splen uses Telegram through a bot you own. It takes about a minute:
           </div>
+          <ol className="ou-settings-steps">
+            <li>
+              Open{' '}
+              <button type="button" className="ou-settings-link" onClick={() => window.open('https://t.me/BotFather', '_blank', 'noopener,noreferrer')}>
+                @BotFather
+              </button>{' '}
+              in Telegram.
+            </li>
+            <li>
+              Send <code>/newbot</code>, choose a name, and copy the token it sends back.
+            </li>
+            <li>Paste the token here and click Connect.</li>
+          </ol>
           <input
             type="password"
             className="ou-settings-input"
             value={telegramToken}
-            onChange={(e) => setTelegramToken(e.target.value)}
-            onBlur={saveTelegramToken}
+            onChange={(e) => {
+              setTelegramToken(e.target.value)
+              setTelegramBot(null)
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') void connectTelegram()
+            }}
             placeholder="123456789:AA…"
             aria-label="Telegram bot token"
             autoComplete="off"
             spellCheck={false}
           />
+          <div className="ou-settings-btnrow">
+            <button
+              type="button"
+              className="ou-settings-btn"
+              onClick={() => void connectTelegram()}
+              disabled={telegramBusy || !telegramToken.trim()}
+            >
+              {telegramBusy ? 'Checking…' : telegramBot ? 'Reconnect' : 'Connect'}
+            </button>
+            {telegramMessage && <span className="ou-settings-msg">{telegramMessage}</span>}
+          </div>
+          {telegramBot && (
+            <div className="ou-settings-desc" style={{ marginTop: 8 }} data-testid="telegram-next">
+              Last step:{' '}
+              <button
+                type="button"
+                className="ou-settings-link"
+                onClick={() => window.open(`https://t.me/${telegramBot}`, '_blank', 'noopener,noreferrer')}
+              >
+                open @{telegramBot}
+              </button>{' '}
+              and press <strong style={{ color: 'var(--ou-text)' }}>Start</strong>. Splen can read
+              and answer messages sent to this bot — not your personal Telegram chats.
+            </div>
+          )}
         </div>
 
         {/* Integrations: Slack bot/user token */}
@@ -816,7 +881,9 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
           />
         </div>
 
-        {/* Gmail: holds the Google OAuth client (Calendar/Drive reuse it when shown) */}
+        {/* Gmail. With OpenUI's own Google client baked in (gmailBuiltIn) this is
+            one click: browser → choose account → Allow. Without it, a guided
+            own-client setup — and the fields stay reachable either way. */}
         <div className="ou-settings-section">
           <div className="ou-settings-headrow">
             <div className="ou-settings-label">Gmail</div>
@@ -824,44 +891,81 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
               {gmailConnected ? 'Connected' : 'Not connected'}
             </span>
           </div>
-          <div className="ou-settings-desc" style={{ marginBottom: 8 }}>
-            Lets Splen read, summarise and reply to your email. Create an OAuth &quot;Desktop
-            app&quot; client at console.cloud.google.com (enable the Gmail API), paste its Client ID
-            and Secret below, then click Connect. Stored locally on this device.
-          </div>
-          <input
-            type="password"
-            className="ou-settings-input"
-            value={gcalClientId}
-            onChange={(e) => setGcalClientId(e.target.value)}
-            onBlur={saveGcalClientId}
-            placeholder="Client ID (…apps.googleusercontent.com)"
-            aria-label="Google OAuth client ID"
-            autoComplete="off"
-            spellCheck={false}
-          />
-          <input
-            type="password"
-            className="ou-settings-input"
-            value={gcalClientSecret}
-            onChange={(e) => setGcalClientSecret(e.target.value)}
-            onBlur={saveGcalClientSecret}
-            placeholder="Client Secret"
-            aria-label="Google OAuth client secret"
-            autoComplete="off"
-            spellCheck={false}
-          />
+          {gmailBuiltIn && !gmailOwnClient ? (
+            <div className="ou-settings-desc" style={{ marginBottom: 8 }}>
+              Lets Splen read, summarise and reply to your email. Click Connect, choose your Google
+              account in the browser, then click Allow.
+            </div>
+          ) : (
+            <>
+              <div className="ou-settings-desc" style={{ marginBottom: 8 }}>
+                Lets Splen read, summarise and reply to your email. One-time setup with your own
+                Google project (about 5 minutes):
+              </div>
+              <ol className="ou-settings-steps">
+                <li>
+                  <button type="button" className="ou-settings-link" onClick={() => window.open('https://console.cloud.google.com/apis/library/gmail.googleapis.com', '_blank', 'noopener,noreferrer')}>
+                    Turn on the Gmail API
+                  </button>{' '}
+                  (create a project if asked).
+                </li>
+                <li>
+                  <button type="button" className="ou-settings-link" onClick={() => window.open('https://console.cloud.google.com/apis/credentials/oauthclient', '_blank', 'noopener,noreferrer')}>
+                    Create an OAuth client
+                  </button>{' '}
+                  — application type <strong style={{ color: 'var(--ou-text)' }}>Desktop app</strong>. If
+                  Google asks, set up the consent screen and add your own email as a test user.
+                </li>
+                <li>Paste the Client ID and Client Secret below, then click Connect.</li>
+              </ol>
+              <input
+                type="password"
+                className="ou-settings-input"
+                value={gcalClientId}
+                onChange={(e) => setGcalClientId(e.target.value)}
+                onBlur={saveGcalClientId}
+                placeholder="Client ID (…apps.googleusercontent.com)"
+                aria-label="Google OAuth client ID"
+                autoComplete="off"
+                spellCheck={false}
+              />
+              <input
+                type="password"
+                className="ou-settings-input"
+                value={gcalClientSecret}
+                onChange={(e) => setGcalClientSecret(e.target.value)}
+                onBlur={saveGcalClientSecret}
+                placeholder="Client Secret"
+                aria-label="Google OAuth client secret"
+                autoComplete="off"
+                spellCheck={false}
+              />
+            </>
+          )}
           <div className="ou-settings-btnrow">
             <button
               type="button"
               className="ou-settings-btn"
               onClick={() => void connectGmail()}
-              disabled={gmailConnecting || !gcalClientId.trim() || !gcalClientSecret.trim()}
+              disabled={
+                gmailConnecting ||
+                ((!gmailBuiltIn || gmailOwnClient) && (!gcalClientId.trim() || !gcalClientSecret.trim()))
+              }
             >
-              {gmailConnecting ? 'Connecting…' : gmailConnected ? 'Reconnect' : 'Connect'}
+              {gmailConnecting ? 'Connecting…' : gmailConnected ? 'Reconnect' : 'Connect Gmail'}
             </button>
             {gmailMessage && <span className="ou-settings-msg">{gmailMessage}</span>}
           </div>
+          {gmailBuiltIn && (
+            <button
+              type="button"
+              className="ou-settings-link"
+              style={{ marginTop: 8 }}
+              onClick={() => setGmailOwnClient((v) => !v)}
+            >
+              {gmailOwnClient ? 'Use OpenUI’s Google sign-in instead' : 'Use my own Google Cloud client instead'}
+            </button>
+          )}
         </div>
 
         {/* Unified inbox — now ON by default (see isUnifiedInboxEnabled). What

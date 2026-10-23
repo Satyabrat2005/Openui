@@ -379,3 +379,12 @@ describe('formatMessages exposes message ids', () => {
     expect(out).toMatch(/Ada: ping/)
   })
 })
+
+describe('verifyTelegramToken', () => {
+  it('rejects a malformed token without calling Telegram', async () => {
+    const { verifyTelegramToken } = await import('./telegram')
+    const r = await verifyTelegramToken('not-a-token')
+    expect(r.ok).toBe(false)
+    expect(!r.ok && r.error).toMatch(/does not look like a bot token/)
+  })
+})

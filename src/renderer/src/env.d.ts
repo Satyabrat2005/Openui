@@ -599,7 +599,12 @@ export interface OpenUIApi {
   googleCalendarStatus: () => Promise<{ connected: boolean }>
   connectGoogleCalendar: () => Promise<{ ok: boolean; output?: string; error?: string }>
   // Gmail (shares the Calendar OAuth client, own refresh token).
-  gmailStatus: () => Promise<{ connected: boolean }>
+  /** builtInClient: this build ships OpenUI's own Google client, so Connect is one click. */
+  gmailStatus: () => Promise<{ connected: boolean; builtInClient?: boolean }>
+  /** Check a bot token with Telegram and save it only if it is real. */
+  telegramConnect: (
+    token: string
+  ) => Promise<{ ok: true; username: string; name: string } | { ok: false; error: string }>
   connectGmail: () => Promise<{ ok: boolean; output?: string; error?: string }>
   // Google Drive (shares the Calendar OAuth client, own refresh token).
   googleDriveStatus: () => Promise<{ connected: boolean }>

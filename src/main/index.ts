@@ -15,7 +15,8 @@ import { openSettingsPane, type PermissionTarget } from './permissions'
 import { registerStripeIPC, isPaymentFlowWebContents } from './stripe/checkout'
 import { registerWaitlistIPC } from './waitlist'
 import { closeBrowser } from './tools'
-import { connectGoogleCalendar, isGoogleCalendarConnected } from './googleCalendar'
+import { connectGoogleCalendar, hasBuiltInGoogleClient, isGoogleCalendarConnected } from './googleCalendar'
+import { TELEGRAM_TOKEN_SETTING_KEY, verifyTelegramToken } from './telegram'
 import { connectGmail, isGmailConnected } from './gmail'
 import { connectGoogleDrive, isGoogleDriveConnected } from './googleDrive'
 import { connectMcpServer, disconnectAll, type McpServerConfig } from './mcp-client'
@@ -599,6 +600,13 @@ app.whenReady().then(async () => {
   ipcMain.handle('openui:get-setting', (_event, key: unknown) =>
     typeof key === 'string' ? database.settings.getSetting(key) : null
   )
+  // Telegram: check a pasted bot token with Telegram, and save it only if real.
+  ipcMain.handle('openui:telegram-connect', async (_event, token: unknown) => {
+    const result = await verifyTelegramToken(typeof token === 'string' ? token : '')
+    if (result.ok) database.settings.setSetting(TELEGRAM_TOKEN_SETTING_KEY, String(token).trim())
+    return result
+  })
+
   ipcMain.handle('openui:set-setting', (_event, payload: unknown) => {
     const { key, value } = (payload ?? {}) as { key?: unknown; value?: unknown }
     if (typeof key === 'string') database.settings.setSetting(key, value)
@@ -613,7 +621,10 @@ app.whenReady().then(async () => {
   ipcMain.handle('openui:connect-google-calendar', () => connectGoogleCalendar())
 
   // ── Gmail (shares the Calendar OAuth client, own refresh token — see gmail.ts) ──
-  ipcMain.handle('openui:gmail-status', () => ({ connected: isGmailConnected() }))
+  ipcMain.handle('openui:gmail-status', () => ({
+    connected: isGmailConnected(),
+    builtInClient: hasBuiltInGoogleClient()
+  }))
   ipcMain.handle('openui:connect-gmail', () => connectGmail())
 
   // ── Google Drive (shares the Calendar OAuth client, own refresh token — see googleDrive.ts) ──
