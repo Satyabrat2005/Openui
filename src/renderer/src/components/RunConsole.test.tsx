@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, fireEvent, cleanup, act } from '@testing-library/react'
+import { render, screen, fireEvent, cleanup, act, waitFor } from '@testing-library/react'
 import type { TaskCard, HitlRequestPayload } from '../env'
 
 // RunConsole is the Splen home screen: sidebar, greeting, character, composer.
@@ -40,7 +40,12 @@ vi.mock('./ConnectAppsModal', () => ({
   subscribeConnections: () => () => {}
 }))
 vi.mock('./SettingsModal', () => ({ default: () => null }))
-vi.mock('./ConversationList', () => ({ default: () => null }))
+// Recent chats: one saved chat, so a test can reopen it from the sidebar.
+vi.mock('./ConversationList', () => ({
+  default: ({ onSelect }: { onSelect: (id: string) => void }) => (
+    <button type="button" onClick={() => onSelect('conv-1')}>Saved chat</button>
+  )
+}))
 vi.mock('./WorkflowsUI', () => ({ default: () => null }))
 
 import RunConsole from './RunConsole'
@@ -89,7 +94,8 @@ describe("RunConsole — Splen home screen (the owner's design, nothing extra)",
   it('shows the sidebar, greeting, sleeping character and composer — and nothing else', () => {
     render(<RunConsole />)
     expect(screen.getByText('Splen')).toBeTruthy()
-    expect(screen.getByRole('button', { name: /New run/ })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /New chat/ })).toBeTruthy()
+    expect(screen.getByText('Recent')).toBeTruthy()
     for (const ch of ['Channels', 'WhatsApp', 'Telegram', 'Slack', 'Gmail', 'Settings']) expect(screen.getByText(ch)).toBeTruthy()
     expect(screen.getByText('Your wish is my command!')).toBeTruthy()
     expect(document.querySelector('.ou-sp-buddy')?.getAttribute('data-pose')).toBe('sleep')
@@ -124,14 +130,71 @@ describe("RunConsole — Splen home screen (the owner's design, nothing extra)",
     expect(document.querySelector('.ou-sp-buddy')?.getAttribute('data-pose')).toBe('code')
   })
 
-  it("shows the latest run's answer under the composer", () => {
+})
+
+describe('RunConsole — a chat thread, like any chat app', () => {
+  const api = (): Record<string, ReturnType<typeof vi.fn>> =>
+    (window as unknown as { openui: Record<string, ReturnType<typeof vi.fn>> }).openui
+
+  it('keeps every message you sent and every answer, in order', () => {
     activity.tasks = [
-      card({ id: 'old', title: 'first', status: 'done', answer: 'old answer', endedAt: 1 }),
-      card({ id: 'new', title: 'second', status: 'done', answer: 'Three things happened today.', endedAt: 2 })
+      card({ id: 'a', title: 'summarise my unseen whatsapp texts', status: 'done', answer: 'You have 3 unread chats.', endedAt: 1 }),
+      card({ id: 'b', title: 'and the one from Ashu?', status: 'done', answer: 'Ashu asked about Friday.', endedAt: 2 })
     ]
     render(<RunConsole />)
-    expect(screen.getByTestId('latest-answer').textContent).toBe('Three things happened today.')
+    const text = screen.getByTestId('thread').textContent ?? ''
+    const order = ['summarise my unseen whatsapp texts', 'You have 3 unread chats.', 'and the one from Ashu?', 'Ashu asked about Friday.']
+    let at = -1
+    for (const piece of order) {
+      const i = text.indexOf(piece)
+      expect(i).toBeGreaterThan(at)
+      at = i
+    }
+    expect(screen.getByTestId('latest-answer').textContent).toBe('Ashu asked about Friday.')
+    // The composer stays, docked under the thread.
+    expect(screen.getByLabelText('Describe a task or ask a question')).toBeTruthy()
+  })
+
+  it('your message shows at once, with a thinking line until the answer streams in', () => {
+    activity.tasks = [card({ id: 'a', title: 'read my chat with Ashu', status: 'in_progress', steps: [] })]
+    const { rerender } = render(<RunConsole />)
+    expect(screen.getByText('read my chat with Ashu')).toBeTruthy()
+    expect(screen.getByRole('status').textContent).toContain('Thinking…')
+
+    activity.tasks = [card({ id: 'a', title: 'read my chat with Ashu', status: 'in_progress', steps: [{ id: 's', label: 'Reading WhatsApp', status: 'working' }] })]
+    rerender(<RunConsole />)
+    expect(screen.getByRole('status').textContent).toContain('Reading WhatsApp…')
+
+    activity.tasks = [card({ id: 'a', title: 'read my chat with Ashu', status: 'in_progress', answer: 'Ashu says' })]
+    rerender(<RunConsole />)
+    expect(screen.getByTestId('latest-answer').textContent).toBe('Ashu says')
+    expect(screen.getByTestId('latest-answer').className).toContain('streaming')
+  })
+
+  it('New chat starts an empty thread and clears the context', () => {
+    activity.tasks = [card({ id: 'a', title: 'old question', status: 'done', answer: 'old answer' })]
+    render(<RunConsole />)
+    expect(screen.getByText('old answer')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: /New chat/ }))
+    expect(api().clearHistory).toHaveBeenCalled()
     expect(screen.queryByText('old answer')).toBeNull()
+    expect(screen.getByText('Your wish is my command!')).toBeTruthy()
+  })
+
+  it('reopening a recent chat shows its saved messages and loads it as context', async () => {
+    api().resumeConversation = vi.fn(() =>
+      Promise.resolve([
+        { role: 'user', content: 'what did mom say?', created_at: 1 },
+        { role: 'tool', content: 'raw tool output', created_at: 2 },
+        { role: 'assistant', content: 'Mom asked you to call her.', created_at: 3 }
+      ])
+    )
+    render(<RunConsole />)
+    fireEvent.click(screen.getByRole('button', { name: 'Saved chat' }))
+    await waitFor(() => expect(screen.getByText('Mom asked you to call her.')).toBeTruthy())
+    expect(api().resumeConversation).toHaveBeenCalledWith('conv-1')
+    expect(screen.getByText('what did mom say?')).toBeTruthy()
+    expect(screen.queryByText('raw tool output')).toBeNull()
   })
 })
 

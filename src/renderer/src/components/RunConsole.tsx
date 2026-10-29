@@ -12,14 +12,18 @@ import { poseForRuns, POSE_CAPTION, DONE_LINGER_MS } from '../lib/buddyPose'
 import SplenBuddy from './SplenBuddy'
 
 /**
- * RunConsole — the Splen home screen, exactly the owner's design:
+ * RunConsole — the Splen home screen:
  *
- *   sidebar: Splen mark · New run · Channels · Settings
- *   main:    greeting · character · composer (Answer/Act + send)
+ *   sidebar: Splen mark · New chat · Channels · Recent chats · Settings
+ *   main:    an empty chat is the greeting · character · composer; once you
+ *            send something it becomes a thread — every message you sent and
+ *            every answer, streamed as it is written — with the composer
+ *            docked at the bottom, like any chat app.
  *
- * Nothing else is on screen. Under it sits the same pipeline as before: a run
- * is beginTask + window.openui.chat, the character's pose follows the real run
- * state (lib/buddyPose), and the latest answer appears under the composer.
+ * Under it sits the same pipeline as before: a run is beginTask +
+ * window.openui.chat and the character's pose follows the real run state
+ * (lib/buddyPose). A thread is the runs since the last New chat, plus — when a
+ * past chat is reopened from Recent — that chat's saved messages.
  *
  * Approvals are NEVER shown inline here: onApprovalInline is always false, so
  * App's blocking HitlModal / PlanApprovalModal handles every confirmation. That
@@ -28,6 +32,12 @@ import SplenBuddy from './SplenBuddy'
  */
 
 type Mode = 'ask' | 'do'
+
+/** A saved message of a reopened chat (main's resume-conversation). */
+interface PastTurn {
+  role: 'user' | 'assistant'
+  content: string
+}
 
 /** The messaging channels Splen works across, in sidebar order. */
 const CHANNELS: Array<{ id: string; name: string }> = [
@@ -82,6 +92,15 @@ export default function RunConsole({
   const [input, setInput] = useState('')
   const [showSettings, setShowSettings] = useState(false)
 
+  // The open thread: runs from index `threadFrom` of the task list, after the
+  // saved messages of a reopened chat (`past`). New chat moves `threadFrom` past
+  // every run so far; the runs stay in the list for the character's pose.
+  const [threadFrom, setThreadFrom] = useState(0)
+  const [past, setPast] = useState<PastTurn[]>([])
+  const [openChatId, setOpenChatId] = useState<string | null>(null)
+  const tasksRef = useRef(tasks)
+  tasksRef.current = tasks
+
   useEffect(() => { onApprovalInline?.(false) }, [onApprovalInline])
 
   // Channel dots: WhatsApp is built in; Gmail is Google OAuth from Settings.
@@ -106,9 +125,8 @@ export default function RunConsole({
     []
   )
 
-  // Newest run first; the character and the answer both follow the latest one.
+  // Newest run first; the character follows the latest one.
   const runs = useMemo(() => [...tasks].reverse(), [tasks])
-  const latest = runs[0] ?? null
 
   const [modes, setModes] = useState<Record<string, Mode>>({})
   const [, setTick] = useState(0)
@@ -129,11 +147,46 @@ export default function RunConsole({
     setInput('')
   }, [input, beginTask, tier, mode])
 
-  const newRun = useCallback(() => {
+  const newChat = useCallback(() => {
     window.openui.clearHistory()
     focusTask(null)
     setInput('')
+    setPast([])
+    setOpenChatId(null)
+    setThreadFrom(tasksRef.current.length)
   }, [focusTask])
+
+  // Reopen a past chat: main loads it as the context for the next message and
+  // returns its messages, which become the top of the thread.
+  const openChat = useCallback(async (id: string) => {
+    onHistoryChange?.(false)
+    let messages: Awaited<ReturnType<typeof window.openui.resumeConversation>> = []
+    try {
+      messages = (await window.openui.resumeConversation(id)) ?? []
+    } catch {
+      messages = []
+    }
+    focusTask(null)
+    setOpenChatId(id)
+    setThreadFrom(tasksRef.current.length)
+    setPast(
+      messages
+        .filter((m) => (m.role === 'user' || m.role === 'assistant') && (m.content ?? '').trim())
+        .map((m) => ({ role: m.role as PastTurn['role'], content: m.content ?? '' }))
+    )
+  }, [focusTask, onHistoryChange])
+
+  const threadRuns = useMemo(() => tasks.slice(threadFrom), [tasks, threadFrom])
+  const inThread = past.length > 0 || threadRuns.length > 0
+  const currentChatId = openChatId ?? threadRuns.find((r) => r.conversationId)?.conversationId ?? null
+
+  // Keep the newest message in view while an answer streams in.
+  const threadRef = useRef<HTMLDivElement>(null)
+  const lastAnswerLength = threadRuns[threadRuns.length - 1]?.answer?.length ?? 0
+  useEffect(() => {
+    const el = threadRef.current
+    if (el) el.scrollTop = el.scrollHeight
+  }, [past.length, threadRuns.length, lastAnswerLength])
 
   // Replay the starter prompt chosen in First Run exactly once.
   const replayedRef = useRef(false)
@@ -153,9 +206,9 @@ export default function RunConsole({
           <span className="ou-sp-brand-name">Splen</span>
         </div>
 
-        <button type="button" className="ou-sp-newrun" onClick={newRun}>
+        <button type="button" className="ou-sp-newrun" onClick={newChat}>
           <span aria-hidden="true">+</span>
-          <span>New run</span>
+          <span>New chat</span>
         </button>
 
         <nav className="ou-sp-channels" aria-label="Channels">
@@ -177,6 +230,11 @@ export default function RunConsole({
           })}
         </nav>
 
+        <div className="ou-sp-recent" aria-label="Recent chats">
+          <div className="ou-sp-section-label">Recent</div>
+          <ConversationList selectedId={currentChatId ?? undefined} onSelect={(id) => void openChat(id)} />
+        </div>
+
         <div className="ou-sp-footer">
           <button type="button" className="ou-sp-channel" onClick={() => setShowSettings(true)}>
             <span className="ou-sp-channel-name">Settings</span>
@@ -184,64 +242,151 @@ export default function RunConsole({
         </div>
       </aside>
 
-      <main className="ou-sp-main">
-        <div className="ou-sp-stage">
-          <h1 className="ou-sp-greeting" aria-live="polite">{POSE_CAPTION[pose]}</h1>
-          <SplenBuddy pose={pose} />
-
-          {pull && (
-            <div className="ou-sp-pull" role="status" aria-live="polite" data-testid="model-pull">
-              <div className="ou-sp-pull-top">
-                <span>{pull.done ? `${labelForModel(pull.model)} ready` : `Downloading ${labelForModel(pull.model)}`}</span>
-                <span className="ou-sp-pull-meta">
-                  {pull.percent !== null
-                    ? `${pull.percent}%${pull.total !== null ? ` · ${formatBytes(pull.completed)} / ${formatBytes(pull.total)}` : ''}`
-                    : pull.status}
-                </span>
+      <main className={`ou-sp-main${inThread ? ' threaded' : ''}`}>
+        {inThread ? (
+          <div className="ou-sp-chat">
+            <div className="ou-sp-thread" ref={threadRef} data-testid="thread">
+              <div className="ou-sp-thread-inner">
+                {past.map((m, k) =>
+                  m.role === 'user' ? (
+                    <div key={`p${k}`} className="ou-sp-msg user">{m.content}</div>
+                  ) : (
+                    <div key={`p${k}`} className="ou-sp-msg splen">{m.content}</div>
+                  )
+                )}
+                {threadRuns.map((run, k) => {
+                  const newest = k === threadRuns.length - 1
+                  const working = run.status === 'in_progress'
+                  const step = run.steps[run.steps.length - 1]?.label
+                  return (
+                    <div key={run.id} className="ou-sp-turn">
+                      <div className="ou-sp-msg user">{run.title}</div>
+                      {run.answer ? (
+                        <div
+                          className={`ou-sp-msg splen${working ? ' streaming' : ''}`}
+                          data-testid={newest ? 'latest-answer' : undefined}
+                        >
+                          {run.answer}
+                        </div>
+                      ) : working ? (
+                        <div className="ou-sp-msg splen pending" role="status" aria-live="polite">
+                          <span className="ou-sp-dots" aria-hidden="true"><i /><i /><i /></span>
+                          <span>{step ? `${step}…` : 'Thinking…'}</span>
+                        </div>
+                      ) : null}
+                    </div>
+                  )
+                })}
               </div>
-              <div className="ou-sp-pull-track">
-                <div
-                  className={`ou-sp-pull-fill${pull.percent === null ? ' idle' : ''}`}
-                  style={pull.percent !== null ? { width: `${pull.percent}%` } : undefined}
-                />
-              </div>
-              {pull.error && <div className="ou-sp-pull-error">{pull.error}</div>}
             </div>
-          )}
-
-          <div className="ou-sp-composer">
-            <textarea
-              className="ou-sp-input"
-              value={input}
-              rows={3}
-              placeholder="Describe a task, or ask question"
-              aria-label="Describe a task or ask a question"
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={(e) => {
-                // Enter sends; Shift+Enter is a new line.
-                if (e.key === 'Enter' && !e.shiftKey) {
-                  e.preventDefault()
-                  startRun()
-                }
-              }}
-            />
-            <div className="ou-sp-composer-controls">
-              <div className="ou-sp-seg" role="radiogroup" aria-label="Run mode">
-                <button type="button" role="radio" aria-checked={mode === 'ask'} className={`ou-sp-seg-btn${mode === 'ask' ? ' on' : ''}`} onClick={() => setMode('ask')}>Answer</button>
-                <button type="button" role="radio" aria-checked={mode === 'do'} className={`ou-sp-seg-btn${mode === 'do' ? ' on' : ''}`} onClick={() => setMode('do')}>Act</button>
+            <div className="ou-sp-dock">
+              <div className="ou-sp-dock-status">
+                <SplenBuddy pose={pose} />
+                <span className="ou-sp-greeting small" aria-live="polite">{POSE_CAPTION[pose]}</span>
               </div>
-              <button type="button" className="ou-sp-send" onClick={startRun} disabled={!input.trim()} aria-label="Send">
-                <svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><path d="M21.5 2.5L10.8 13.2M21.5 2.5l-6.8 19-3.9-8.3-8.3-3.9 19-6.8z" fill="currentColor" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" /></svg>
-              </button>
+              {pull && (
+                <div className="ou-sp-pull" role="status" aria-live="polite" data-testid="model-pull">
+                  <div className="ou-sp-pull-top">
+                    <span>{pull.done ? `${labelForModel(pull.model)} ready` : `Downloading ${labelForModel(pull.model)}`}</span>
+                    <span className="ou-sp-pull-meta">
+                      {pull.percent !== null
+                        ? `${pull.percent}%${pull.total !== null ? ` · ${formatBytes(pull.completed)} / ${formatBytes(pull.total)}` : ''}`
+                        : pull.status}
+                    </span>
+                  </div>
+                  <div className="ou-sp-pull-track">
+                    <div
+                      className={`ou-sp-pull-fill${pull.percent === null ? ' idle' : ''}`}
+                      style={pull.percent !== null ? { width: `${pull.percent}%` } : undefined}
+                    />
+                  </div>
+                  {pull.error && <div className="ou-sp-pull-error">{pull.error}</div>}
+                </div>
+              )}
+
+              <div className="ou-sp-composer">
+                <textarea
+                  className="ou-sp-input"
+                  value={input}
+                  rows={3}
+                  placeholder="Describe a task, or ask question"
+                  aria-label="Describe a task or ask a question"
+                  onChange={(e) => setInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    // Enter sends; Shift+Enter is a new line.
+                    if (e.key === 'Enter' && !e.shiftKey) {
+                      e.preventDefault()
+                      startRun()
+                    }
+                  }}
+                />
+                <div className="ou-sp-composer-controls">
+                  <div className="ou-sp-seg" role="radiogroup" aria-label="Run mode">
+                    <button type="button" role="radio" aria-checked={mode === 'ask'} className={`ou-sp-seg-btn${mode === 'ask' ? ' on' : ''}`} onClick={() => setMode('ask')}>Answer</button>
+                    <button type="button" role="radio" aria-checked={mode === 'do'} className={`ou-sp-seg-btn${mode === 'do' ? ' on' : ''}`} onClick={() => setMode('do')}>Act</button>
+                  </div>
+                  <button type="button" className="ou-sp-send" onClick={startRun} disabled={!input.trim()} aria-label="Send">
+                    <svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><path d="M21.5 2.5L10.8 13.2M21.5 2.5l-6.8 19-3.9-8.3-8.3-3.9 19-6.8z" fill="currentColor" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" /></svg>
+                  </button>
+                </div>
+              </div>
+
             </div>
           </div>
+        ) : (
+          <div className="ou-sp-stage">
+            <h1 className="ou-sp-greeting" aria-live="polite">{POSE_CAPTION[pose]}</h1>
+            <SplenBuddy pose={pose} />
 
-          {latest?.answer && (
-            <div className="ou-sp-answer" data-testid="latest-answer">
-              {latest.answer}
+            {pull && (
+              <div className="ou-sp-pull" role="status" aria-live="polite" data-testid="model-pull">
+                <div className="ou-sp-pull-top">
+                  <span>{pull.done ? `${labelForModel(pull.model)} ready` : `Downloading ${labelForModel(pull.model)}`}</span>
+                  <span className="ou-sp-pull-meta">
+                    {pull.percent !== null
+                      ? `${pull.percent}%${pull.total !== null ? ` · ${formatBytes(pull.completed)} / ${formatBytes(pull.total)}` : ''}`
+                      : pull.status}
+                  </span>
+                </div>
+                <div className="ou-sp-pull-track">
+                  <div
+                    className={`ou-sp-pull-fill${pull.percent === null ? ' idle' : ''}`}
+                    style={pull.percent !== null ? { width: `${pull.percent}%` } : undefined}
+                  />
+                </div>
+                {pull.error && <div className="ou-sp-pull-error">{pull.error}</div>}
+              </div>
+            )}
+
+            <div className="ou-sp-composer">
+              <textarea
+                className="ou-sp-input"
+                value={input}
+                rows={3}
+                placeholder="Describe a task, or ask question"
+                aria-label="Describe a task or ask a question"
+                onChange={(e) => setInput(e.target.value)}
+                onKeyDown={(e) => {
+                  // Enter sends; Shift+Enter is a new line.
+                  if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault()
+                    startRun()
+                  }
+                }}
+              />
+              <div className="ou-sp-composer-controls">
+                <div className="ou-sp-seg" role="radiogroup" aria-label="Run mode">
+                  <button type="button" role="radio" aria-checked={mode === 'ask'} className={`ou-sp-seg-btn${mode === 'ask' ? ' on' : ''}`} onClick={() => setMode('ask')}>Answer</button>
+                  <button type="button" role="radio" aria-checked={mode === 'do'} className={`ou-sp-seg-btn${mode === 'do' ? ' on' : ''}`} onClick={() => setMode('do')}>Act</button>
+                </div>
+                <button type="button" className="ou-sp-send" onClick={startRun} disabled={!input.trim()} aria-label="Send">
+                  <svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><path d="M21.5 2.5L10.8 13.2M21.5 2.5l-6.8 19-3.9-8.3-8.3-3.9 19-6.8z" fill="currentColor" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" /></svg>
+                </button>
+              </div>
             </div>
-          )}
-        </div>
+
+          </div>
+        )}
       </main>
 
       {showSettings && (
@@ -256,9 +401,7 @@ export default function RunConsole({
         <div className="ou-rc-history-drawer">
           <div className="ou-rc-history-scrim" onClick={() => onHistoryChange?.(false)} />
           <div className="ou-rc-history-panel">
-            <ConversationList
-              onSelect={(id) => { void window.openui.resumeConversation(id); onHistoryChange?.(false) }}
-            />
+            <ConversationList selectedId={currentChatId ?? undefined} onSelect={(id) => void openChat(id)} />
           </div>
         </div>
       )}
