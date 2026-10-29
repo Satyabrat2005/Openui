@@ -115,14 +115,14 @@ export const MODEL_CATALOG: CatalogModel[] = [
 ]
 
 /**
- * The models this build actually offers. The coding model serves only the
- * coding surface, which is switched off in the shipped texting agent
- * (capabilities.ts) — offering its 4.7 GB download beside Splen asked users to
- * fetch a model nothing in the app would ever call. Read at call time, like the
- * flag itself.
+ * The Ollama models this build offers for download. The shipped texting agent
+ * (coding surface off, capabilities.ts) offers none: Splen is its model, and
+ * listing the 6.6 GB standard model beside it asked users to fetch a second,
+ * larger model they do not need. The developer build (coding on) keeps both.
+ * Read at call time, like the flag itself.
  */
 export function offeredModels(): CatalogModel[] {
-  return MODEL_CATALOG.filter((m) => m.id !== DEFAULT_CODE_MODEL || isCodingEnabled())
+  return isCodingEnabled() ? MODEL_CATALOG : []
 }
 
 export function isCatalogModel(model: string): boolean {

@@ -106,6 +106,12 @@ export default function ModelManager(): JSX.Element {
         Splen runs on this computer. Download its model once, here.
       </div>
 
+      {models.length === 0 && (
+        <div className="ou-settings-desc" data-testid="model-none">
+          Splen’s model isn’t available for your account yet. It appears here as soon as it is.
+        </div>
+      )}
+
       {models.map((m) => {
         const p = progress[m.id]
         const fail = failures[m.id]

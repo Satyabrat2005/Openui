@@ -60,6 +60,7 @@ import {
 import { pullModel } from './ollamaPull'
 import { generateSplen, SplenPromptTooLongError } from './splen/runtime'
 import { isSplenInstalled } from './splen/install'
+import { downloadSplen, getSplenOffer } from './splen/download'
 import {
   TrajectoryRecorder,
   applyQualitySignal,
@@ -2076,12 +2077,25 @@ export async function callModel(
   // everything else uses the general model.
   const localModel = opts.coding ? await localCodeModel() : await localGeneralModel()
 
+  // Splen first. A general turn on a computer with no Splen and no usable local
+  // model downloads Splen (2.8 GB) — never the 6.6 GB standard model.
+  if (!opts.coding && !process.env.OLLAMA_MODEL && !isSplenActive()) {
+    const ollamaUp = await ensureOllamaRunning(win)
+    if (!ollamaUp || !(await isModelInstalled(localModel))) {
+      const fetched = await installSplenForTurn(win, onDelta)
+      if (fetched === 'failed') return ''
+      if (fetched === 'ready') {
+        const reply = await callSplen(win, messages, systemPrompt, onDelta)
+        if (reply !== null) return reply
+      }
+    }
+  }
+
   if (await ensureOllamaRunning(win)) {
     // Ollama is up but the model may never have been pulled — the state a fresh
-    // install is in. Left alone this turn dies on a raw 404 and the user has to
-    // discover, on their own, that they need a terminal and a multi-gigabyte
-    // download. Pull it here with visible progress instead.
-    if (!(await ensureModelAvailable(win, localModel, onDelta))) return ''
+    // install is in. Only the coding model is pulled here; a general turn has
+    // already been offered Splen above.
+    if (!(await ensureModelAvailable(win, localModel, onDelta, opts.coding === true))) return ''
     return callOllama(win, messages, systemPrompt, onDelta, localModel, opts.coding === true)
   }
 
@@ -2112,9 +2126,18 @@ export async function callModel(
 async function ensureModelAvailable(
   win: BrowserWindow | null,
   model: string,
-  onDelta: (delta: string) => void
+  onDelta: (delta: string) => void,
+  allowPull: boolean
 ): Promise<boolean> {
   if (await isModelInstalled(model)) return true
+
+  if (!allowPull) {
+    const msg =
+      'Splen’s model isn’t on this computer yet, and it can’t be downloaded for your account right now. ' +
+      'Check Settings › Model, or try again in a few minutes.'
+    onDelta(msg)
+    return false
+  }
 
   const heads_up =
     `The local model "${model}" isn't downloaded yet, so I'm fetching it now. ` +
@@ -2132,6 +2155,31 @@ async function ensureModelAvailable(
     if (win) emit(win, 'openui:chat:warning', { message: reason })
     return false
   }
+}
+
+/**
+ * Download Splen for a turn that has no model to answer with. 'unavailable' when
+ * the server does not offer it to this account (the caller falls back); 'failed'
+ * when the download did not finish — the reason has already been streamed.
+ */
+async function installSplenForTurn(
+  win: BrowserWindow | null,
+  onDelta: (delta: string) => void
+): Promise<'ready' | 'failed' | 'unavailable'> {
+  const offer = await getSplenOffer().catch(() => null)
+  if (!offer) return 'unavailable'
+  onDelta(
+    `Splen’s model isn’t on this computer yet, so I’m downloading it now — a one-time download of about ` +
+      `${(offer.bytes / 1e9).toFixed(1)} GB. Progress is shown above.\n\n`
+  )
+  const result = await downloadSplen(win)
+  if (!result.ok) {
+    onDelta(result.message)
+    if (win) emit(win, 'openui:chat:warning', { message: result.message })
+    return 'failed'
+  }
+  onDelta('Splen is ready. Continuing…\n\n')
+  return 'ready'
 }
 
 /**

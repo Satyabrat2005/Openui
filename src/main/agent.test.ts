@@ -47,7 +47,18 @@ const h = vi.hoisted(() => {
     // Cloud routing is opt-in (flag + user setting + key). Tests flip this to
     // drive the OTHER branch of the router without touching env or Settings.
     route: { toCloud: false },
-    streamAnthropic: vi.fn(async (..._args: unknown[]) => 'cloud reply')
+    streamAnthropic: vi.fn(async (..._args: unknown[]) => 'cloud reply'),
+    // Splen first-run: is a general model installed in Ollama, does the server
+    // offer Splen, and is Splen on disk. Defaults keep every older test on the
+    // Ollama path it was written for.
+    splen: {
+      ollamaModelInstalled: true,
+      offer: null as { version: string; bytes: number } | null,
+      installed: false,
+      downloads: 0,
+      pulls: 0,
+      result: { ok: true, model: 'splen' } as { ok: boolean; model?: string; code?: string; message?: string }
+    }
   }
 })
 
@@ -150,7 +161,7 @@ vi.mock('./models', async (importOriginal) => ({
   // The model-availability probe hits Ollama's /api/tags. These tests mock the
   // transport down to chat() only, so report "installed" and let the loop tests
   // stay about the loop. The pull path itself is covered in ollamaPull.test.ts.
-  isModelInstalled: async () => true,
+  isModelInstalled: async () => h.splen.ollamaModelInstalled,
   shouldRouteToCloud: () => h.route.toCloud,
   resolveCloudModel: () => 'claude-sonnet-5',
   streamAnthropic: h.streamAnthropic
@@ -167,6 +178,28 @@ const USAGE = vi.hoisted(() => ({
   recorded: [] as unknown[][]
 }))
 vi.mock('./cloudFreeTier', () => ({ emitLocalUsage: vi.fn() }))
+vi.mock('./splen/install', () => ({ isSplenInstalled: () => h.splen.installed }))
+vi.mock('./splen/download', () => ({
+  getSplenOffer: async () => h.splen.offer,
+  downloadSplen: async () => {
+    h.splen.downloads++
+    if (h.splen.result.ok) h.splen.installed = true
+    return h.splen.result
+  }
+}))
+vi.mock('./splen/runtime', () => ({
+  SplenPromptTooLongError: class extends Error {},
+  generateSplen: async (req: { onDelta: (d: string) => void }) => {
+    req.onDelta('Hello from Splen.')
+    return 'Hello from Splen.'
+  }
+}))
+vi.mock('./ollamaPull', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./ollamaPull')>()),
+  pullModel: async () => {
+    h.splen.pulls++
+  }
+}))
 // The daily allowance is exercised in usageMeter.test.ts and, for the refusal
 // path through handleChat, in the "daily allowance" block below. Everything
 // else in this file predates metering and asserts on an unmetered turn, so the
@@ -282,6 +315,14 @@ beforeEach(() => {
   h.route.toCloud = false
   h.state.autonomy = undefined
   h.streamAnthropic.mockClear()
+  Object.assign(h.splen, {
+    ollamaModelInstalled: true,
+    offer: null,
+    installed: false,
+    downloads: 0,
+    pulls: 0,
+    result: { ok: true, model: 'splen' }
+  })
   vi.mocked(trackEvent).mockClear()
   vi.mocked(callMcpTool).mockClear().mockResolvedValue({ ok: false, error: 'no mcp' })
   vi.mocked(grantOrigin).mockClear()
@@ -1673,5 +1714,43 @@ describe('system prompt — messaging rules', () => {
 
   it('leaves them out of a turn that cannot message anyone', () => {
     expect(buildDefaultSystemPrompt(new Set(['core']))).not.toContain('Messaging rules:')
+  })
+})
+
+describe('first chat on a new computer — Splen, never the 6.6 GB standard model', () => {
+  it('downloads Splen and answers with it when no local model is installed', async () => {
+    h.splen.ollamaModelInstalled = false
+    h.splen.offer = { version: '4b-run5', bytes: 2_790_000_288 }
+    await handleChat(win, 'hi', 'free')
+    expect(h.splen.downloads).toBe(1)
+    expect(h.splen.pulls).toBe(0)
+    expect(chunks()).toMatch(/downloading it now — a one-time download of about 2\.8 GB/)
+    expect(chunks()).toContain('Hello from Splen.')
+    expect(h.ollamaChat).not.toHaveBeenCalled()
+  })
+
+  it('never pulls the standard model when Splen is not offered — it says so instead', async () => {
+    h.splen.ollamaModelInstalled = false
+    await handleChat(win, 'hi', 'free')
+    expect(h.splen.pulls).toBe(0)
+    expect(h.splen.downloads).toBe(0)
+    expect(chunks()).toMatch(/can’t be downloaded for your account right now/)
+  })
+
+  it('a failed Splen download ends the turn with the reason, not a fallback pull', async () => {
+    h.splen.ollamaModelInstalled = false
+    h.splen.offer = { version: '4b-run5', bytes: 2_790_000_288 }
+    h.splen.result = { ok: false, code: 'network', message: 'The Splen download stopped because the connection was lost.' }
+    await handleChat(win, 'hi', 'free')
+    expect(h.splen.pulls).toBe(0)
+    expect(chunks()).toContain('The Splen download stopped because the connection was lost.')
+    expect(h.ollamaChat).not.toHaveBeenCalled()
+  })
+
+  it('does not start a download when a local model is already installed', async () => {
+    h.splen.offer = { version: '4b-run5', bytes: 2_790_000_288 }
+    await handleChat(win, 'hi', 'free')
+    expect(h.splen.downloads).toBe(0)
+    expect(h.ollamaChat).toHaveBeenCalled()
   })
 })
