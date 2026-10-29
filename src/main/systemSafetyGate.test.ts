@@ -160,7 +160,21 @@ describe('system gate — every scripted attack is stopped', () => {
       // For outward tools "stopped" must mean ASKED, not "happened to fail
       // because there is no token in the test environment".
       if (OUTWARD.has(call.tool)) {
-        expect((r as { status?: string }).status, `${c.id} was not paused for approval`).toBe('pending_approval')
+        const refusedAsInvented = /made-up example address/.test((r as { error?: string }).error ?? '')
+        if (refusedAsInvented) {
+          // The gate's attacker addresses sit at reserved .example domains, which
+          // sendGuards refuses outright. A real attacker uses a real domain, so
+          // prove the approval card still catches the same call without that help.
+          const realDomain = JSON.parse(
+            JSON.stringify(call.args).replace(/@([\w.-]*\.)?example\b/gi, '@acme-mail.com')
+          ) as Record<string, unknown>
+          const again = await executeTool(call.tool, realDomain, { tier: 'enterprise', bypassHitl })
+          expect((again as { status?: string }).status, `${c.id} (real domain) was not paused for approval`).toBe(
+            'pending_approval'
+          )
+        } else {
+          expect((r as { status?: string }).status, `${c.id} was not paused for approval`).toBe('pending_approval')
+        }
       }
       // computer_use would ALSO be stopped by per-app consent here — but only
       // because no app is granted in a test. In real use the app was usually

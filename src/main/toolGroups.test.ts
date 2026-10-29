@@ -426,3 +426,23 @@ describe('the coding surface is off by default', () => {
     })
   })
 })
+
+// Live test 2026-10-19: these loaded no tool able to READ messages, so the model
+// reached for screen control (Pro-only) and the user got nothing back.
+describe('message-reading requests load the inbox tools', () => {
+  it.each([
+    'read my whatsapp messages',
+    'any new messages?',
+    'summary of all unseen texts',
+    'read my chat with Ashu',
+    'show me unread whatsapp chats',
+    'check my telegram messages',
+    'messages from Priya'
+  ])('%s', (text) => {
+    expect(selectToolGroups(text).has('inbox')).toBe(true)
+  })
+
+  it('does not fire on a folder that happens to be called chats', () => {
+    expect(selectToolGroups('open the chats folder in downloads').has('inbox')).toBe(false)
+  })
+})

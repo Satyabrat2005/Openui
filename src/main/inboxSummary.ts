@@ -40,6 +40,7 @@ import { isGmailConnected, findEmailThread, sendGmailMessage } from './gmail'
 import type { ExecutorContext, ToolResult, ToolSchema } from './tools'
 import { defangIncoming, wrapUntrustedMessages } from './untrustedMessages'
 import { recordReadItems } from './channelMemory'
+import { searchableName, type ListedChat } from './whatsappLayout'
 
 /** Persisted setting key: see isUnifiedInboxEnabled. */
 export const UNIFIED_INBOX_SETTING_KEY = 'unified_inbox_enabled'
@@ -180,7 +181,21 @@ export interface InboxDeps {
 export interface WhatsAppReaders {
   unreadSenders(): Promise<string[]>
   readChat(name: string): Promise<{ fullText: string; recentContext: string[] }>
+  /**
+   * The chat list split from the conversation, with unread decided by badge
+   * colour. Optional so a reader built before it (tests, the watcher) still
+   * fits; when present it replaces unreadSenders for the whole-inbox read.
+   */
+  chatList?(): Promise<ListedChat[]>
+  /** One chat's conversation pane, oldest line first. Replaces readChat when present. */
+  readConversation?(name: string): Promise<string[]>
 }
+
+/** How many unread WhatsApp chats a whole-inbox summary opens and reads in full. */
+export const WHATSAPP_DEEP_READS = 3
+
+/** Lines kept from one WhatsApp conversation — enough to summarise, not a whole history. */
+export const WHATSAPP_CONVERSATION_LINES = 30
 
 /** Items requested per channel when the caller does not say. */
 export const DEFAULT_ITEM_LIMIT = 10
@@ -206,6 +221,61 @@ export function emailAddressOf(header: string): string {
 // ── the real readers ────────────────────────────────────────────────────────
 
 /**
+ * The whole-inbox WhatsApp read: which chats are unread (by badge colour), what
+ * each one's latest message says (the list preview), and — for the first
+ * WHATSAPP_DEEP_READS of them — the conversation itself.
+ *
+ * Opening a chat is what WhatsApp counts as reading it, so the deep reads mark
+ * those chats read. That is the request ("summarise my unseen texts"), and the
+ * detail line says so; the remaining unread chats are reported from the list
+ * alone and stay unread.
+ */
+async function readWhatsAppInbox(whatsapp: WhatsAppReaders, limit: number): Promise<ChannelRead> {
+  const listed = (await whatsapp.chatList?.()) ?? []
+  if (listed.length === 0) {
+    return {
+      status: 'ok',
+      items: [],
+      detail:
+        'Could not read the WhatsApp chat list — WhatsApp Desktop may be closed, still loading, ' +
+        'or minimised. Open it and try again.'
+    }
+  }
+  const unread = listed.filter((c) => c.unread)
+  if (unread.length === 0) {
+    return {
+      status: 'ok',
+      items: listed.slice(0, limit).map((c) => ({ source: c.name, from: c.name, preview: c.preview })),
+      detail: 'No unread WhatsApp chats are showing. These are the most recent chats and their last message.'
+    }
+  }
+  const items: RawItem[] = []
+  const deep = unread.slice(0, WHATSAPP_DEEP_READS)
+  for (const chat of deep) {
+    const lines = whatsapp.readConversation ? await whatsapp.readConversation(searchableName(chat.name)) : []
+    if (lines.length === 0) {
+      items.push({ source: chat.name, from: chat.name, preview: chat.preview || WHATSAPP_UNREAD_PREVIEW })
+      continue
+    }
+    for (const line of lines.slice(-12)) items.push({ source: chat.name, from: chat.name, preview: line })
+  }
+  for (const chat of unread.slice(WHATSAPP_DEEP_READS, WHATSAPP_DEEP_READS + limit)) {
+    items.push({ source: chat.name, from: chat.name, preview: chat.preview || WHATSAPP_UNREAD_PREVIEW })
+  }
+  const more = unread.length - deep.length
+  return {
+    status: 'ok',
+    items,
+    detail:
+      `${unread.length} unread WhatsApp chat${unread.length === 1 ? '' : 's'} showing. ` +
+      `Opened and read the first ${deep.length} (WhatsApp now shows them as read)` +
+      (more > 0 ? `; the other ${more} are summarised from their last message only and stay unread.` : '.') +
+      ' Read by OCR — wording may be imperfect. Ask about one chat by name to read it in full.'
+  }
+}
+
+
+/**
  * Build the production deps. Only WhatsApp is passed in — the other three are
  * plain API calls this module can make directly, while WhatsApp's read is screen
  * automation that lives in tools.ts.
@@ -217,8 +287,9 @@ export function defaultInboxDeps(whatsapp: WhatsAppReaders): InboxDeps {
       // that drives the screen beyond focusing the window, so it is deliberately
       // NOT taken for a whole-inbox summary.
       if (scope.handle) {
-        const chat = await whatsapp.readChat(scope.handle)
-        const lines = chat.recentContext.filter((l) => l.trim())
+        const lines = whatsapp.readConversation
+          ? (await whatsapp.readConversation(scope.handle)).filter((l) => l.trim())
+          : (await whatsapp.readChat(scope.handle)).recentContext.filter((l) => l.trim())
         if (lines.length === 0) {
           return {
             status: 'ok',
@@ -228,9 +299,11 @@ export function defaultInboxDeps(whatsapp: WhatsAppReaders): InboxDeps {
               'not be running, or the contact could not be matched unambiguously.'
           }
         }
+        // A summary needs the conversation, not the last few lines of it.
+        const keep = whatsapp.readConversation ? Math.max(scope.limit, WHATSAPP_CONVERSATION_LINES) : scope.limit
         return {
           status: 'ok',
-          items: lines.slice(-scope.limit).map((line) => ({
+          items: lines.slice(-keep).map((line) => ({
             source: scope.handle as string,
             from: scope.handle as string,
             preview: line
@@ -238,6 +311,8 @@ export function defaultInboxDeps(whatsapp: WhatsAppReaders): InboxDeps {
           detail: 'Read by OCR of the open chat — wording may be imperfect.'
         }
       }
+
+      if (whatsapp.chatList) return readWhatsAppInbox(whatsapp, scope.limit)
 
       // Chat-list names are OCR'd display names the SENDER chose — the same
       // sender-name vector the API channels defang (untrustedMessages.ts).
@@ -373,6 +448,20 @@ function attribute(item: RawItem, channel: IdentityChannel): InboxItem {
   return out
 }
 
+/** A pronoun names nobody: "him" must be asked about, never searched for. */
+function isPronoun(name: string): boolean {
+  return /^(him|her|them|he|she|they|it|me|us|you|this person|that person)$/i.test(name.trim())
+}
+
+/** A person known only by the name the user typed — no saved identities. */
+function unsavedContact(name: string): ResolvedContact {
+  const display = name.trim()
+  return {
+    contact: { id: '', display_name: display, name_key: display.toLowerCase(), created_at: 0 },
+    identities: []
+  }
+}
+
 /**
  * Read every requested channel and return structured results. Read-only —
  * nothing here sends, drafts, or changes any remote state.
@@ -395,12 +484,20 @@ export async function summarizeInbox(
   let resolved: ResolvedContact | null = null
   if (contactArg) {
     const resolution = resolveContact(contactArg)
-    if (resolution.status !== 'resolved') {
+    if (resolution.status === 'resolved') {
+      resolved = resolution
+    } else if (resolution.status === 'unknown' && !isPronoun(contactArg)) {
+      // Nobody by this name is SAVED — the normal state for a new user, who has
+      // linked no contacts. WhatsApp and Slack find a person by the name itself,
+      // so read those by the name as typed; Telegram and Gmail report no_handle
+      // (handleForChannel never guesses for them). Live test 2026-10-19: "summarise
+      // my chat with Ashu" was refused here and never reached WhatsApp.
+      resolved = unsavedContact(contactArg)
+    } else {
       // Refuse rather than summarise everything and let the model pick — an
-      // unresolved "him" is a question for the user, not a wider net.
+      // unresolved "him", or two saved Ashus, is a question for the user.
       return { ok: false, error: `summarize_inbox: ${explainUnresolved(resolution, contactArg)}` }
     }
-    resolved = resolution
   }
 
   const summary: InboxSummaryData = {
@@ -488,7 +585,12 @@ async function readChannel(
       channel,
       status: 'ok',
       confidence,
-      items: read.items.slice(0, limit).map((item) => attribute(item, channel))
+      // WhatsApp's reader already bounds its own output (a conversation, or a few
+      // opened chats plus previews); capping it at `limit` kept the OLDEST lines
+      // of a conversation and dropped the deep reads.
+      items: read.items
+        .slice(0, channel === 'whatsapp' ? MAX_ITEM_LIMIT : limit)
+        .map((item) => attribute(item, channel))
     }
     if (read.detail) report.detail = read.detail
     return report
@@ -627,11 +729,15 @@ export const inboxToolSchemas: ToolSchema[] = [
     name: 'summarize_inbox',
     description:
       'Read recent and unread activity across WhatsApp, Telegram, Slack and Gmail at once and return ' +
-      'it as structured data for you to summarise. Use this for "what\'s my summary", "catch me up", ' +
-      '"anything new", or "is there anything from <person>". Pass "contact" to scope it to one person — ' +
-      'that requires the person to be known (see list_contacts / link_contact) and will fail rather than ' +
-      'guess who is meant. Read-only: it never sends, replies, or drafts. Note that reading WhatsApp ' +
-      'brings its window to the front. Each channel reports its own status — when a status is not "ok", ' +
+      'it as structured data for you to summarise. This is THE tool for reading messages: use it for ' +
+      '"read my WhatsApp messages", "summarise my unseen/unread texts", "what\'s my summary", ' +
+      '"catch me up", "anything new", "summarise my chat with <name>" or "is there anything from ' +
+      '<person>". Never use screen control or open_app to read messages. Pass "contact" with the person ' +
+      'or group name to read one chat — on WhatsApp the name as the user wrote it is enough, no saved ' +
+      'contact needed. Pass channels=["whatsapp"] when the user only means WhatsApp. Without "contact" ' +
+      'it lists the unread WhatsApp chats and opens the first 3 to read them. Read-only: it never sends, ' +
+      'replies, or drafts. Reading WhatsApp brings its window to the front. Each channel reports its own ' +
+      'status — when a status is not "ok", ' +
       'tell the user you could not check that channel instead of implying there was nothing there.',
     parameters: {
       type: 'object',

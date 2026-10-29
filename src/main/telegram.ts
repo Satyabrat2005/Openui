@@ -304,8 +304,11 @@ export function formatMessages(updates: TgUpdate[], chatId: string, limit: numbe
  * failures (ok:false) are returned to the caller to surface Telegram's own
  * `description` (e.g. 409 webhook conflict, 401 unauthorized).
  */
-function telegramCall<T>(method: string, body: Record<string, unknown>): Promise<TgApiResponse<T>> {
-  const token = getTelegramToken()
+function telegramCall<T>(
+  method: string,
+  body: Record<string, unknown>,
+  token: string = getTelegramToken()
+): Promise<TgApiResponse<T>> {
   if (!token) {
     return Promise.reject(
       new Error(
@@ -364,6 +367,41 @@ function telegramCall<T>(method: string, body: Record<string, unknown>): Promise
     req.write(bodyStr)
     req.end()
   })
+}
+
+/** What verifyTelegramToken learned about the bot, or why it failed. */
+export type TelegramVerifyResult =
+  | { ok: true; username: string; name: string }
+  | { ok: false; error: string }
+
+/**
+ * Check a pasted token against Telegram (getMe) BEFORE it is saved, so Settings
+ * can say "Connected as @my_bot" — or exactly what is wrong — instead of
+ * silently storing a typo that only fails on the first real request.
+ */
+export async function verifyTelegramToken(raw: string): Promise<TelegramVerifyResult> {
+  const token = raw.trim()
+  if (!isValidBotToken(token)) {
+    return {
+      ok: false,
+      error: 'That does not look like a bot token. It should look like 123456789:AA… — copy the whole line @BotFather sent.'
+    }
+  }
+  try {
+    const resp = await telegramCall<{ username?: string; first_name?: string }>('getMe', {}, token)
+    if (!resp.ok || !resp.result?.username) {
+      return {
+        ok: false,
+        error:
+          resp.error_code === 401
+            ? 'Telegram rejected this token. Copy it again from @BotFather (or send /token there to get a new one).'
+            : apiError('check the bot', resp)
+      }
+    }
+    return { ok: true, username: resp.result.username, name: resp.result.first_name ?? resp.result.username }
+  } catch (err) {
+    return { ok: false, error: `Could not reach Telegram: ${(err as Error).message}` }
+  }
 }
 
 /** Format an API-level failure into a user-facing error string (never leaks the token). */

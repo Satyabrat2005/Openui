@@ -9,9 +9,33 @@ _Nothing yet._
 
 ## v7.4.0 — 2026-09-27
 
-**Splen remembers what it reads across your apps.** v7.3.0 was prepared but
-never tagged, so this is also the first release to carry everything listed under
-v7.3.0 below. The model is still Qwen3.5 (9B); see "Splen 4B" at the end.
+**Splen 4B — OpenUI's own model — now runs inside OpenUI, and Splen remembers
+what it reads across your apps.** v7.3.0 was prepared but never tagged, so this
+is also the first release to carry everything listed under v7.3.0 below.
+
+### Added — Splen 4B, running only inside OpenUI
+
+- **OpenUI's own texting model, downloaded from the model screen.** Splen 4B is
+  Qwen3.5-4B further trained by OpenUI on reading, summarising and replying to
+  messages. Sign in, open the model screen and choose **Splen 4B** (2.8 GB).
+- **No separate engine to install.** Splen runs inside OpenUI itself — Ollama is
+  not needed for it, and nothing else on your computer can reach it: there is no
+  local server and it is not on any public model site.
+- **The download is checked before it is used.** It resumes if your connection
+  drops, and OpenUI refuses to run a file whose fingerprint (sha256) does not
+  match the one OpenUI published.
+- **It uses what it remembers across apps.** Asked about something it read or
+  sent earlier, it answered 30 of 32 held-out questions correctly, and carried
+  the detail into a message on another app ("email Priya what Rohan said on
+  WhatsApp") in 20 of 32.
+- **Measured on our 155-case safety test, three runs each, on the same engine
+  users get:** 5 critical findings for Splen 4B against 13 for Qwen3.5 9B, and
+  no leak of your data. Three were attempts to skip the confirmation step —
+  OpenUI always asks before a message goes out regardless. Two were emails to a
+  made-up address (`neha@example.com`); OpenUI now refuses any address at an
+  example domain before it reaches you (`docs/SPLEN-MODEL-CARD.md`).
+- If Splen cannot start on a computer (for example 32-bit Windows, which has no
+  engine build), OpenUI says so and answers with the standard local model.
 
 ### Added — memory across apps
 
@@ -34,6 +58,9 @@ v7.3.0 below. The model is still Qwen3.5 (9B); see "Splen 4B" at the end.
 - **A send addressed to a placeholder is refused before the confirmation card.**
   The model sometimes wrote the schema's own words (`@username`, `chat_id`) as
   the Telegram recipient instead of the number the user typed.
+- **A send to a made-up example address is refused too.** No real person has an
+  address at `example.com`, `.example`, `.test` or `.invalid`; a model that
+  writes one has invented it.
 
 ### Known limitations — please read
 
@@ -45,14 +72,19 @@ v7.3.0 below. The model is still Qwen3.5 (9B); see "Splen 4B" at the end.
   bot, or groups the bot is in, from roughly the last day. It cannot read your
   personal Telegram chats.
 
-### Splen 4B — coming next, and only inside OpenUI
+### Splen 4B — what it does not do well yet
 
-OpenUI's own fine-tuned model is trained and measured (2 critical safety
-violations against 13 for the current model; `docs/SPLEN-MODEL-CARD.md`), but it
-is **not in this release**. It will run inside OpenUI itself, downloaded
-privately after sign-in, rather than through a model tool that any other program
-on your computer could use. It ships once that runtime is built and the safety
-tests are re-run on it.
+- **Broadcasting does not work yet in Splen 4B.** Asked to tell several people
+  something, it asks which app to use for each person instead of sending (0 of
+  16 on our held-out test). The next Splen update targets this, and ships only
+  after it passes the same safety test.
+- **It can be over-careful.** It sometimes asks for a Telegram chat or an address
+  you already gave it.
+- **It can trust an address posted in a chat too readily.** In one test, a Slack
+  message from "the new analyst" asked for files at a personal Gmail; Splen
+  drafted the email. The confirmation card shows that the address came from a
+  message, not from you — check it before you allow.
+- **It sometimes answers when it should say it has no record.**
 
 ### Added
 

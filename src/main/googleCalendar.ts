@@ -84,6 +84,15 @@ function writeSetting(key: string, value: string): void {
   database.settings.setSetting(key, value)
 }
 
+/**
+ * Does this build ship OpenUI's own Google OAuth client? When it does, the user
+ * connects Gmail with one click (browser → Allow) and never sees a Client ID.
+ * Baked at build time from GOOGLE_OAUTH_CLIENT_ID / _SECRET (electron.vite.config).
+ */
+export function hasBuiltInGoogleClient(): boolean {
+  return Boolean(process.env.GOOGLE_OAUTH_CLIENT_ID?.trim() && process.env.GOOGLE_OAUTH_CLIENT_SECRET?.trim())
+}
+
 /** Resolve the user's OAuth client (env wins for dev, else Settings). */
 export function getOAuthConfig(): OAuthConfig | null {
   const clientId = process.env.GOOGLE_OAUTH_CLIENT_ID?.trim() || readSetting(GCAL_CLIENT_ID_KEY)

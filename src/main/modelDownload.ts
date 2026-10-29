@@ -100,8 +100,8 @@ export function approxSizeLabel(bytes: number): string {
 export const MODEL_CATALOG: CatalogModel[] = [
   {
     id: DEFAULT_GENERAL_MODEL,
-    label: 'Splen',
-    purpose: 'Reads, summarises and replies to your messages across WhatsApp, Telegram, Slack and Gmail.',
+    label: 'Standard model',
+    purpose: 'Answers until Splen 4B is installed, and steps in if Splen cannot start. Runs on the local AI engine (Ollama).',
     approxSize: approxSizeLabel(MODEL_LAYER_BYTES[DEFAULT_GENERAL_MODEL]),
     attribution: 'Runs Qwen3.5 by Alibaba Cloud · Apache License 2.0'
   },
@@ -115,14 +115,14 @@ export const MODEL_CATALOG: CatalogModel[] = [
 ]
 
 /**
- * The models this build actually offers. The coding model serves only the
- * coding surface, which is switched off in the shipped texting agent
- * (capabilities.ts) — offering its 4.7 GB download beside Splen asked users to
- * fetch a model nothing in the app would ever call. Read at call time, like the
- * flag itself.
+ * The Ollama models this build offers for download. The shipped texting agent
+ * (coding surface off, capabilities.ts) offers none: Splen is its model, and
+ * listing the 6.6 GB standard model beside it asked users to fetch a second,
+ * larger model they do not need. The developer build (coding on) keeps both.
+ * Read at call time, like the flag itself.
  */
 export function offeredModels(): CatalogModel[] {
-  return MODEL_CATALOG.filter((m) => m.id !== DEFAULT_CODE_MODEL || isCodingEnabled())
+  return isCodingEnabled() ? MODEL_CATALOG : []
 }
 
 export function isCatalogModel(model: string): boolean {

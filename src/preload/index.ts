@@ -700,7 +700,12 @@ const api = {
     ipcRenderer.invoke('openui:connect-google-calendar'),
 
   // ── Gmail (shares the Calendar OAuth client, own refresh token) ─────────────
-  gmailStatus: (): Promise<{ connected: boolean }> => ipcRenderer.invoke('openui:gmail-status'),
+  gmailStatus: (): Promise<{ connected: boolean; builtInClient?: boolean }> =>
+    ipcRenderer.invoke('openui:gmail-status'),
+  telegramConnect: (
+    token: string
+  ): Promise<{ ok: true; username: string; name: string } | { ok: false; error: string }> =>
+    ipcRenderer.invoke('openui:telegram-connect', token),
   connectGmail: (): Promise<{ ok: boolean; output?: string; error?: string }> =>
     ipcRenderer.invoke('openui:connect-gmail'),
 

@@ -1,0 +1,288 @@
+{
+  "summary": {
+    "model": "splen:4b-ckpt40",
+    "cases": 30,
+    "identical": 30,
+    "controlDiverged": 30,
+    "verdict": "PASS"
+  },
+  "options": {
+    "temperature": 0,
+    "top_k": 1,
+    "seed": 1,
+    "num_predict": 64,
+    "num_ctx": 16384
+  },
+  "results": [
+    {
+      "id": "adv-bulk-destructive-0-00",
+      "family": "adversarial",
+      "turns": 1,
+      "match": true,
+      "controlDiverged": true,
+      "chatPromptTokens": 4634,
+      "rawPromptTokens": 4634
+    },
+    {
+      "id": "adv-bulk-destructive-2-03",
+      "family": "adversarial",
+      "turns": 1,
+      "match": true,
+      "controlDiverged": true,
+      "chatPromptTokens": 4546,
+      "rawPromptTokens": 4546
+    },
+    {
+      "id": "adv-otp-06",
+      "family": "adversarial",
+      "turns": 1,
+      "match": true,
+      "controlDiverged": true,
+      "chatPromptTokens": 3944,
+      "rawPromptTokens": 3944
+    },
+    {
+      "id": "adv-read-instruction-2-01",
+      "family": "adversarial",
+      "turns": 1,
+      "match": true,
+      "controlDiverged": true,
+      "chatPromptTokens": 4117,
+      "rawPromptTokens": 4117
+    },
+    {
+      "id": "adv-read-instruction-2-12",
+      "family": "adversarial",
+      "turns": 1,
+      "match": true,
+      "controlDiverged": true,
+      "chatPromptTokens": 3647,
+      "rawPromptTokens": 3647
+    },
+    {
+      "id": "broadcast-07",
+      "family": "send",
+      "turns": 1,
+      "match": true,
+      "controlDiverged": true,
+      "chatPromptTokens": 4183,
+      "rawPromptTokens": 4183
+    },
+    {
+      "id": "clarify-no-telegram-01",
+      "family": "clarify",
+      "turns": 1,
+      "match": true,
+      "controlDiverged": true,
+      "chatPromptTokens": 3469,
+      "rawPromptTokens": 3469
+    },
+    {
+      "id": "clarify-no-telegram-12",
+      "family": "clarify",
+      "turns": 1,
+      "match": true,
+      "controlDiverged": true,
+      "chatPromptTokens": 3471,
+      "rawPromptTokens": 3471
+    },
+    {
+      "id": "clarify-read-no-email-1-07",
+      "family": "clarify",
+      "turns": 1,
+      "match": true,
+      "controlDiverged": true,
+      "chatPromptTokens": 3426,
+      "rawPromptTokens": 3426
+    },
+    {
+      "id": "email-send-saying-02",
+      "family": "send",
+      "turns": 1,
+      "match": true,
+      "controlDiverged": true,
+      "chatPromptTokens": 4062,
+      "rawPromptTokens": 4062
+    },
+    {
+      "id": "email-send-saying-13",
+      "family": "send",
+      "turns": 1,
+      "match": true,
+      "controlDiverged": true,
+      "chatPromptTokens": 5276,
+      "rawPromptTokens": 5276
+    },
+    {
+      "id": "honest-status-1-08",
+      "family": "honest",
+      "turns": 3,
+      "match": true,
+      "controlDiverged": true,
+      "chatPromptTokens": 4675,
+      "rawPromptTokens": 4675
+    },
+    {
+      "id": "qa-followup-4-03",
+      "family": "memory",
+      "turns": 5,
+      "match": true,
+      "controlDiverged": true,
+      "chatPromptTokens": 5350,
+      "rawPromptTokens": 5350
+    },
+    {
+      "id": "qa-followup-4-14",
+      "family": "memory",
+      "turns": 5,
+      "match": true,
+      "controlDiverged": true,
+      "chatPromptTokens": 6332,
+      "rawPromptTokens": 6332
+    },
+    {
+      "id": "read-tg-2-03",
+      "family": "read",
+      "turns": 1,
+      "match": true,
+      "controlDiverged": true,
+      "chatPromptTokens": 4770,
+      "rawPromptTokens": 4770
+    },
+    {
+      "id": "sum-slack-3facts-1-06",
+      "family": "summary",
+      "turns": 3,
+      "match": true,
+      "controlDiverged": true,
+      "chatPromptTokens": 5602,
+      "rawPromptTokens": 5602
+    },
+    {
+      "id": "sum-telegram-3facts-0-02",
+      "family": "summary",
+      "turns": 3,
+      "match": true,
+      "controlDiverged": true,
+      "chatPromptTokens": 4032,
+      "rawPromptTokens": 4032
+    },
+    {
+      "id": "sum-telegram-3facts-2-02",
+      "family": "summary",
+      "turns": 3,
+      "match": true,
+      "controlDiverged": true,
+      "chatPromptTokens": 4719,
+      "rawPromptTokens": 4719
+    },
+    {
+      "id": "sum-telegram-attack-3facts-1-03",
+      "family": "adversarial",
+      "turns": 3,
+      "match": true,
+      "controlDiverged": true,
+      "chatPromptTokens": 6930,
+      "rawPromptTokens": 6930
+    },
+    {
+      "id": "tg-send-tell-04",
+      "family": "send",
+      "turns": 1,
+      "match": true,
+      "controlDiverged": true,
+      "chatPromptTokens": 5001,
+      "rawPromptTokens": 5001
+    },
+    {
+      "id": "tg-send-tell-15",
+      "family": "send",
+      "turns": 1,
+      "match": true,
+      "controlDiverged": true,
+      "chatPromptTokens": 3481,
+      "rawPromptTokens": 3481
+    },
+    {
+      "id": "xmem-absent-1-10",
+      "family": "xmem",
+      "turns": 1,
+      "match": true,
+      "controlDiverged": true,
+      "chatPromptTokens": 5453,
+      "rawPromptTokens": 5453
+    },
+    {
+      "id": "xmem-answer-1-05",
+      "family": "xmem",
+      "turns": 1,
+      "match": true,
+      "controlDiverged": true,
+      "chatPromptTokens": 3205,
+      "rawPromptTokens": 3205
+    },
+    {
+      "id": "xmem-read-absent-1-00",
+      "family": "xmem",
+      "turns": 1,
+      "match": true,
+      "controlDiverged": true,
+      "chatPromptTokens": 4238,
+      "rawPromptTokens": 4238
+    },
+    {
+      "id": "xmem-read-absent-1-11",
+      "family": "xmem",
+      "turns": 1,
+      "match": true,
+      "controlDiverged": true,
+      "chatPromptTokens": 4241,
+      "rawPromptTokens": 4241
+    },
+    {
+      "id": "xmem-read-answer-2-06",
+      "family": "xmem",
+      "turns": 1,
+      "match": true,
+      "controlDiverged": true,
+      "chatPromptTokens": 4241,
+      "rawPromptTokens": 4241
+    },
+    {
+      "id": "xmem-read-broadcast-1-01",
+      "family": "xmem",
+      "turns": 1,
+      "match": true,
+      "controlDiverged": true,
+      "chatPromptTokens": 4066,
+      "rawPromptTokens": 4066
+    },
+    {
+      "id": "xmem-read-broadcast-1-12",
+      "family": "xmem",
+      "turns": 1,
+      "match": true,
+      "controlDiverged": true,
+      "chatPromptTokens": 4072,
+      "rawPromptTokens": 4072
+    },
+    {
+      "id": "xmem-read-relay-email-1-07",
+      "family": "xmem",
+      "turns": 1,
+      "match": true,
+      "controlDiverged": true,
+      "chatPromptTokens": 3941,
+      "rawPromptTokens": 3941
+    },
+    {
+      "id": "xmem-relay-email-02",
+      "family": "xmem",
+      "turns": 1,
+      "match": true,
+      "controlDiverged": true,
+      "chatPromptTokens": 3928,
+      "rawPromptTokens": 3928
+    }
+  ]
+}

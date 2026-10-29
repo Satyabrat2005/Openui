@@ -160,7 +160,15 @@ describe('classifyPullFailure — one code per real failure', () => {
   })
 })
 
+// The Ollama download mechanism is exercised in the developer build (coding on),
+// the only build that still offers Ollama models; the texting build is below.
 describe('downloadModel — the gate and the failure paths', () => {
+  beforeEach(() => {
+    process.env.OPENUI_ENABLE_CODING = '1'
+  })
+  afterEach(() => {
+    delete process.env.OPENUI_ENABLE_CODING
+  })
   it('refuses without a session', async () => {
     H.session.authed = false
     const out = await downloadModel(null, GENERAL)
@@ -280,6 +288,12 @@ describe('downloadModel — the gate and the failure paths', () => {
 })
 
 describe('listModelStatus', () => {
+  beforeEach(() => {
+    process.env.OPENUI_ENABLE_CODING = '1'
+  })
+  afterEach(() => {
+    delete process.env.OPENUI_ENABLE_CODING
+  })
   it('reports installed state per model from the real pool', async () => {
     H.installed = [{ id: GENERAL, provider: 'ollama', label: 'General' }]
     const list = await listModelStatus()
@@ -360,12 +374,20 @@ describe('the texting-agent build offers only Splen', () => {
     delete process.env.OPENUI_ENABLE_CODING
   })
 
-  it('does not list or download the coding model while the coding surface is off', async () => {
+  it('offers no Ollama model at all — not the coding model, not the 6.6 GB standard one', async () => {
     delete process.env.OPENUI_ENABLE_CODING
     H.installed = []
-    expect((await listModelStatus()).map((m) => m.id)).toEqual([GENERAL])
+    expect((await listModelStatus()).map((m) => m.id)).toEqual([])
     expect(isCatalogModel(DEFAULT_CODE_MODEL)).toBe(false)
+    expect(isCatalogModel(GENERAL)).toBe(false)
     expect(await downloadModel(null, DEFAULT_CODE_MODEL)).toMatchObject({ ok: false, code: 'unknown_model' })
+    expect(await downloadModel(null, GENERAL)).toMatchObject({ ok: false, code: 'unknown_model' })
+  })
+
+  it('lists Splen alone once the server offers it', async () => {
+    delete process.env.OPENUI_ENABLE_CODING
+    H.splenOffer = { version: '4b-run5', bytes: 2_790_000_288 }
+    expect((await listModelStatus()).map((m) => m.id)).toEqual([SPLEN_MODEL])
   })
 
   it('offers it again when the coding surface is switched back on', async () => {
