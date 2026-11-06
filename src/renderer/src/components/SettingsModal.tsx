@@ -84,7 +84,7 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
   const [enabled, setEnabled] = useState(false)
   const [busy, setBusy] = useState(false)
   // Appearance: light / dark / follow-OS. Default matches the app default (dark).
-  const [theme, setTheme] = useState<ThemePref>('dark')
+  const [theme, setTheme] = useState<ThemePref>('system')
   // AI Improvement (local self-improvement loop). Default ON: absent setting → on.
   const [aiImprovement, setAiImprovement] = useState(true)
   // Automation autonomy. Default matches the main-process default (approve-plan).
@@ -963,7 +963,7 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
               style={{ marginTop: 8 }}
               onClick={() => setGmailOwnClient((v) => !v)}
             >
-              {gmailOwnClient ? 'Use OpenUI’s Google sign-in instead' : 'Use my own Google Cloud client instead'}
+              {gmailOwnClient ? 'Use Splen’s Google sign-in instead' : 'Use my own Google Cloud client instead'}
             </button>
           )}
         </div>

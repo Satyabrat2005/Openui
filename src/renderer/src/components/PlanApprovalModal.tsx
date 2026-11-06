@@ -91,8 +91,8 @@ export default function PlanApprovalModal({ request, onApprove, onCancel }: Prop
 
         <p style={{ margin: '0 0 14px', fontSize: 13, color: '#636366', lineHeight: 1.45 }}>
           {request.summary
-            ? `OpenUI will do the following to ${request.summary.replace(/\.$/, '')}. Once approved it runs on its own — you won't be asked step by step.`
-            : "OpenUI will carry out the following steps on its own once you approve."}
+            ? `Splen will do the following to ${request.summary.replace(/\.$/, '')}. Once approved it runs on its own — you won't be asked step by step.`
+            : "Splen will carry out the following steps on its own once you approve."}
         </p>
 
         {/* The full checklist */}

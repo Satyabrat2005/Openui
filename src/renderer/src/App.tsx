@@ -4,7 +4,7 @@ import ErrorBoundary from './components/ErrorBoundary'
 import PermissionModal from './components/PermissionModal'
 import HitlModal from './components/HitlModal'
 import PlanApprovalModal from './components/PlanApprovalModal'
-import OnboardingWizard from './components/onboarding/OnboardingWizard'
+import SplenSetup from './components/onboarding/SplenSetup'
 import ConsentModal from './components/ConsentModal'
 import WhatsAppAutoReplyBanner from './components/WhatsAppAutoReplyBanner'
 import { useAssistantAnimations } from './hooks/useAssistantAnimations'
@@ -41,9 +41,9 @@ const isMac = window.openui.platform === 'darwin'
  * (.ou-titlebar-mac) so the brand label doesn't sit underneath them.
  */
 /**
- * The 38px window chrome. The setup/auth variant shows the OpenUI mark; the
- * console variant (the Splen home screen) is deliberately bare — just a drag
- * region and the window controls, so the owner's design is all that shows.
+ * The 38px window chrome — deliberately bare on every screen: a drag region and
+ * the window controls. Each screen (sign-in, setup, the Splen home) carries its
+ * own Splen mark, so the chrome never repeats it.
  */
 function TitleBar({ variant }: { variant: 'setup' | 'console' | 'auth' }): JSX.Element {
   const [maximized, setMaximized] = useState(false)
@@ -54,14 +54,7 @@ function TitleBar({ variant }: { variant: 'setup' | 'console' | 'auth' }): JSX.E
   }, [])
 
   return (
-    <div className={isMac ? 'ou-titlebar ou-titlebar-mac' : 'ou-titlebar'}>
-      {variant !== 'console' ? (
-        <div className="ou-tb-setup">
-          <div className="ou-tb-mark" aria-hidden="true" />
-          <span className="ou-tb-wordmark">OpenUI</span>
-          {variant === 'setup' && <span className="ou-tb-setup-tag">SETUP</span>}
-        </div>
-      ) : null}
+    <div className={isMac ? 'ou-titlebar ou-titlebar-mac' : 'ou-titlebar'} data-variant={variant}>
       <div
         className="ou-titlebar-drag"
         onDoubleClick={isMac ? undefined : () => window.openui.toggleMaximizeWindow()}
@@ -141,7 +134,7 @@ function AppShell(): JSX.Element {
   useAssistantAnimations(overlayRef, recordingRef, captionLockedRef, showChat)
 
   // Apply the persisted theme preference at startup and keep it live with the
-  // OS scheme while the preference is 'system'. Dark is the default.
+  // OS scheme while the preference is 'system', which is the default.
   useEffect(() => {
     const stop = watchSystemTheme()
     window.openui
@@ -246,7 +239,7 @@ function AppShell(): JSX.Element {
       {isLoading ? (
         <LoadingScreen />
       ) : !isComplete ? (
-        <OnboardingWizard
+        <SplenSetup
           onComplete={handleOnboardingComplete}
           initialStep={currentStep}
           onStepChange={setCurrentStep}
