@@ -66,55 +66,55 @@
 }
 
 /* ─────────────────────────────────────────
-   THEME TOKENS — Splen, "ink, paper and ember".
+   THEME TOKENS — Splen, "black, cream and gold".
    Minimalist editorial: warm neutral surfaces that shift by a few points of
-   lightness (never by shadow), 1px hairlines, ONE accent — ember — used only
+   lightness (never by shadow), 1px hairlines, ONE accent — gold — used only
    for the primary action, focus and the active marker. Status colours are
-   semantic, not brand: a quiet green for "connected", amber for "needs you",
-   red for destructive. No gradients, no glows, no purple.
+   semantic, not brand: a quiet green for "connected", burnt orange for "needs
+   you" (kept clear of gold), red for destructive. No gradients, no glows, no purple.
 
-   Dark is not an inversion of light: surfaces are warm charcoal (L≈7–12%),
-   text is warm off-white, and ember is lifted a step so it holds contrast.
+   Dark is not an inversion of light: surfaces are near-black (L≈5–10%),
+   text is cream, and gold is lifted a step so it holds contrast.
 
    The legacy --ou-* names are kept as ALIASES onto this palette (mostly via
    var(), so they re-resolve for light without redeclaring).
 ───────────────────────────────────────── */
 :root {
   /* ── Surfaces ──────────────────────────────────────────────────────────── */
-  --ou-bg-app: #141412;            /* main content area */
-  --ou-bg-chrome: #0f0f0e;         /* title bar, sidebar */
-  --ou-bg-panel: #181816;          /* side panels */
-  --ou-bg-card: #1a1a18;           /* rows, cards */
-  --ou-bg-card-hover: #1f1f1c;     /* row hover / selected */
-  --ou-bg-card-selected: #22211e;  /* selected option card */
-  --ou-bg-raised: #1c1c19;         /* composer body, modal */
-  --ou-bg-sunken: #171715;         /* footers, table headers */
-  --ou-bg-inset: #121211;          /* segmented-control track */
-  --ou-bg-chip: #1f1f1c;           /* chips */
-  --ou-bg-chip-2: #252421;         /* active pill */
-  --ou-bg-avatar: #34332f;         /* avatar, off toggle track */
+  --ou-bg-app: #0f0f0e;            /* main content area */
+  --ou-bg-chrome: #0b0b0a;         /* title bar, sidebar */
+  --ou-bg-panel: #141413;          /* side panels */
+  --ou-bg-card: #161615;           /* rows, cards */
+  --ou-bg-card-hover: #1c1c1a;     /* row hover / selected */
+  --ou-bg-card-selected: #1f1e1b;  /* selected option card */
+  --ou-bg-raised: #171716;         /* composer body, modal */
+  --ou-bg-sunken: #121211;         /* footers, table headers */
+  --ou-bg-inset: #0d0d0c;          /* segmented-control track */
+  --ou-bg-chip: #1c1c1a;           /* chips */
+  --ou-bg-chip-2: #22211e;         /* active pill */
+  --ou-bg-avatar: #33312c;         /* avatar, off toggle track */
 
   /* ── Text ──────────────────────────────────────────────────────────────── */
-  --ou-text-max: #f4f2ed;          /* display, page titles */
-  --ou-text-high: #ecE9e3;         /* titles, input value */
-  --ou-text-base: #e3e0d9;         /* body */
-  --ou-text-mid: #d6d2ca;          /* labels */
-  --ou-text-muted: #bdb8af;        /* secondary text */
-  --ou-text-soft: #a19c92;         /* descriptions */
-  --ou-text-meta: #8c877d;         /* meta, placeholder */
-  --ou-text-label: #8f8a80;        /* mono section labels (AA on chrome) */
-  --ou-text-faint2: #8a857b;       /* timestamps */
-  --ou-text-rule: #4a4843;         /* separators, inactive dots */
+  --ou-text-max: #f5f0e6;          /* display, page titles */
+  --ou-text-high: #eee8dc;         /* titles, input value */
+  --ou-text-base: #e5dfd2;         /* body */
+  --ou-text-mid: #d8d1c3;          /* labels */
+  --ou-text-muted: #bfb8aa;        /* secondary text */
+  --ou-text-soft: #a39c8e;         /* descriptions */
+  --ou-text-meta: #8c8578;         /* meta, placeholder */
+  --ou-text-label: #90897c;        /* mono section labels (AA on chrome) */
+  --ou-text-faint2: #8a8376;       /* timestamps */
+  --ou-text-rule: #47443e;         /* separators, inactive dots */
 
   /* ── Semantic ──────────────────────────────────────────────────────────── */
-  --ou-accent: #e0613a;            /* ember: primary action, focus, active marker */
-  --ou-accent-hover: #ea7049;
-  --ou-accent-text: #f08b66;       /* links / accent text on dark */
-  --ou-accent-on: #1a0d07;         /* text on ember */
+  --ou-accent: #d4af5a;            /* gold: primary action, focus, active marker */
+  --ou-accent-hover: #e0be6f;
+  --ou-accent-text: #e3c57f;       /* links / accent text on dark */
+  --ou-accent-on: #14110a;         /* text on gold — ink, never white */
   --ou-status-running: #7fb99b;    /* connected, completed */
-  --ou-status-attention: #e2b567;  /* needs approval */
-  --ou-status-attention-text: #f0dcb4;
-  --ou-status-attention-body: #b6a887;
+  --ou-status-attention: #e08a3c;  /* needs approval */
+  --ou-status-attention-text: #f3c9a0;
+  --ou-status-attention-body: #c2a184;
   --ou-status-attention-fg: #221c0d;
   --ou-status-danger: #c9543f;     /* destructive */
   --ou-status-danger-text: #ec9a88;
@@ -122,22 +122,22 @@
 
   /* ── Tinted fills ──────────────────────────────────────────────────────── */
   --ou-fill-running: rgba(127, 185, 155, 0.13);
-  --ou-fill-attention: rgba(226, 181, 103, 0.14);
-  --ou-fill-attention-border: rgba(226, 181, 103, 0.32);
-  --ou-fill-attention-soft: rgba(226, 181, 103, 0.07);
-  --ou-fill-neutral: rgba(244, 242, 237, 0.06);
-  --ou-fill-accent: rgba(224, 97, 58, 0.16);
+  --ou-fill-attention: rgba(224, 138, 60, 0.14);
+  --ou-fill-attention-border: rgba(224, 138, 60, 0.32);
+  --ou-fill-attention-soft: rgba(224, 138, 60, 0.07);
+  --ou-fill-neutral: rgba(245, 240, 230, 0.06);
+  --ou-fill-accent: rgba(212, 175, 90, 0.16);
   --ou-fill-danger: rgba(201, 84, 63, 0.16);
 
   /* ── Hairlines ─────────────────────────────────────────────────────────── */
-  --ou-hairline: rgba(244, 242, 237, 0.07);
-  --ou-border-card: rgba(244, 242, 237, 0.09);
-  --ou-border-control: rgba(244, 242, 237, 0.11);
-  --ou-border-hover: rgba(244, 242, 237, 0.22);
-  --ou-border-dashed: rgba(244, 242, 237, 0.16);
-  --ou-ring-inactive: rgba(244, 242, 237, 0.20);
-  --ou-inset-top: rgba(244, 242, 237, 0.04);
-  --ou-inset-top-strong: rgba(244, 242, 237, 0.10);
+  --ou-hairline: rgba(245, 240, 230, 0.07);
+  --ou-border-card: rgba(245, 240, 230, 0.09);
+  --ou-border-control: rgba(245, 240, 230, 0.11);
+  --ou-border-hover: rgba(245, 240, 230, 0.22);
+  --ou-border-dashed: rgba(245, 240, 230, 0.16);
+  --ou-ring-inactive: rgba(245, 240, 230, 0.20);
+  --ou-inset-top: rgba(245, 240, 230, 0.04);
+  --ou-inset-top-strong: rgba(245, 240, 230, 0.10);
 
   /* ── Motion ────────────────────────────────────────────────────────────── */
   --ou-ease: cubic-bezier(0.2, 0.7, 0.2, 1);
@@ -171,7 +171,7 @@
   --ou-shadow-inspector: -1px 0 0 var(--ou-hairline);
   --ou-shadow-mark: none;
   --ou-btn-inset: none;
-  --ou-focus-ring: #e0613a;
+  --ou-focus-ring: #d4af5a;
 
   /* ── Typography ────────────────────────────────────────────────────────── */
   --ou-font: 'Geist', -apple-system, 'Segoe UI', system-ui, sans-serif;
@@ -198,12 +198,12 @@
   --ou-amber: var(--ou-status-attention);
   --ou-emerald: var(--ou-status-running);
   --ou-accent-soft: var(--ou-fill-accent);
-  --ou-accent-glow: rgba(224, 97, 58, 0.12);
+  --ou-accent-glow: rgba(212, 175, 90, 0.12);
   --ou-user-bubble: var(--ou-bg-card-hover);
   --ou-ai-bubble: var(--ou-fill-neutral);
   --ou-violet: var(--ou-accent-text);      /* purple is banned → fold onto accent */
   --ou-violet-soft: var(--ou-fill-accent);
-  --ou-violet-border: rgba(224, 97, 58, 0.30);
+  --ou-violet-border: rgba(212, 175, 90, 0.30);
   --ou-success: var(--ou-status-running);
   --ou-success-soft: var(--ou-fill-running);
   --ou-danger: var(--ou-status-danger);
@@ -222,12 +222,12 @@
   --ou-shadow-pop: 0 18px 40px -20px rgba(0, 0, 0, 0.65);
   --ou-shadow-modal: 0 32px 64px -32px rgba(0, 0, 0, 0.7);
   --ou-hover: var(--ou-fill-neutral);
-  --ou-glass: rgba(244, 242, 237, 0.04);
+  --ou-glass: rgba(245, 240, 230, 0.04);
   --ou-glass-strong: var(--ou-fill-neutral);
   --ou-glass-border: var(--ou-border-control);
   --ou-sidebar-bg: var(--ou-bg-chrome);
-  --ou-scrollbar: rgba(244, 242, 237, 0.12);
-  --ou-scrollbar-hover: rgba(244, 242, 237, 0.22);
+  --ou-scrollbar: rgba(245, 240, 230, 0.12);
+  --ou-scrollbar-hover: rgba(245, 240, 230, 0.22);
   --ou-grad: var(--ou-accent);             /* gradients banned → flat accent */
   --ou-grad-accent: var(--ou-accent);
 }
@@ -240,46 +240,46 @@
    defaults. Dark remains the default (no data-theme / data-theme="dark").
 ───────────────────────────────────────── */
 :root[data-theme='light'] {
-  /* Paper, not white: the window is a warm off-white, the sidebar recedes one
-     step, and only the composer and modals sit on pure white. Ember deepens so
-     white text on it clears AA. Only base tokens are redeclared — the
+  /* White, cream and ink: the window is a soft white, the sidebar is cream,
+     and the composer and modals sit on pure white. Gold carries ink text (not
+     white), and gold TEXT darkens to bronze so it reads on cream. Only base tokens are redeclared — the
      var()-based legacy aliases inherit these automatically. */
 
   /* Surfaces */
-  --ou-bg-app: #f7f6f2;
-  --ou-bg-chrome: #efede7;
-  --ou-bg-panel: #f3f1ec;
+  --ou-bg-app: #faf8f3;
+  --ou-bg-chrome: #f1ebdd;
+  --ou-bg-panel: #f5f0e5;
   --ou-bg-card: #ffffff;
-  --ou-bg-card-hover: #ecEae4;
-  --ou-bg-card-selected: #f4ece6;
+  --ou-bg-card-hover: #efe8d9;
+  --ou-bg-card-selected: #f5ecd6;
   --ou-bg-raised: #ffffff;
-  --ou-bg-sunken: #f1efe9;
-  --ou-bg-inset: #e8e6df;
-  --ou-bg-chip: #eeece6;
-  --ou-bg-chip-2: #e6e3dc;
-  --ou-bg-avatar: #d8d4cb;
+  --ou-bg-sunken: #f3eee3;
+  --ou-bg-inset: #ebe4d4;
+  --ou-bg-chip: #f0eadc;
+  --ou-bg-chip-2: #e8e0ce;
+  --ou-bg-avatar: #dbd2bf;
 
   /* Text — ink to stone */
-  --ou-text-max: #161512;
-  --ou-text-high: #1c1b18;
-  --ou-text-base: #262420;
-  --ou-text-mid: #36332e;
-  --ou-text-muted: #4c4943;
-  --ou-text-soft: #625e57;
-  --ou-text-meta: #75716a;
-  --ou-text-label: #6d6962;
-  --ou-text-faint2: #75716a;
-  --ou-text-rule: #c4c0b7;
+  --ou-text-max: #141310;
+  --ou-text-high: #1b1a16;
+  --ou-text-base: #25231e;
+  --ou-text-mid: #35322b;
+  --ou-text-muted: #4b4740;
+  --ou-text-soft: #625d53;
+  --ou-text-meta: #756f63;
+  --ou-text-label: #6d675b;
+  --ou-text-faint2: #756f63;
+  --ou-text-rule: #c9c0ac;
 
   /* Semantic */
-  --ou-accent: #c44a25;
-  --ou-accent-hover: #ad3f1e;
-  --ou-accent-text: #ad3f1e;
-  --ou-accent-on: #ffffff;
+  --ou-accent: #c79f45;
+  --ou-accent-hover: #b58e38;
+  --ou-accent-text: #86661c;
+  --ou-accent-on: #141310;
   --ou-status-running: #2f7f57;
-  --ou-status-attention: #a8701c;
-  --ou-status-attention-text: #6e5011;
-  --ou-status-attention-body: #6b5a3a;
+  --ou-status-attention: #b4631c;
+  --ou-status-attention-text: #7a420f;
+  --ou-status-attention-body: #6e5440;
   --ou-status-attention-fg: #221c0d;
   --ou-status-danger: #b3402c;
   --ou-status-danger-text: #a03826;
@@ -287,36 +287,36 @@
 
   /* Tinted fills */
   --ou-fill-running: rgba(47, 127, 87, 0.11);
-  --ou-fill-attention: rgba(168, 112, 28, 0.12);
-  --ou-fill-attention-border: rgba(168, 112, 28, 0.32);
-  --ou-fill-attention-soft: rgba(226, 181, 103, 0.14);
-  --ou-fill-neutral: rgba(22, 21, 18, 0.05);
-  --ou-fill-accent: rgba(196, 74, 37, 0.10);
+  --ou-fill-attention: rgba(180, 99, 28, 0.11);
+  --ou-fill-attention-border: rgba(180, 99, 28, 0.30);
+  --ou-fill-attention-soft: rgba(224, 138, 60, 0.12);
+  --ou-fill-neutral: rgba(20, 19, 16, 0.05);
+  --ou-fill-accent: rgba(199, 159, 69, 0.16);
   --ou-fill-danger: rgba(179, 64, 44, 0.10);
 
   /* Hairlines — ink on paper */
-  --ou-hairline: rgba(22, 21, 18, 0.08);
-  --ou-border-card: rgba(22, 21, 18, 0.10);
-  --ou-border-control: rgba(22, 21, 18, 0.13);
-  --ou-border-hover: rgba(22, 21, 18, 0.26);
-  --ou-border-dashed: rgba(22, 21, 18, 0.18);
-  --ou-ring-inactive: rgba(22, 21, 18, 0.22);
+  --ou-hairline: rgba(20, 19, 16, 0.08);
+  --ou-border-card: rgba(20, 19, 16, 0.10);
+  --ou-border-control: rgba(20, 19, 16, 0.13);
+  --ou-border-hover: rgba(20, 19, 16, 0.26);
+  --ou-border-dashed: rgba(20, 19, 16, 0.18);
+  --ou-ring-inactive: rgba(20, 19, 16, 0.22);
   --ou-inset-top: rgba(255, 255, 255, 0.6);
   --ou-inset-top-strong: rgba(255, 255, 255, 0.85);
 
-  --ou-focus-ring: #c44a25;
+  --ou-focus-ring: #b58e38;
 
   /* Non-var legacy literals that must flip */
-  --ou-accent-glow: rgba(196, 74, 37, 0.12);
-  --ou-glass: rgba(22, 21, 18, 0.04);
-  --ou-scrollbar: rgba(22, 21, 18, 0.16);
-  --ou-scrollbar-hover: rgba(22, 21, 18, 0.30);
+  --ou-accent-glow: rgba(199, 159, 69, 0.14);
+  --ou-glass: rgba(20, 19, 16, 0.04);
+  --ou-scrollbar: rgba(20, 19, 16, 0.16);
+  --ou-scrollbar-hover: rgba(20, 19, 16, 0.30);
   --ou-shadow-lg: 0 24px 48px -24px rgba(22, 21, 18, 0.18);
   --ou-shadow-pop: 0 18px 40px -20px rgba(22, 21, 18, 0.22);
   --ou-shadow-modal: 0 32px 64px -32px rgba(22, 21, 18, 0.28);
 }
 
-/* Ember-tinted text selection across the whole app. */
+/* Gold-tinted text selection across the whole app. */
 ::selection {
   background: var(--ou-fill-accent);
   color: var(--ou-text-max);
@@ -5189,7 +5189,7 @@ body {
 }
 
 /* Recent chats: the list scrolls inside the space left; rows are 40px, title +
-   time, the open chat marked by an ember rule. */
+   time, the open chat marked by a gold rule. */
 .ou-sp-recent { flex: 1 1 auto; min-height: 96px; display: flex; flex-direction: column; overflow: hidden; }
 .ou-sp-recent .ou-conv-scroll { padding: 0 !important; }
 .ou-sp-recent .ou-conv-group-label {
@@ -5515,7 +5515,7 @@ body {
 
 /* ─────────────────────────────────────────────────────────────────────────────
    Approval card (HitlModal.tsx) — the one surface that can't be scrolled past.
-   Same paper/charcoal as the app; ember on the action that makes something
+   Same cream/black as the app; gold on the action that makes something
    happen; details as a hairline-ruled list, not grey boxes.
    ───────────────────────────────────────────────────────────────────────────*/
 .ou-hitl-scrim {
