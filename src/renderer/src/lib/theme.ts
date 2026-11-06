@@ -4,17 +4,17 @@
  * overrides. This module is the single source of truth for the *active*
  * preference so the OS-change listener and the Settings toggle stay in sync.
  *
- *   'dark'   — always dark (the default; also the look when no attribute is set)
+ *   'dark'   — always dark (also the look when no attribute is set)
  *   'light'  — always light
- *   'system' — follow the OS colour scheme, live
+ *   'system' — follow the OS colour scheme, live (the default)
  */
 export type ThemePref = 'system' | 'light' | 'dark'
 
-let currentPref: ThemePref = 'dark'
+let currentPref: ThemePref = 'system'
 
-/** Coerce an untrusted persisted value to a known preference (defaults to dark). */
+/** Coerce an untrusted persisted value to a known preference (defaults to system). */
 export function coerceThemePref(value: unknown): ThemePref {
-  return value === 'light' || value === 'dark' || value === 'system' ? value : 'dark'
+  return value === 'light' || value === 'dark' || value === 'system' ? value : 'system'
 }
 
 function resolve(pref: ThemePref): 'light' | 'dark' {

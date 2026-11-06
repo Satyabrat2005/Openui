@@ -99,11 +99,11 @@ export default function ConsentModal({ onClose }: Props): JSX.Element {
             letterSpacing: '-0.01em'
           }}
         >
-          Help us improve OpenUI
+          Help us improve Splen
         </h3>
 
         <p style={{ margin: '0 0 16px', fontSize: 13, color: 'var(--ou-text-soft)', lineHeight: 1.55 }}>
-          We&apos;d like to collect anonymous usage data to understand how OpenUI is used and make
+          We&apos;d like to collect anonymous usage data to understand how Splen is used and make
           it better.
         </p>
 

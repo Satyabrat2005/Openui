@@ -20,6 +20,50 @@ const MIN_PASSWORD_LENGTH = 8
 
 type Mode = 'signin' | 'register'
 
+/** What Splen is, beside the form: three plain promises, numbered like a spec. */
+const POINTS: Array<[string, string]> = [
+  ['Reads what you missed', 'WhatsApp, Gmail and Telegram, summarised in one place.'],
+  ['Runs on this computer', 'Splen’s model lives on your machine. Your messages never leave it.'],
+  ['Never sends on its own', 'Every reply waits for your OK before it goes out.']
+]
+
+/** The editorial half of the screen — the same on every auth state. */
+function AuthAside(): JSX.Element {
+  return (
+    <aside className="ou-auth-aside">
+      <div className="ou-auth-brand">
+        <svg width="22" height="22" viewBox="0 0 32 32" aria-hidden="true">
+          <path
+            d="M11 3.5c-1.6 3.4-3.2 8.6-3 13.4.2 5.2 3.4 9.6 8.6 9.6 4.8 0 8.2-3.5 8.2-7.8 0-4.1-3-7-6.8-7-3 0-5.4 1.8-6.4 4.4M11 3.5l3.4 2.6"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2.6"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+        <span>Splen</span>
+      </div>
+      <h2 className="ou-auth-headline">
+        Your messages,
+        <br />
+        <em>read for you.</em>
+      </h2>
+      <ol className="ou-auth-points">
+        {POINTS.map(([title, body], i) => (
+          <li key={title}>
+            <span className="ou-auth-num">{String(i + 1).padStart(2, '0')}</span>
+            <span>
+              <strong>{title}</strong>
+              {body}
+            </span>
+          </li>
+        ))}
+      </ol>
+    </aside>
+  )
+}
+
 export default function AuthScreen(): JSX.Element {
   const [mode, setMode] = useState<Mode>('signin')
   const [email, setEmail] = useState('')
@@ -77,8 +121,8 @@ export default function AuthScreen(): JSX.Element {
   if (confirmSent) {
     return (
       <div className="ou-auth" data-testid="auth-screen">
+        <AuthAside />
         <div className="ou-auth-card">
-          <div className="ou-auth-mark" aria-hidden="true" />
           <h1 className="ou-auth-title">Check your email</h1>
           <p className="ou-auth-sub">
             We sent a confirmation link to <strong>{email}</strong>. Open it to finish creating your
@@ -94,13 +138,13 @@ export default function AuthScreen(): JSX.Element {
 
   return (
     <div className="ou-auth" data-testid="auth-screen">
+      <AuthAside />
       <form className="ou-auth-card" onSubmit={(e) => void submit(e)}>
-        <div className="ou-auth-mark" aria-hidden="true" />
-        <h1 className="ou-auth-title">{registering ? 'Create your account' : 'Sign in to OpenUI'}</h1>
+        <h1 className="ou-auth-title">{registering ? 'Create your account' : 'Welcome back'}</h1>
         <p className="ou-auth-sub">
           {registering
-            ? 'An account unlocks the assistant and its models. Everything still runs on your machine.'
-            : 'Sign in to use the assistant. Everything still runs on your machine.'}
+            ? 'Your account unlocks Splen and its model. Everything still runs on this computer.'
+            : 'Sign in to pick up where you left off — your chats are right where you left them.'}
         </p>
 
         <div className="ou-auth-tabs" role="tablist" aria-label="Account">
@@ -160,7 +204,7 @@ export default function AuthScreen(): JSX.Element {
         )}
 
         <button type="submit" className="ou-auth-primary" disabled={busy}>
-          {busy ? 'Working…' : registering ? 'Create account' : 'Sign in'}
+          {busy ? (registering ? 'Creating your account…' : 'Signing in…') : registering ? 'Create account' : 'Sign in'}
         </button>
 
         <p className="ou-auth-legal">

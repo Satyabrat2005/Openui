@@ -96,8 +96,8 @@ export default function ConversationList({ onSelect, selectedId }: Props): JSX.E
 
   if (!conversations.length) {
     return (
-      <div style={{ padding: '12px 16px', fontSize: 12, color: 'var(--ou-text-faint)' }}>
-        No conversations yet.
+      <div style={{ padding: '8px 10px', fontSize: 13, lineHeight: 1.5, color: 'var(--ou-text-meta)' }}>
+        No chats yet. They’ll show up here.
       </div>
     )
   }

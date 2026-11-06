@@ -25,7 +25,7 @@ vi.hoisted(() => {
 vi.mock('./components/RunConsole', () => ({
   default: () => <div data-testid="run-console">RUN CONSOLE</div>
 }))
-vi.mock('./components/onboarding/OnboardingWizard', () => ({
+vi.mock('./components/onboarding/SplenSetup', () => ({
   default: () => <div data-testid="onboarding">ONBOARDING</div>
 }))
 vi.mock('./components/WhatsAppAutoReplyBanner', () => ({ default: () => null }))

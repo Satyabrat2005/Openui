@@ -212,73 +212,113 @@ describe('RunConsole — approvals always use the modal', () => {
   })
 })
 
-describe('RunConsole — first-run model download', () => {
+describe('RunConsole — getting Splen onto the computer', () => {
+  const api = (): Record<string, ReturnType<typeof vi.fn>> =>
+    (window as unknown as { openui: Record<string, ReturnType<typeof vi.fn>> }).openui
+  const SPLEN = 'openui/splen:4b'
+  const row = (installed: boolean): unknown => ({
+    id: SPLEN, label: 'Splen 4B', purpose: '', approxSize: 'about 2.8 GB', installed, downloading: false
+  })
   // The subscription callback is invoked from outside React, so it must be
   // wrapped in act() or the resulting setState never flushes to the DOM.
   function fire<T>(name: string, payload: T): void {
-    const api = (window as unknown as { openui: Record<string, ReturnType<typeof vi.fn>> }).openui
-    const cb = api[name].mock.calls[0][0] as (p: T) => void
+    const cb = api()[name].mock.calls[0][0] as (p: T) => void
     act(() => cb(payload))
   }
 
-  it('shows no download bar when nothing is downloading', () => {
+  it('shows no strip once Splen is installed', async () => {
+    api().listLocalModels = vi.fn(() => Promise.resolve([row(true)]))
     render(<RunConsole />)
-    expect(document.querySelector('[data-testid="model-pull"]')).toBeNull()
+    await waitFor(() => expect(api().listLocalModels).toHaveBeenCalled())
+    expect(screen.queryByTestId('model-strip')).toBeNull()
   })
 
-  it('renders real percentage and byte progress', () => {
+  it('shows no strip when the server does not offer Splen yet', async () => {
+    api().listLocalModels = vi.fn(() => Promise.resolve([]))
     render(<RunConsole />)
-    fire('onModelPull', {
-      model: 'qwen2.5-coder:7b',
-      status: 'pulling abc123',
-      percent: 42,
-      completed: 2_000_000_000,
-      total: 4_700_000_000,
-      layer: 'abc123456789',
-      done: false
-    })
-    const bar = document.querySelector('[data-testid="model-pull"]') as HTMLElement
-    expect(bar).toBeTruthy()
-    expect(bar.textContent).toContain('Downloading Qwen 2.5 Coder 7B')
-    expect(bar.textContent).toContain('42%')
-    expect(bar.textContent).toContain('1.9 GB')
-    expect(bar.textContent).toContain('4.4 GB')
-    const fill = bar.querySelector('.ou-sp-pull-fill') as HTMLElement
-    expect(fill.style.width).toBe('42%')
+    await waitFor(() => expect(api().listLocalModels).toHaveBeenCalled())
+    expect(screen.queryByTestId('model-strip')).toBeNull()
+  })
+
+  it('offers the one download a new user needs, and starts it', async () => {
+    api().listLocalModels = vi.fn(() => Promise.resolve([row(false)]))
+    api().downloadModel = vi.fn(() => new Promise(() => {}))
+    render(<RunConsole />)
+    const strip = await screen.findByTestId('model-strip')
+    expect(strip.textContent).toContain('Download Splen to get started')
+    expect(strip.textContent).toContain('about 2.8 GB')
+    fireEvent.click(screen.getByRole('button', { name: 'Download' }))
+    expect(api().downloadModel).toHaveBeenCalledWith(SPLEN)
+  })
+
+  it('renders real percentage and byte progress', async () => {
+    api().listLocalModels = vi.fn(() => Promise.resolve([row(false)]))
+    render(<RunConsole />)
+    await screen.findByTestId('model-strip')
+    fire('onModelPull', { model: SPLEN, status: 'downloading', percent: 42, completed: 2_000_000_000, total: 4_700_000_000, layer: null, done: false })
+    const strip = screen.getByTestId('model-strip')
+    expect(strip.textContent).toContain('Downloading Splen')
+    expect(strip.textContent).toContain('42%')
+    expect(strip.textContent).toContain('1.9 GB')
+    expect(strip.textContent).toContain('4.4 GB')
+    expect((strip.querySelector('.ou-sp-model-fill') as HTMLElement).style.width).toBe('42%')
   })
 
   // A 0%-width bar is what made this look frozen. Phases with no byte counts
   // must show their status text and an indeterminate fill instead.
-  it('shows the phase text, not a 0% bar, when there are no byte counts', () => {
+  it('shows the phase text, not a 0% bar, when there are no byte counts', async () => {
+    api().listLocalModels = vi.fn(() => Promise.resolve([row(false)]))
     render(<RunConsole />)
-    fire('onModelPull', {
-      model: 'qwen3.5:latest',
-      status: 'pulling manifest',
-      percent: null,
-      completed: null,
-      total: null,
-      layer: null,
-      done: false
-    })
-    const bar = document.querySelector('[data-testid="model-pull"]') as HTMLElement
-    expect(bar.textContent).toContain('pulling manifest')
-    expect(bar.textContent).not.toContain('0%')
-    expect(bar.querySelector('.ou-sp-pull-fill.idle')).toBeTruthy()
+    await screen.findByTestId('model-strip')
+    fire('onModelPull', { model: SPLEN, status: 'checking the file', percent: null, completed: null, total: null, layer: null, done: false })
+    const strip = screen.getByTestId('model-strip')
+    expect(strip.textContent).toContain('checking the file')
+    expect(strip.textContent).not.toContain('0%')
+    expect(strip.querySelector('.ou-sp-model-fill.idle')).toBeTruthy()
   })
 
-  it('surfaces a download failure instead of silently clearing', () => {
+  it('says why a download stopped and offers Try again', async () => {
+    api().listLocalModels = vi.fn(() => Promise.resolve([row(false)]))
+    api().downloadModel = vi.fn(() => Promise.resolve({ ok: false, code: 'network', message: 'The connection was lost.' }))
     render(<RunConsole />)
-    fire('onModelPull', {
-      model: 'bad:7b',
-      status: 'error',
-      percent: null,
-      completed: null,
-      total: null,
-      layer: null,
-      done: false,
-      error: 'file does not exist'
-    })
-    const bar = document.querySelector('[data-testid="model-pull"]') as HTMLElement
-    expect(bar.textContent).toContain('file does not exist')
+    await screen.findByTestId('model-strip')
+    fireEvent.click(screen.getByRole('button', { name: 'Download' }))
+    await waitFor(() => expect(screen.getByTestId('model-strip').textContent).toContain('The connection was lost.'))
+    expect(screen.getByRole('button', { name: 'Try again' })).toBeTruthy()
+  })
+})
+
+describe('RunConsole — empty, loading and failed states', () => {
+  const api = (): Record<string, ReturnType<typeof vi.fn>> =>
+    (window as unknown as { openui: Record<string, ReturnType<typeof vi.fn>> }).openui
+
+  it('an empty chat offers things to try; picking one fills the box and sends nothing', () => {
+    render(<RunConsole />)
+    fireEvent.click(screen.getByRole('button', { name: /Summarise my unread WhatsApp chats/ }))
+    expect((screen.getByLabelText('Describe a task or ask a question') as HTMLTextAreaElement).value).toBe('Summarise my unread WhatsApp chats')
+    expect(api().chat).not.toHaveBeenCalled()
+  })
+
+  it('a failed run says so and Try again resends it', () => {
+    activity.tasks = [card({ id: 'f', title: 'read my chat with Ashu', status: 'failed', answer: 'WhatsApp is not open.' })]
+    render(<RunConsole />)
+    expect(screen.getByRole('alert').textContent).toContain('WhatsApp is not open.')
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }))
+    expect(activity.beginTask).toHaveBeenCalledWith('read my chat with Ashu', 'chat')
+    expect(api().chat).toHaveBeenCalledWith('read my chat with Ashu', 'free')
+  })
+
+  it('a reopened chat shows a skeleton while it loads', async () => {
+    api().resumeConversation = vi.fn(() => new Promise(() => {}))
+    render(<RunConsole />)
+    fireEvent.click(screen.getByRole('button', { name: 'Saved chat' }))
+    expect(await screen.findByTestId('thread-loading')).toBeTruthy()
+  })
+
+  it('a chat that cannot be reopened says so, with a way out', async () => {
+    api().resumeConversation = vi.fn(() => Promise.reject(new Error('gone')))
+    render(<RunConsole />)
+    fireEvent.click(screen.getByRole('button', { name: 'Saved chat' }))
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('couldn’t be opened'))
   })
 })

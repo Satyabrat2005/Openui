@@ -17,7 +17,7 @@ import type { BuddyPose } from '../lib/buddyPose'
 
 type Limb = { d: string; w: number }
 
-const ACCENTS = ['#2f8fe0', '#e2b567', '#5fbf95'] as const
+const ACCENTS = ['var(--ou-accent)'] as const
 
 function Limbs({ limbs }: { limbs: Limb[] }): JSX.Element {
   return (

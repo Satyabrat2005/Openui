@@ -17,7 +17,7 @@ export default function UpdateBanner({ version, isMac, onDownload, onDismiss }: 
 
   return (
     <div style={bannerStyle} className="update-banner-slide-in">
-      <span style={textStyle}>OpenUI v{version} is available</span>
+      <span style={textStyle}>Splen v{version} is available</span>
       <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
         <button style={downloadBtn} onClick={onDownload}>
           {isMac ? 'Open Download Page' : 'Download'}
