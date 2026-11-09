@@ -39,7 +39,11 @@ vi.mock('./ConnectAppsModal', () => ({
   getConnections: () => [],
   subscribeConnections: () => () => {}
 }))
-vi.mock('./SettingsModal', () => ({ default: () => null }))
+vi.mock('./SettingsModal', () => ({
+  default: ({ initialSection, initialChannel }: { initialSection?: string; initialChannel?: string }) => (
+    <div data-testid="settings" data-section={initialSection} data-channel={initialChannel} />
+  )
+}))
 // Recent chats: one saved chat, so a test can reopen it from the sidebar.
 vi.mock('./ConversationList', () => ({
   default: ({ onSelect }: { onSelect: (id: string) => void }) => (
@@ -320,5 +324,26 @@ describe('RunConsole — empty, loading and failed states', () => {
     render(<RunConsole />)
     fireEvent.click(screen.getByRole('button', { name: 'Saved chat' }))
     await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('couldn’t be opened'))
+  })
+})
+
+describe('RunConsole — the way into Settings', () => {
+  it('Settings opens on General; a channel opens its own row', () => {
+    render(<RunConsole />)
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    expect(screen.getByTestId('settings').getAttribute('data-section')).toBe('general')
+    cleanup()
+    render(<RunConsole />)
+    fireEvent.click(screen.getByTitle('Set up Telegram in Settings'))
+    expect(screen.getByTestId('settings').getAttribute('data-section')).toBe('channels')
+    expect(screen.getByTestId('settings').getAttribute('data-channel')).toBe('telegram')
+  })
+
+  it('a saved Telegram token shows the channel as on', async () => {
+    const api = (window as unknown as { openui: Record<string, ReturnType<typeof vi.fn>> }).openui
+    api.getSetting = vi.fn((key: string) => Promise.resolve(key === 'telegram_bot_token' ? '123:abc' : undefined))
+    render(<RunConsole />)
+    expect(await screen.findByText('Telegram connected')).toBeTruthy()
+    expect(screen.queryByText('Slack connected')).toBeNull()
   })
 })
