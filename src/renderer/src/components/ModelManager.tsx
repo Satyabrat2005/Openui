@@ -36,7 +36,7 @@ interface FailState {
   installUrl?: string
 }
 
-export default function ModelManager(): JSX.Element {
+export default function ModelManager({ showHeading = true }: { showHeading?: boolean }): JSX.Element {
   const [models, setModels] = useState<ModelStatus[] | null>(null)
   const [progress, setProgress] = useState<Record<string, ModelPullProgress>>({})
   const [failures, setFailures] = useState<Record<string, FailState>>({})
@@ -93,7 +93,7 @@ export default function ModelManager(): JSX.Element {
   if (models === null) {
     return (
       <div className="ou-models" data-testid="model-manager">
-        <div className="ou-settings-label">Local model</div>
+        {showHeading && <div className="ou-settings-label">Local model</div>}
         <div className="ou-settings-desc">Checking which models are installed…</div>
       </div>
     )
@@ -101,10 +101,14 @@ export default function ModelManager(): JSX.Element {
 
   return (
     <div className="ou-models" data-testid="model-manager">
-      <div className="ou-settings-label">Model</div>
-      <div className="ou-settings-desc" style={{ marginBottom: 10 }}>
-        Splen runs on this computer. Download its model once, here.
-      </div>
+      {showHeading && (
+        <>
+          <div className="ou-settings-label">Model</div>
+          <div className="ou-settings-desc" style={{ marginBottom: 10 }}>
+            Splen runs on this computer. Download its model once, here.
+          </div>
+        </>
+      )}
 
       {models.length === 0 && (
         <div className="ou-settings-desc" data-testid="model-none">

@@ -1,13 +1,35 @@
-import { useEffect, useState } from 'react'
+import { isValidElement, useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react'
+import {
+  Brain,
+  Check,
+  ChevronDown,
+  Copy,
+  Cpu,
+  Gauge,
+  Hash,
+  KeyRound,
+  Mail,
+  MessageCircle,
+  MessagesSquare,
+  Monitor,
+  Moon,
+  Send,
+  ShieldCheck,
+  SlidersHorizontal,
+  Sun,
+  Wrench,
+  X,
+  type LucideIcon
+} from 'lucide-react'
 import type { AutonomyLevel, ChannelMemory, ConsentStatus, WhatsAppAutoReplyConfig } from '../env'
 import type { UpdateStatus } from '../hooks/useUpdater'
 import { applyTheme, coerceThemePref, type ThemePref } from '../lib/theme'
 import ModelManager from './ModelManager'
 
-const THEME_OPTIONS: { value: ThemePref; label: string }[] = [
-  { value: 'system', label: 'System' },
-  { value: 'light', label: 'Light' },
-  { value: 'dark', label: 'Dark' }
+const THEME_OPTIONS: { value: ThemePref; label: string; Icon: LucideIcon }[] = [
+  { value: 'system', label: 'System', Icon: Monitor },
+  { value: 'light', label: 'Light', Icon: Sun },
+  { value: 'dark', label: 'Dark', Icon: Moon }
 ]
 
 const AUTONOMY_OPTIONS: { value: AutonomyLevel; label: string; hint: string }[] = [
@@ -31,15 +53,13 @@ const OCR_LANGUAGE_OPTIONS: { value: string; label: string }[] = [
   { value: 'chi_sim', label: 'Chinese (Simplified)' }
 ]
 
-// Display names + accent colours for the four channels cross-channel memory
-// covers. Keys match MemoryChannel in src/main/channelMemory.ts.
-// (--ou-violet is folded onto the accent in index.css — purple is banned — so
-// the four colours are drawn from success / accent / warn / danger instead.)
-const MEMORY_CHANNELS: Record<string, { label: string; color: string }> = {
-  whatsapp: { label: 'WhatsApp', color: 'var(--ou-success)' },
-  telegram: { label: 'Telegram', color: 'var(--ou-accent-text)' },
-  slack: { label: 'Slack', color: 'var(--ou-warn)' },
-  gmail: { label: 'Gmail', color: 'var(--ou-danger-text)' }
+// Display names for the four channels cross-channel memory covers. Keys match
+// MemoryChannel in src/main/channelMemory.ts.
+const MEMORY_CHANNELS: Record<string, string> = {
+  whatsapp: 'WhatsApp',
+  telegram: 'Telegram',
+  slack: 'Slack',
+  gmail: 'Gmail'
 }
 
 /** "2h ago" from a unix-seconds timestamp, for the memory list. */
@@ -65,22 +85,72 @@ const CLOUD_TIER_ENABLED = false
 // texting agent, so Settings shows only what it uses. Flip to bring them back.
 const SHOW_EXTRA_SETTINGS = false
 
+export type SettingsSection = 'general' | 'model' | 'channels' | 'keys' | 'memory' | 'usage' | 'privacy' | 'advanced'
+export type SettingsChannel = 'whatsapp' | 'gmail' | 'telegram' | 'slack'
+
+const SECTIONS: { id: SettingsSection; label: string; Icon: LucideIcon }[] = [
+  { id: 'general', label: 'General', Icon: SlidersHorizontal },
+  { id: 'model', label: 'Model', Icon: Cpu },
+  { id: 'channels', label: 'Channels', Icon: MessagesSquare },
+  { id: 'keys', label: 'Keys', Icon: KeyRound },
+  { id: 'memory', label: 'Memory', Icon: Brain },
+  { id: 'usage', label: 'Usage', Icon: Gauge },
+  { id: 'privacy', label: 'Privacy & safety', Icon: ShieldCheck },
+  ...(CLOUD_TIER_ENABLED || SHOW_EXTRA_SETTINGS
+    ? [{ id: 'advanced' as const, label: 'Advanced', Icon: Wrench }]
+    : [])
+]
+
+const SECTION_INTRO: Record<SettingsSection, { title: string; intro: string }> = {
+  general: { title: 'General', intro: 'How Splen looks, and which version you’re on.' },
+  model: { title: 'Model', intro: 'Splen runs on this computer. Download its model once, here.' },
+  channels: { title: 'Channels', intro: 'Where your messages are. Open one to set it up.' },
+  keys: { title: 'Keys', intro: 'Tokens you’ve given Splen. They’re encrypted and stay on this computer.' },
+  memory: {
+    title: 'Memory',
+    intro: 'One-line notes Splen keeps after reading or sending a message, and uses as context later, even on a different channel. Stored only on this computer. Forget anything and it stops being used immediately.'
+  },
+  usage: { title: 'Usage', intro: 'How much you’ve used Splen. Counted on this computer.' },
+  privacy: { title: 'Privacy & safety', intro: 'What Splen may do on its own, and what you share with us.' },
+  advanced: { title: 'Advanced', intro: 'Options outside the texting agent.' }
+}
+
+interface UsageData {
+  today: Awaited<ReturnType<typeof window.openui.getUsageToday>>
+  summary: Awaited<ReturnType<typeof window.openui.getUsageSummary>>
+}
+
 interface Props {
   onClose: () => void
   appVersion?: string
   updateStatus?: UpdateStatus
   onCheckForUpdates?: () => void
+  /** Which section to open on (default General). */
+  initialSection?: SettingsSection
+  /** A channel to open expanded, for "Set up WhatsApp" style entry points. */
+  initialChannel?: SettingsChannel
 }
 
 /**
- * Lightweight settings sheet. Currently hosts the privacy controls — the
- * "Anonymous Usage Analytics" toggle, which mirrors the first-launch consent
- * choice and lets the user change their mind at any time. Flipping it ON grants
- * consent (and brings PostHog online); flipping it OFF denies consent (and shuts
- * PostHog down). The toggle stays in sync with changes made elsewhere via the
- * onConsentUpdated event.
+ * The Settings panel: a section list on the left, the section on the right.
+ * Every control persists to the same setting it always did; only what the user
+ * sees changed. The analytics toggle mirrors the first-launch consent choice and
+ * stays in sync with changes made elsewhere via the onConsentUpdated event.
  */
-export default function SettingsModal({ onClose, appVersion, updateStatus, onCheckForUpdates }: Props): JSX.Element {
+export default function SettingsModal({
+  onClose,
+  appVersion,
+  updateStatus,
+  onCheckForUpdates,
+  initialSection = 'general',
+  initialChannel
+}: Props): JSX.Element {
+  const [active, setActive] = useState<SettingsSection>(initialSection)
+  const [openChannel, setOpenChannel] = useState<SettingsChannel | null>(initialChannel ?? null)
+  const toggleChannel = (id: SettingsChannel): void => setOpenChannel((cur) => (cur === id ? null : id))
+  const panelRef = useRef<HTMLDivElement>(null)
+  const navRef = useRef<HTMLDivElement>(null)
+  const scrollRef = useRef<HTMLDivElement>(null)
   const [enabled, setEnabled] = useState(false)
   const [busy, setBusy] = useState(false)
   // Appearance: light / dark / follow-OS. Default matches the app default (dark).
@@ -105,6 +175,8 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
   // and pastes here; read by the main-process Telegram tools (never a proxy —
   // a bot token is inherently user-owned, like the Figma/GitHub PATs).
   const [telegramToken, setTelegramToken] = useState('')
+  // What is actually saved, as opposed to what is typed in the box right now.
+  const [telegramStored, setTelegramStored] = useState('')
   // The bot Telegram confirmed for the pasted token (verifyTelegramToken).
   const [telegramBot, setTelegramBot] = useState<string | null>(null)
   const [telegramBusy, setTelegramBusy] = useState(false)
@@ -112,6 +184,7 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
   // Slack bot/user token — read by the main-process Slack tools when the
   // SLACK_TOKEN env var is absent. Same per-user credential reasoning as Figma/GitHub.
   const [slackToken, setSlackToken] = useState('')
+  const [slackStored, setSlackStored] = useState('')
   const [slackSaved, setSlackSaved] = useState(false)
   // Cloud AI (bring-your-own-key): an Anthropic key plus an explicit routing
   // toggle. BOTH are required before any turn leaves the machine — the key is
@@ -151,6 +224,7 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
   // watcher only ever COMPOSES a suggested reply for these contacts — sending
   // stays a human click. Default-off; empty allowlist means nothing runs.
   const [waConfig, setWaConfig] = useState<WhatsAppAutoReplyConfig | null>(null)
+  const [waLoadFailed, setWaLoadFailed] = useState(false)
   const [waSaved, setWaSaved] = useState(false)
   const [waNewName, setWaNewName] = useState('')
   const [waNewInstruction, setWaNewInstruction] = useState('')
@@ -160,7 +234,9 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
   // delete any of it. Read-only from the renderer — the agent loop is the sole
   // writer (see channelMemory.ts).
   const [memories, setMemories] = useState<ChannelMemory[]>([])
+  const [memoriesState, setMemoriesState] = useState<'loading' | 'ready' | 'failed'>('loading')
   const [memoryConfirmClear, setMemoryConfirmClear] = useState(false)
+  const [usage, setUsage] = useState<UsageData | 'loading' | 'failed'>('loading')
 
   useEffect(() => {
     let cancelled = false
@@ -211,7 +287,10 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
     window.openui
       .getSetting('telegram_bot_token')
       .then((value) => {
-        if (!cancelled && typeof value === 'string') setTelegramToken(value)
+        if (!cancelled && typeof value === 'string') {
+          setTelegramToken(value)
+          setTelegramStored(value)
+        }
       })
       .catch(() => {})
 
@@ -225,7 +304,10 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
     window.openui
       .getSetting('slack_token')
       .then((value) => {
-        if (!cancelled && typeof value === 'string') setSlackToken(value)
+        if (!cancelled && typeof value === 'string') {
+          setSlackToken(value)
+          setSlackStored(value)
+        }
       })
       .catch(() => {})
 
@@ -234,7 +316,9 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
       .then((cfg) => {
         if (!cancelled) setWaConfig(cfg)
       })
-      .catch(() => {})
+      .catch(() => {
+        if (!cancelled) setWaLoadFailed(true)
+      })
 
     window.openui
       .getSetting('anthropic_api_key')
@@ -307,9 +391,22 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
     window.openui
       .listMemories()
       .then((rows) => {
-        if (!cancelled) setMemories(rows)
+        if (!cancelled) {
+          setMemories(rows)
+          setMemoriesState('ready')
+        }
       })
-      .catch(() => {})
+      .catch(() => {
+        if (!cancelled) setMemoriesState('failed')
+      })
+
+    Promise.all([window.openui.getUsageToday(), window.openui.getUsageSummary(30)])
+      .then(([today, summary]) => {
+        if (!cancelled) setUsage({ today, summary })
+      })
+      .catch(() => {
+        if (!cancelled) setUsage('failed')
+      })
 
     const off = window.openui.onConsentUpdated((status: ConsentStatus) => {
       setEnabled(status === 'granted')
@@ -422,6 +519,7 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
       const result = await window.openui.telegramConnect(telegramToken.trim())
       if (result.ok) {
         setTelegramBot(result.username)
+        setTelegramStored(telegramToken.trim())
         setTelegramMessage('')
       } else {
         setTelegramBot(null)
@@ -438,6 +536,7 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
     void window.openui
       .setSetting('slack_token', slackToken.trim())
       .then(() => {
+        setSlackStored(slackToken.trim())
         setSlackSaved(true)
         window.setTimeout(() => setSlackSaved(false), 1500)
       })
@@ -608,596 +707,628 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [onClose])
 
+  // Focus moves into the dialog on open, so Tab starts at the section list;
+  // each section starts at the top.
+  useEffect(() => {
+    panelRef.current?.focus({ preventScroll: true })
+  }, [])
+  useEffect(() => {
+    if (scrollRef.current) scrollRef.current.scrollTop = 0
+  }, [active])
+
+  /** Up/Down/Home/End move between sections, as in any vertical tab list. */
+  const onNavKey = (e: ReactKeyboardEvent<HTMLDivElement>): void => {
+    const at = SECTIONS.findIndex((x) => x.id === active)
+    const next =
+      e.key === 'ArrowDown' ? (at + 1) % SECTIONS.length
+      : e.key === 'ArrowUp' ? (at - 1 + SECTIONS.length) % SECTIONS.length
+      : e.key === 'Home' ? 0
+      : e.key === 'End' ? SECTIONS.length - 1
+      : -1
+    if (next < 0) return
+    e.preventDefault()
+    setActive(SECTIONS[next].id)
+    navRef.current?.querySelectorAll<HTMLElement>('[role="tab"]')[next]?.focus()
+  }
+
+  /** Clear saved credentials, then the fields that show them. */
+  const removeKeys = (settings: string[], clear: () => void): void => {
+    void Promise.all(settings.map((key) => window.openui.setSetting(key, '')))
+      .then(clear)
+      .catch(() => {})
+  }
+
+  const savedKeys = [
+    telegramStored.trim() && {
+      id: 'telegram',
+      label: 'Telegram bot token',
+      hint: 'Removing it here stops Splen using the bot. To cancel the token itself, ask @BotFather.',
+      value: telegramStored,
+      remove: () =>
+        removeKeys(['telegram_bot_token'], () => {
+          setTelegramStored('')
+          setTelegramToken('')
+          setTelegramBot(null)
+        })
+    },
+    slackStored.trim() && {
+      id: 'slack',
+      label: 'Slack token',
+      hint: 'Removing it here stops Splen using Slack. To cancel the token itself, use api.slack.com/apps.',
+      value: slackStored,
+      remove: () =>
+        removeKeys(['slack_token'], () => {
+          setSlackStored('')
+          setSlackToken('')
+        })
+    },
+    gcalClientId.trim() && {
+      id: 'google',
+      label: 'Google OAuth client',
+      hint: 'Your own Google Cloud client, used to sign in to Gmail. Removing it means connecting Gmail again.',
+      value: gcalClientId,
+      remove: () =>
+        removeKeys(['google_oauth_client_id', 'google_oauth_client_secret'], () => {
+          setGcalClientId('')
+          setGcalClientSecret('')
+        })
+    }
+  ].filter((k): k is Exclude<typeof k, '' | false> => Boolean(k))
+
+  const panel = SECTION_INTRO[active]
+
   return (
     <div
       role="dialog"
       aria-modal="true"
       aria-label="Settings"
-      className="ou-settings-scrim"
+      className="ou-set-scrim"
       onMouseDown={(e) => {
-        // Click outside the card dismisses; clicks inside are stopped below.
+        // Click outside the panel dismisses; clicks inside are stopped below.
         e.stopPropagation()
         onClose()
       }}
     >
-      <div className="ou-settings" onMouseDown={(e) => e.stopPropagation()}>
-        <div className="ou-settings-head">
-          <h3 className="ou-settings-title">Settings</h3>
-          <button
-            type="button"
-            aria-label="Close settings"
-            className="ou-settings-close"
-            onClick={onClose}
+      <div ref={panelRef} tabIndex={-1} className="ou-set" onMouseDown={(e) => e.stopPropagation()}>
+        <aside className="ou-set-nav">
+          <div className="ou-set-nav-title">Settings</div>
+          <div
+            ref={navRef}
+            role="tablist"
+            aria-orientation="vertical"
+            aria-label="Settings sections"
+            className="ou-set-nav-list"
+            onKeyDown={onNavKey}
           >
-            ×
+            {SECTIONS.map(({ id, label, Icon }) => (
+              <button
+                key={id}
+                id={`settings-tab-${id}`}
+                type="button"
+                role="tab"
+                aria-selected={active === id}
+                aria-controls="settings-panel"
+                tabIndex={active === id ? 0 : -1}
+                className={`ou-set-nav-item${active === id ? ' active' : ''}`}
+                onClick={() => setActive(id)}
+              >
+                <Icon size={16} strokeWidth={1.75} aria-hidden="true" />
+                <span>{label}</span>
+              </button>
+            ))}
+          </div>
+          <div className="ou-set-nav-foot">Splen{appVersion ? ` v${appVersion}` : ''}</div>
+        </aside>
+
+        <div className="ou-set-main">
+          <button type="button" aria-label="Close settings" className="ou-set-close" onClick={onClose}>
+            <X size={18} strokeWidth={1.75} aria-hidden="true" />
           </button>
-        </div>
 
-        {/* Appearance: light / dark / follow-OS */}
-        <div>
-          <div className="ou-settings-label">Appearance</div>
-          <div className="ou-settings-desc" style={{ marginBottom: 10 }}>
-            Choose a light or dark look, or follow your system setting.
-          </div>
-          <div className="ou-seg" role="radiogroup" aria-label="Appearance">
-            {THEME_OPTIONS.map((opt) => (
-              <button
-                key={opt.value}
-                type="button"
-                role="radio"
-                aria-checked={theme === opt.value}
-                onClick={() => chooseTheme(opt.value)}
-                className={`ou-seg-btn${theme === opt.value ? ' active' : ''}`}
-              >
-                {opt.label}
-              </button>
-            ))}
-          </div>
-        </div>
+          <div
+            ref={scrollRef}
+            id="settings-panel"
+            role="tabpanel"
+            aria-labelledby={`settings-tab-${active}`}
+            className="ou-set-scroll"
+          >
+            <div className="ou-set-pane" key={active}>
+              <header className="ou-set-head">
+                <h2 className="ou-set-title">{panel.title}</h2>
+                <p className="ou-set-intro">{panel.intro}</p>
+              </header>
 
-        <div className="ou-settings-group">Splen</div>
+              {active === 'general' && (
+                <>
+                  <Group title="Appearance">
+                    <Row title="Theme" desc="Follow your computer, or pick one.">
+                      <div className="ou-seg" role="radiogroup" aria-label="Appearance">
+                        {THEME_OPTIONS.map(({ value, label, Icon }) => (
+                          <button
+                            key={value}
+                            type="button"
+                            role="radio"
+                            aria-checked={theme === value}
+                            onClick={() => chooseTheme(value)}
+                            className={`ou-seg-btn${theme === value ? ' active' : ''}`}
+                          >
+                            <Icon size={14} strokeWidth={1.75} aria-hidden="true" />
+                            {label}
+                          </button>
+                        ))}
+                      </div>
+                    </Row>
+                  </Group>
 
-        {/* Local model: the in-app download path. This is the ONLY place the app
-            documents how to get a model — there is no terminal instruction
-            anywhere in the product. */}
-        <div className="ou-settings-section">
-          <ModelManager />
-        </div>
-
-        <div className="ou-settings-group">Channels</div>
-
-        {/* WhatsApp allowlisted auto-reply. Compose-and-click by design: the
-            watcher only drafts suggestions for these contacts; sending is always
-            a human click. Default-off; empty allowlist = nothing runs. */}
-        {waConfig && (
-          <div className="ou-settings-section">
-            <div className="ou-settings-headrow">
-              <div className="ou-settings-label">WhatsApp auto-reply</div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                {waSaved && <span className="ou-settings-saved">Saved</span>}
-                <span
-                  style={{
-                    fontSize: 11,
-                    fontWeight: 600,
-                    color: waConfig.enabled ? 'var(--ou-success)' : 'var(--ou-text-faint)',
-                    background: waConfig.enabled ? 'var(--ou-success-soft)' : 'var(--ou-surface-2)',
-                    borderRadius: 999,
-                    padding: '2px 8px'
-                  }}
-                >
-                  {waConfig.enabled ? 'ON' : 'OFF'}
-                </span>
-              </div>
-            </div>
-            <div className="ou-settings-desc" style={{ marginBottom: 10 }}>
-              When on, Splen watches for new WhatsApp messages from the contacts you list below and{' '}
-              <strong style={{ color: 'var(--ou-text)' }}>drafts a suggested reply</strong> for each. It never sends on its
-              own — you review every draft and click to send. Nothing runs for anyone not on this list.
-            </div>
-
-            <label style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', marginBottom: 12 }}>
-              <input type="checkbox" checked={waConfig.enabled} onChange={toggleWaEnabled} />
-              <span style={{ fontSize: 12.5, color: 'var(--ou-text)' }}>
-                Enable the background watcher {waConfig.allowlist.length === 0 && '(add a contact below first)'}
-              </span>
-            </label>
-
-            {/* Current allowlist */}
-            {waConfig.allowlist.length > 0 && (
-              <div style={{ marginBottom: 10 }}>
-                {waConfig.allowlist.map((entry) => (
-                  <div
-                    key={entry.name}
-                    style={{
-                      display: 'flex',
-                      alignItems: 'flex-start',
-                      justifyContent: 'space-between',
-                      gap: 8,
-                      border: '1px solid var(--ou-border)',
-                      borderRadius: 8,
-                      padding: '7px 10px',
-                      marginBottom: 6
-                    }}
-                  >
-                    <div style={{ minWidth: 0 }}>
-                      <div style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--ou-text)' }}>{entry.name}</div>
-                      {entry.instruction && (
-                        <div style={{ fontSize: 11.5, color: 'var(--ou-text-dim)', lineHeight: 1.4, marginTop: 2 }}>
-                          {entry.instruction}
-                        </div>
-                      )}
-                    </div>
-                    <button
-                      onClick={() => removeWaContact(entry.name)}
-                      aria-label={`Remove ${entry.name} from the auto-reply allowlist`}
-                      style={{
-                        border: 'none',
-                        background: 'transparent',
-                        color: 'var(--ou-danger)',
-                        fontSize: 12,
-                        fontWeight: 600,
-                        cursor: 'pointer',
-                        flexShrink: 0
-                      }}
-                    >
-                      Remove
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
-
-            {/* Add a contact */}
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-              <input
-                type="text"
-                className="ou-settings-input"
-                value={waNewName}
-                onChange={(e) => setWaNewName(e.target.value)}
-                placeholder="Contact or group name (exactly as in WhatsApp)"
-                aria-label="Contact or group name to allow auto-reply drafts for"
-                spellCheck={false}
-              />
-              <input
-                type="text"
-                className="ou-settings-input"
-                value={waNewInstruction}
-                onChange={(e) => setWaNewInstruction(e.target.value)}
-                placeholder="Optional instruction, e.g. “reply as if I'm busy, keep it short”"
-                aria-label="Optional per-contact reply instruction"
-                spellCheck={false}
-              />
-              <button
-                onClick={addWaContact}
-                disabled={!waNewName.trim()}
-                style={{
-                  alignSelf: 'flex-start',
-                  border: '1px solid var(--ou-border)',
-                  borderRadius: 8,
-                  padding: '7px 14px',
-                  fontSize: 12.5,
-                  fontWeight: 600,
-                  color: waNewName.trim() ? 'var(--ou-text)' : 'var(--ou-text-faint)',
-                  background: 'var(--ou-surface-2)',
-                  cursor: waNewName.trim() ? 'pointer' : 'default'
-                }}
-              >
-                Add to allowlist
-              </button>
-            </div>
-          </div>
-        )}
-
-        {/* Telegram: a bot the user owns. Guided, and the token is checked with
-            Telegram before it is saved, so a typo fails here and not mid-task. */}
-        <div className="ou-settings-section">
-          <div className="ou-settings-headrow">
-            <div className="ou-settings-label">Telegram</div>
-            <span className={`ou-settings-status${telegramBot ? ' ok' : ''}`}>
-              {telegramBot ? `Connected as @${telegramBot}` : telegramToken.trim() ? 'Token saved' : 'Not connected'}
-            </span>
-          </div>
-          <div className="ou-settings-desc" style={{ marginBottom: 8 }}>
-            Splen uses Telegram through a bot you own. It takes about a minute:
-          </div>
-          <ol className="ou-settings-steps">
-            <li>
-              Open{' '}
-              <button type="button" className="ou-settings-link" onClick={() => window.open('https://t.me/BotFather', '_blank', 'noopener,noreferrer')}>
-                @BotFather
-              </button>{' '}
-              in Telegram.
-            </li>
-            <li>
-              Send <code>/newbot</code>, choose a name, and copy the token it sends back.
-            </li>
-            <li>Paste the token here and click Connect.</li>
-          </ol>
-          <input
-            type="password"
-            className="ou-settings-input"
-            value={telegramToken}
-            onChange={(e) => {
-              setTelegramToken(e.target.value)
-              setTelegramBot(null)
-            }}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') void connectTelegram()
-            }}
-            placeholder="123456789:AA…"
-            aria-label="Telegram bot token"
-            autoComplete="off"
-            spellCheck={false}
-          />
-          <div className="ou-settings-btnrow">
-            <button
-              type="button"
-              className="ou-settings-btn"
-              onClick={() => void connectTelegram()}
-              disabled={telegramBusy || !telegramToken.trim()}
-            >
-              {telegramBusy ? 'Checking…' : telegramBot ? 'Reconnect' : 'Connect'}
-            </button>
-            {telegramMessage && <span className="ou-settings-msg">{telegramMessage}</span>}
-          </div>
-          {telegramBot && (
-            <div className="ou-settings-desc" style={{ marginTop: 8 }} data-testid="telegram-next">
-              Last step:{' '}
-              <button
-                type="button"
-                className="ou-settings-link"
-                onClick={() => window.open(`https://t.me/${telegramBot}`, '_blank', 'noopener,noreferrer')}
-              >
-                open @{telegramBot}
-              </button>{' '}
-              and press <strong style={{ color: 'var(--ou-text)' }}>Start</strong>. Splen can read
-              and answer messages sent to this bot — not your personal Telegram chats.
-            </div>
-          )}
-        </div>
-
-        {/* Integrations: Slack bot/user token */}
-        <div className="ou-settings-section">
-          <div className="ou-settings-headrow">
-            <div className="ou-settings-label">Slack</div>
-            {slackSaved && <span className="ou-settings-saved">Saved</span>}
-          </div>
-          <div className="ou-settings-desc" style={{ marginBottom: 8 }}>
-            Paste a Slack token to let Splen read, search and send Slack messages. A bot token
-            (xoxb-) with chat:write, channels:read and channels:history covers most tasks; search
-            needs a user token (xoxp-) with search:read. Create one at api.slack.com/apps. Stored
-            locally on this device.
-          </div>
-          <input
-            type="password"
-            className="ou-settings-input"
-            value={slackToken}
-            onChange={(e) => setSlackToken(e.target.value)}
-            onBlur={saveSlackToken}
-            placeholder="xoxb-…"
-            aria-label="Slack token"
-            autoComplete="off"
-            spellCheck={false}
-          />
-        </div>
-
-        {/* Gmail. With OpenUI's own Google client baked in (gmailBuiltIn) this is
-            one click: browser → choose account → Allow. Without it, a guided
-            own-client setup — and the fields stay reachable either way. */}
-        <div className="ou-settings-section">
-          <div className="ou-settings-headrow">
-            <div className="ou-settings-label">Gmail</div>
-            <span className={`ou-settings-status${gmailConnected ? ' ok' : ''}`}>
-              {gmailConnected ? 'Connected' : 'Not connected'}
-            </span>
-          </div>
-          {gmailBuiltIn && !gmailOwnClient ? (
-            <div className="ou-settings-desc" style={{ marginBottom: 8 }}>
-              Lets Splen read, summarise and reply to your email. Click Connect, choose your Google
-              account in the browser, then click Allow.
-            </div>
-          ) : (
-            <>
-              <div className="ou-settings-desc" style={{ marginBottom: 8 }}>
-                Lets Splen read, summarise and reply to your email. One-time setup with your own
-                Google project (about 5 minutes):
-              </div>
-              <ol className="ou-settings-steps">
-                <li>
-                  <button type="button" className="ou-settings-link" onClick={() => window.open('https://console.cloud.google.com/apis/library/gmail.googleapis.com', '_blank', 'noopener,noreferrer')}>
-                    Turn on the Gmail API
-                  </button>{' '}
-                  (create a project if asked).
-                </li>
-                <li>
-                  <button type="button" className="ou-settings-link" onClick={() => window.open('https://console.cloud.google.com/apis/credentials/oauthclient', '_blank', 'noopener,noreferrer')}>
-                    Create an OAuth client
-                  </button>{' '}
-                  — application type <strong style={{ color: 'var(--ou-text)' }}>Desktop app</strong>. If
-                  Google asks, set up the consent screen and add your own email as a test user.
-                </li>
-                <li>Paste the Client ID and Client Secret below, then click Connect.</li>
-              </ol>
-              <input
-                type="password"
-                className="ou-settings-input"
-                value={gcalClientId}
-                onChange={(e) => setGcalClientId(e.target.value)}
-                onBlur={saveGcalClientId}
-                placeholder="Client ID (…apps.googleusercontent.com)"
-                aria-label="Google OAuth client ID"
-                autoComplete="off"
-                spellCheck={false}
-              />
-              <input
-                type="password"
-                className="ou-settings-input"
-                value={gcalClientSecret}
-                onChange={(e) => setGcalClientSecret(e.target.value)}
-                onBlur={saveGcalClientSecret}
-                placeholder="Client Secret"
-                aria-label="Google OAuth client secret"
-                autoComplete="off"
-                spellCheck={false}
-              />
-            </>
-          )}
-          <div className="ou-settings-btnrow">
-            <button
-              type="button"
-              className="ou-settings-btn"
-              onClick={() => void connectGmail()}
-              disabled={
-                gmailConnecting ||
-                ((!gmailBuiltIn || gmailOwnClient) && (!gcalClientId.trim() || !gcalClientSecret.trim()))
-              }
-            >
-              {gmailConnecting ? 'Connecting…' : gmailConnected ? 'Reconnect' : 'Connect Gmail'}
-            </button>
-            {gmailMessage && <span className="ou-settings-msg">{gmailMessage}</span>}
-          </div>
-          {gmailBuiltIn && (
-            <button
-              type="button"
-              className="ou-settings-link"
-              style={{ marginTop: 8 }}
-              onClick={() => setGmailOwnClient((v) => !v)}
-            >
-              {gmailOwnClient ? 'Use Splen’s Google sign-in instead' : 'Use my own Google Cloud client instead'}
-            </button>
-          )}
-        </div>
-
-        {/* Unified inbox — now ON by default (see isUnifiedInboxEnabled). What
-            keeps it safe is not this switch: every channel reports its own
-            read status, a person-scoped read refuses an unresolved name rather
-            than widening, and every outbound action confirms with the resolved
-            recipients shown. Contact linking is unaffected either way — it only
-            writes to the local database. */}
-        <div className="ou-settings-row ou-settings-section">
-          <div className="ou-settings-grow">
-            <div className="ou-settings-label">Unified inbox</div>
-            <div className="ou-settings-desc">
-              Lets Splen read WhatsApp, Telegram, Slack and Gmail in one pass for questions like
-              “what’s my summary?”, and send one message to people across them. Anything outbound
-              shows you the exact recipients and asks first.
-            </div>
-          </div>
-          <Switch
-            on={unifiedInboxEnabled}
-            disabled={false}
-            label="Unified inbox"
-            onClick={toggleUnifiedInbox}
-          />
-        </div>
-
-        <div className="ou-settings-group">Safety</div>
-
-        {/* Automation: how autonomous the agent is when carrying out tasks */}
-        <div className="ou-settings-section">
-          <div className="ou-settings-label">Approvals</div>
-          <div className="ou-settings-desc" style={{ marginBottom: 10 }}>
-            How much Splen does on its own during a multi-step task.
-          </div>
-          <div className="ou-seg">
-            {AUTONOMY_OPTIONS.map((opt) => (
-              <button
-                key={opt.value}
-                type="button"
-                onClick={() => chooseAutonomy(opt.value)}
-                className={`ou-seg-btn${autonomy === opt.value ? ' active' : ''}`}
-              >
-                {opt.label}
-              </button>
-            ))}
-          </div>
-          <div className="ou-seg-hint">
-            {AUTONOMY_OPTIONS.find((o) => o.value === autonomy)?.hint}
-          </div>
-        </div>
-
-        {/* Cross-channel memory. Listed in full and individually deletable by
-            design: the feature carries what happened on one channel into a
-            reply on another, and that is only acceptable if the user can see
-            every line of it. Nothing here writes memory — the agent loop is the
-            sole writer (channelMemory.ts). */}
-        <div className="ou-settings-section">
-          <div className="ou-settings-headrow">
-            <div className="ou-settings-label">Memory</div>
-            <span className="ou-settings-status">
-              {memories.length === 0
-                ? 'Nothing stored'
-                : `${memories.length} ${memories.length === 1 ? 'memory' : 'memories'}`}
-            </span>
-          </div>
-          <div className="ou-settings-desc" style={{ marginBottom: 10 }}>
-            After Splen reads or sends a message, it keeps a one-line note under that contact or
-            topic and uses it as context later — even on a{' '}
-            <strong style={{ color: 'var(--ou-text)' }}>different channel</strong> (&ldquo;tell
-            #eng what I promised Ashu&rdquo;). Stored only on this computer. Forget anything below
-            and it stops being used immediately.
-          </div>
-
-          {memories.length === 0 ? (
-            <div className="ou-settings-desc" style={{ fontStyle: 'italic' }}>
-              Nothing remembered yet.
-            </div>
-          ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 10 }}>
-              {memories.map((m) => {
-                const chan = MEMORY_CHANNELS[m.channel] ?? {
-                  label: m.channel,
-                  color: 'var(--ou-text-faint)'
-                }
-                return (
-                  <div
-                    key={m.id}
-                    style={{
-                      display: 'flex',
-                      alignItems: 'flex-start',
-                      gap: 10,
-                      padding: '8px 10px',
-                      border: '1px solid var(--ou-border)',
-                      borderRadius: 8,
-                      background: 'var(--ou-surface-2)'
-                    }}
-                  >
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div
-                        style={{
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: 8,
-                          marginBottom: 3,
-                          flexWrap: 'wrap'
-                        }}
-                      >
-                        <span
-                          style={{
-                            fontSize: 10.5,
-                            fontWeight: 700,
-                            letterSpacing: 0.3,
-                            textTransform: 'uppercase',
-                            color: chan.color
-                          }}
+                  <Group title="About">
+                    <Row title="App version" desc={`Splen${appVersion ? ` v${appVersion}` : ''}`}>
+                      {updateStatus === 'checking' ? (
+                        <span className="ou-settings-status">Checking…</span>
+                      ) : updateStatus === 'latest' ? (
+                        <span className="ou-settings-status ok">Up to date</span>
+                      ) : updateStatus === 'available' || updateStatus === 'downloaded' ? (
+                        <span className="ou-settings-status info">
+                          {updateStatus === 'downloaded' ? 'Ready to install' : 'Update available'}
+                        </span>
+                      ) : (
+                        <button
+                          type="button"
+                          className="ou-set-ghost bordered"
+                          onClick={onCheckForUpdates}
+                          disabled={!onCheckForUpdates}
                         >
-                          {chan.label}
-                        </span>
-                        <span style={{ fontSize: 11, color: 'var(--ou-text)', fontWeight: 600 }}>
-                          {m.subject_label}
-                        </span>
-                        <span style={{ fontSize: 11, color: 'var(--ou-text-faint)' }}>
-                          {memoryAge(m.created_at)}
-                        </span>
-                      </div>
-                      <div style={{ fontSize: 12.5, color: 'var(--ou-text)', wordBreak: 'break-word' }}>
-                        {m.summary}
-                      </div>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => forgetMemory(m.id)}
-                      aria-label={`Forget: ${m.summary}`}
-                      title="Forget this"
-                      style={{
-                        flexShrink: 0,
-                        border: '1px solid var(--ou-border)',
-                        borderRadius: 6,
-                        padding: '4px 9px',
-                        fontSize: 11.5,
-                        fontWeight: 600,
-                        color: 'var(--ou-text-faint)',
-                        background: 'transparent',
-                        cursor: 'pointer'
-                      }}
-                    >
-                      Forget
-                    </button>
+                          Check for updates
+                        </button>
+                      )}
+                    </Row>
+                  </Group>
+                </>
+              )}
+
+              {active === 'model' && (
+                /* The in-app download path. This is the ONLY place the app
+                   documents how to get a model — there is no terminal instruction
+                   anywhere in the product. */
+                <Group title="On this computer">
+                  <div className="ou-set-card">
+                    <ModelManager showHeading={false} />
                   </div>
-                )
-              })}
-            </div>
-          )}
+                </Group>
+              )}
 
-          {memories.length > 0 && (
-            <div className="ou-settings-btnrow" style={{ marginTop: 0, flexWrap: 'wrap' }}>
-              {/* Per-subject clear: "stop remembering this person" is a more
-                  common intent than clearing the whole store. */}
-              {[...new Map(memories.map((m) => [m.subject_key, m.subject_label])).entries()]
-                .slice(0, 6)
-                .map(([key, label]) => (
-                  <button
-                    key={key}
-                    type="button"
-                    className="ou-settings-btn"
-                    onClick={() => forgetSubject(key)}
-                    title={`Forget everything stored about ${label}`}
-                  >
-                    Forget all: {label}
-                  </button>
+              {active === 'channels' && (
+                <>
+                  <Group title="Connections">
+                    <div className="ou-set-card">
+                      {/* WhatsApp needs no connection. The auto-reply below is
+                          compose-and-click by design: the watcher only drafts
+                          suggestions for these contacts; sending is always a
+                          human click. Default-off; empty allowlist = nothing runs. */}
+                      <ChannelRow
+                        name="WhatsApp"
+                        sub="Through WhatsApp Desktop on this computer"
+                        Icon={MessageCircle}
+                        status="Built in"
+                        ok
+                        open={openChannel === 'whatsapp'}
+                        onToggle={() => toggleChannel('whatsapp')}
+                      >
+                        {waConfig ? (
+                          <>
+                            <div className="ou-set-subrow">
+                              <div className="ou-settings-grow">
+                                <div className="ou-set-row-title">
+                                  Draft replies automatically
+                                  {waSaved && <span className="ou-settings-saved"> Saved</span>}
+                                </div>
+                                <div className="ou-set-row-desc">
+                                  Splen watches for new messages from the people listed here and{' '}
+                                  <strong>drafts a reply</strong> for each. It never sends on its own, and
+                                  nothing runs for anyone not on this list.
+                                </div>
+                              </div>
+                              <Switch
+                                on={waConfig.enabled}
+                                disabled={false}
+                                label="Draft WhatsApp replies automatically"
+                                onClick={toggleWaEnabled}
+                              />
+                            </div>
+
+                            {waConfig.allowlist.length > 0 && (
+                              <ul className="ou-set-list">
+                                {waConfig.allowlist.map((entry) => (
+                                  <li key={entry.name}>
+                                    <div className="ou-settings-grow">
+                                      <div className="ou-set-row-title">{entry.name}</div>
+                                      {entry.instruction && <div className="ou-set-row-desc">{entry.instruction}</div>}
+                                    </div>
+                                    <button
+                                      type="button"
+                                      className="ou-set-ghost"
+                                      onClick={() => removeWaContact(entry.name)}
+                                      aria-label={`Remove ${entry.name} from the auto-reply allowlist`}
+                                    >
+                                      Remove
+                                    </button>
+                                  </li>
+                                ))}
+                              </ul>
+                            )}
+
+                            <input
+                              type="text"
+                              className="ou-settings-input"
+                              value={waNewName}
+                              onChange={(e) => setWaNewName(e.target.value)}
+                              placeholder="Contact or group name (exactly as in WhatsApp)"
+                              aria-label="Contact or group name to allow auto-reply drafts for"
+                              spellCheck={false}
+                            />
+                            <input
+                              type="text"
+                              className="ou-settings-input"
+                              value={waNewInstruction}
+                              onChange={(e) => setWaNewInstruction(e.target.value)}
+                              placeholder="Optional instruction, e.g. “reply as if I'm busy, keep it short”"
+                              aria-label="Optional per-contact reply instruction"
+                              spellCheck={false}
+                            />
+                            <div className="ou-settings-btnrow">
+                              <button type="button" className="ou-settings-btn" onClick={addWaContact} disabled={!waNewName.trim()}>
+                                Add contact
+                              </button>
+                            </div>
+                          </>
+                        ) : waLoadFailed ? (
+                          <div className="ou-set-error" role="alert">
+                            Couldn’t load the auto-reply settings. Close Settings and open it again.
+                          </div>
+                        ) : (
+                          <Lines count={3} />
+                        )}
+                      </ChannelRow>
+
+                      {/* Gmail. With Splen's own Google client baked in (gmailBuiltIn)
+                          this is one click: browser → choose account → Allow. Without
+                          it, a guided own-client setup — the fields stay reachable. */}
+                      <ChannelRow
+                        name="Gmail"
+                        sub="Read, summarise and reply to email"
+                        Icon={Mail}
+                        status={gmailConnected ? 'Connected' : 'Not connected'}
+                        ok={gmailConnected}
+                        open={openChannel === 'gmail'}
+                        onToggle={() => toggleChannel('gmail')}
+                      >
+                        {gmailBuiltIn && !gmailOwnClient ? (
+                          <p className="ou-set-row-desc">
+                            Click Connect, choose your Google account in the browser, then click Allow.
+                          </p>
+                        ) : (
+                          <>
+                            <p className="ou-set-row-desc">One-time setup with your own Google project, about 5 minutes:</p>
+                            <ol className="ou-settings-steps">
+                              <li>
+                                <button type="button" className="ou-settings-link" onClick={() => window.open('https://console.cloud.google.com/apis/library/gmail.googleapis.com', '_blank', 'noopener,noreferrer')}>
+                                  Turn on the Gmail API
+                                </button>{' '}
+                                (create a project if asked).
+                              </li>
+                              <li>
+                                <button type="button" className="ou-settings-link" onClick={() => window.open('https://console.cloud.google.com/apis/credentials/oauthclient', '_blank', 'noopener,noreferrer')}>
+                                  Create an OAuth client
+                                </button>{' '}
+                                — application type <strong>Desktop app</strong>. If Google asks, set up the
+                                consent screen and add your own email as a test user.
+                              </li>
+                              <li>Paste the Client ID and Client Secret below, then click Connect.</li>
+                            </ol>
+                            <input
+                              type="password"
+                              className="ou-settings-input"
+                              value={gcalClientId}
+                              onChange={(e) => setGcalClientId(e.target.value)}
+                              onBlur={saveGcalClientId}
+                              placeholder="Client ID (…apps.googleusercontent.com)"
+                              aria-label="Google OAuth client ID"
+                              autoComplete="off"
+                              spellCheck={false}
+                            />
+                            <input
+                              type="password"
+                              className="ou-settings-input"
+                              value={gcalClientSecret}
+                              onChange={(e) => setGcalClientSecret(e.target.value)}
+                              onBlur={saveGcalClientSecret}
+                              placeholder="Client Secret"
+                              aria-label="Google OAuth client secret"
+                              autoComplete="off"
+                              spellCheck={false}
+                            />
+                          </>
+                        )}
+                        <div className="ou-settings-btnrow">
+                          <button
+                            type="button"
+                            className="ou-settings-btn"
+                            onClick={() => void connectGmail()}
+                            disabled={
+                              gmailConnecting ||
+                              ((!gmailBuiltIn || gmailOwnClient) && (!gcalClientId.trim() || !gcalClientSecret.trim()))
+                            }
+                          >
+                            {gmailConnecting ? 'Connecting…' : gmailConnected ? 'Reconnect' : 'Connect Gmail'}
+                          </button>
+                          {gmailMessage && <span className="ou-settings-msg">{gmailMessage}</span>}
+                        </div>
+                        {gmailBuiltIn && (
+                          <button type="button" className="ou-settings-link" onClick={() => setGmailOwnClient((v) => !v)}>
+                            {gmailOwnClient ? 'Use Splen’s Google sign-in instead' : 'Use my own Google Cloud client instead'}
+                          </button>
+                        )}
+                      </ChannelRow>
+
+                      {/* Telegram: a bot the user owns. Guided, and the token is
+                          checked with Telegram before it is saved, so a typo fails
+                          here and not mid-task. */}
+                      <ChannelRow
+                        name="Telegram"
+                        sub="Through a bot you own"
+                        Icon={Send}
+                        status={telegramBot ? `Connected as @${telegramBot}` : telegramStored ? 'Token saved' : 'Not connected'}
+                        ok={Boolean(telegramBot || telegramStored)}
+                        open={openChannel === 'telegram'}
+                        onToggle={() => toggleChannel('telegram')}
+                      >
+                        <ol className="ou-settings-steps">
+                          <li>
+                            Open{' '}
+                            <button type="button" className="ou-settings-link" onClick={() => window.open('https://t.me/BotFather', '_blank', 'noopener,noreferrer')}>
+                              @BotFather
+                            </button>{' '}
+                            in Telegram.
+                          </li>
+                          <li>
+                            Send <code>/newbot</code>, choose a name, and copy the token it sends back.
+                          </li>
+                          <li>Paste the token here and click Connect.</li>
+                        </ol>
+                        <input
+                          type="password"
+                          className="ou-settings-input"
+                          value={telegramToken}
+                          onChange={(e) => {
+                            setTelegramToken(e.target.value)
+                            setTelegramBot(null)
+                          }}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') void connectTelegram()
+                          }}
+                          placeholder="123456789:AA…"
+                          aria-label="Telegram bot token"
+                          autoComplete="off"
+                          spellCheck={false}
+                        />
+                        <div className="ou-settings-btnrow">
+                          <button
+                            type="button"
+                            className="ou-settings-btn"
+                            onClick={() => void connectTelegram()}
+                            disabled={telegramBusy || !telegramToken.trim()}
+                          >
+                            {telegramBusy ? 'Checking…' : telegramBot ? 'Reconnect' : 'Connect'}
+                          </button>
+                          {telegramMessage && <span className="ou-settings-msg">{telegramMessage}</span>}
+                        </div>
+                        {telegramBot && (
+                          <p className="ou-set-row-desc" data-testid="telegram-next">
+                            Last step:{' '}
+                            <button
+                              type="button"
+                              className="ou-settings-link"
+                              onClick={() => window.open(`https://t.me/${telegramBot}`, '_blank', 'noopener,noreferrer')}
+                            >
+                              open @{telegramBot}
+                            </button>{' '}
+                            and press <strong>Start</strong>. Splen can read and answer messages sent to this
+                            bot — not your personal Telegram chats.
+                          </p>
+                        )}
+                      </ChannelRow>
+
+                      <ChannelRow
+                        name="Slack"
+                        sub="Read, search and send messages"
+                        Icon={Hash}
+                        status={slackStored ? 'Token saved' : 'Not connected'}
+                        ok={Boolean(slackStored)}
+                        open={openChannel === 'slack'}
+                        onToggle={() => toggleChannel('slack')}
+                      >
+                        <p className="ou-set-row-desc">
+                          Create a token at api.slack.com/apps. A bot token (xoxb-) with chat:write,
+                          channels:read and channels:history covers most tasks; search needs a user token
+                          (xoxp-) with search:read.
+                          {slackSaved && <span className="ou-settings-saved"> Saved</span>}
+                        </p>
+                        <input
+                          type="password"
+                          className="ou-settings-input"
+                          value={slackToken}
+                          onChange={(e) => setSlackToken(e.target.value)}
+                          onBlur={saveSlackToken}
+                          placeholder="xoxb-…"
+                          aria-label="Slack token"
+                          autoComplete="off"
+                          spellCheck={false}
+                        />
+                      </ChannelRow>
+                    </div>
+                  </Group>
+
+                  {/* Unified inbox — ON by default (see isUnifiedInboxEnabled). What
+                      keeps it safe is not this switch: every channel reports its own
+                      read status, a person-scoped read refuses an unresolved name
+                      rather than widening, and every outbound action confirms with
+                      the resolved recipients shown. */}
+                  <Group title="Across channels">
+                    <Row
+                      title="Unified inbox"
+                      desc="Read every channel in one pass for questions like “what’s my summary?”, and send one message to people across them. Anything outbound shows the exact recipients and asks first."
+                    >
+                      <Switch on={unifiedInboxEnabled} disabled={false} label="Unified inbox" onClick={toggleUnifiedInbox} />
+                    </Row>
+                  </Group>
+                </>
+              )}
+
+              {active === 'keys' &&
+                (savedKeys.length === 0 ? (
+                  <Empty
+                    Icon={KeyRound}
+                    title="No keys saved"
+                    body="Tokens you add under Channels show up here, so you can copy or remove them."
+                    action={{ label: 'Go to Channels', onClick: () => setActive('channels') }}
+                  />
+                ) : (
+                  <Group title="Saved on this computer">
+                    <div className="ou-set-card">
+                      {savedKeys.map((k) => (
+                        <KeyRow key={k.id} label={k.label} hint={k.hint} value={k.value} onRemove={k.remove} />
+                      ))}
+                    </div>
+                  </Group>
                 ))}
-              <button
-                type="button"
-                className="ou-settings-btn"
-                onClick={forgetAllMemories}
-                onBlur={() => setMemoryConfirmClear(false)}
-                style={memoryConfirmClear ? { color: 'var(--ou-danger-text)' } : undefined}
-              >
-                {memoryConfirmClear ? 'Click again to confirm' : 'Forget everything'}
-              </button>
-            </div>
-          )}
-        </div>
 
-        <div className="ou-settings-group">Privacy &amp; app</div>
+              {/* Cross-channel memory. Listed in full and individually deletable by
+                  design: the feature carries what happened on one channel into a
+                  reply on another, and that is only acceptable if the user can see
+                  every line of it. Nothing here writes memory — the agent loop is
+                  the sole writer (channelMemory.ts). */}
+              {active === 'memory' &&
+                (memoriesState === 'loading' ? (
+                  <Group title="Remembered">
+                    <div className="ou-set-card ou-set-pad"><Lines count={4} /></div>
+                  </Group>
+                ) : memoriesState === 'failed' ? (
+                  <div className="ou-set-error" role="alert">
+                    Couldn’t read what Splen remembers. Close Settings and open it again.
+                  </div>
+                ) : memories.length === 0 ? (
+                  <Empty
+                    Icon={Brain}
+                    title="Nothing remembered yet"
+                    body="After Splen reads or sends a message, its one-line note appears here."
+                  />
+                ) : (
+                  <>
+                    <Group title={`Remembered · ${memories.length}`}>
+                      <div className="ou-set-card">
+                        {memories.map((m) => (
+                          <div className="ou-mem" key={m.id}>
+                            <div className="ou-settings-grow">
+                              <div className="ou-mem-meta">
+                                <span className="ou-mem-channel">{MEMORY_CHANNELS[m.channel] ?? m.channel}</span>
+                                <span className="ou-mem-subject">{m.subject_label}</span>
+                                <span className="ou-mem-age">{memoryAge(m.created_at)}</span>
+                              </div>
+                              <div className="ou-mem-text">{m.summary}</div>
+                            </div>
+                            <button
+                              type="button"
+                              className="ou-set-ghost"
+                              onClick={() => forgetMemory(m.id)}
+                              aria-label={`Forget: ${m.summary}`}
+                              title="Forget this"
+                            >
+                              Forget
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    </Group>
 
-        {/* Privacy: anonymous usage analytics */}
-        <div className="ou-settings-row ou-settings-section">
-          <div className="ou-settings-grow">
-            <div className="ou-settings-label">Anonymous Usage Analytics</div>
-            <div className="ou-settings-desc">
-              Help us improve OpenUI by sharing anonymous usage data. No personal data is ever
-              collected.
-            </div>
-          </div>
-          <Switch
-            on={enabled}
-            disabled={busy}
-            label="Anonymous Usage Analytics"
-            onClick={() => void toggle()}
-          />
-        </div>
+                    <Group title="Forget in bulk">
+                      <div className="ou-set-chips">
+                        {/* Per-subject clear: "stop remembering this person" is a
+                            more common intent than clearing the whole store. */}
+                        {[...new Map(memories.map((m) => [m.subject_key, m.subject_label])).entries()]
+                          .slice(0, 6)
+                          .map(([key, label]) => (
+                            <button
+                              key={key}
+                              type="button"
+                              className="ou-set-ghost bordered"
+                              onClick={() => forgetSubject(key)}
+                              title={`Forget everything stored about ${label}`}
+                            >
+                              Forget all: {label}
+                            </button>
+                          ))}
+                        <button
+                          type="button"
+                          className={`ou-set-ghost bordered${memoryConfirmClear ? ' danger' : ''}`}
+                          onClick={forgetAllMemories}
+                          onBlur={() => setMemoryConfirmClear(false)}
+                        >
+                          {memoryConfirmClear ? 'Click again to confirm' : 'Forget everything'}
+                        </button>
+                      </div>
+                    </Group>
+                  </>
+                ))}
 
-        {/* App version & update check */}
-        <div className="ou-settings-row ou-settings-section" style={{ alignItems: 'center', justifyContent: 'space-between' }}>
-          <div>
-            <div className="ou-settings-label">App Version</div>
-            <div className="ou-settings-desc" style={{ marginTop: 2 }}>
-              OpenUI{appVersion ? ` v${appVersion}` : ''}
-            </div>
-          </div>
-          <div style={{ textAlign: 'right' }}>
-            {updateStatus === 'checking' ? (
-              <span className="ou-settings-status">Checking…</span>
-            ) : updateStatus === 'latest' ? (
-              <span className="ou-settings-status ok">Up to date</span>
-            ) : updateStatus === 'available' || updateStatus === 'downloaded' ? (
-              <span className="ou-settings-status info">
-                {updateStatus === 'downloaded' ? 'Ready to install' : 'Update available'}
-              </span>
-            ) : (
-              <button
-                type="button"
-                className="ou-settings-link"
-                onClick={onCheckForUpdates}
-                disabled={!onCheckForUpdates}
-              >
-                Check for updates
-              </button>
-            )}
-          </div>
-        </div>
+              {active === 'usage' &&
+                (usage === 'loading' ? (
+                  <Group title="Last 30 days">
+                    <div className="ou-set-card ou-set-pad"><Lines count={3} /></div>
+                  </Group>
+                ) : usage === 'failed' ? (
+                  <div className="ou-set-error" role="alert">
+                    Couldn’t read usage on this computer. Close Settings and open it again.
+                  </div>
+                ) : (
+                  <UsagePanel today={usage.today} summary={usage.summary} />
+                ))}
 
+              {active === 'privacy' && (
+                <>
+                  {/* How autonomous the agent is when carrying out tasks */}
+                  <Group title="Approvals">
+                    <div className="ou-set-card" role="radiogroup" aria-label="Approvals">
+                      {AUTONOMY_OPTIONS.map((opt) => (
+                        <button
+                          key={opt.value}
+                          type="button"
+                          role="radio"
+                          aria-checked={autonomy === opt.value}
+                          className={`ou-set-option${autonomy === opt.value ? ' on' : ''}`}
+                          onClick={() => chooseAutonomy(opt.value)}
+                        >
+                          <span className="ou-set-radio" aria-hidden="true" />
+                          <span className="ou-settings-grow">
+                            <span className="ou-set-row-title">{opt.label}</span>
+                            <span className="ou-set-row-desc">{opt.hint}</span>
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  </Group>
+
+                  <Group title="Analytics">
+                    <Row
+                      title="Anonymous usage analytics"
+                      desc="Help improve Splen by sharing anonymous usage counts. Your messages are never included."
+                    >
+                      <Switch on={enabled} disabled={busy} label="Anonymous usage analytics" onClick={() => void toggle()} />
+                    </Row>
+                  </Group>
+                </>
+              )}
+
+              {active === 'advanced' && (
+                <>
         {/* Cloud AI: bring-your-own-key frontier model (opt-in). Hidden for the
             Ollama-only launch; see CLOUD_TIER_ENABLED above. */}
         {CLOUD_TIER_ENABLED && (
@@ -1410,12 +1541,250 @@ export default function SettingsModal({ onClose, appVersion, updateStatus, onChe
         </div>
           </>
         )}
+                </>
+              )}
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   )
 }
 
-/** Minimal iOS-style switch (dark theme, token-driven). */
+/** A titled block of settings. Bare children are wrapped in the bordered card. */
+function Group({ title, children }: { title: string; children: ReactNode }): JSX.Element {
+  return (
+    <section className="ou-set-group">
+      <h3 className="ou-set-group-title">{title}</h3>
+      {isValidElement(children) && children.type === Row ? <div className="ou-set-card">{children}</div> : children}
+    </section>
+  )
+}
+
+/** One setting: what it is on the left, its control on the right. */
+function Row({ title, desc, children }: { title: string; desc: string; children: ReactNode }): JSX.Element {
+  return (
+    <div className="ou-set-row">
+      <div className="ou-settings-grow">
+        <div className="ou-set-row-title">{title}</div>
+        <div className="ou-set-row-desc">{desc}</div>
+      </div>
+      {children}
+    </div>
+  )
+}
+
+/** Placeholder lines while something is loading. */
+function Lines({ count }: { count: number }): JSX.Element {
+  return (
+    <div className="ou-sp-skeleton" aria-hidden="true" data-testid="settings-loading">
+      {Array.from({ length: count }, (_, i) => (
+        <span key={i} style={{ width: `${[88, 64, 76, 52][i % 4]}%` }} />
+      ))}
+    </div>
+  )
+}
+
+function Empty({
+  Icon,
+  title,
+  body,
+  action
+}: {
+  Icon: LucideIcon
+  title: string
+  body: string
+  action?: { label: string; onClick: () => void }
+}): JSX.Element {
+  return (
+    <div className="ou-set-empty">
+      <Icon size={20} strokeWidth={1.5} aria-hidden="true" />
+      <div className="ou-set-empty-title">{title}</div>
+      <p className="ou-set-empty-body">{body}</p>
+      {action && (
+        <button type="button" className="ou-set-ghost bordered" onClick={action.onClick}>
+          {action.label}
+        </button>
+      )}
+    </div>
+  )
+}
+
+/** A channel: a row that opens to show how to set it up. */
+function ChannelRow({
+  name,
+  sub,
+  Icon,
+  status,
+  ok,
+  open,
+  onToggle,
+  children
+}: {
+  name: string
+  sub: string
+  Icon: LucideIcon
+  status: string
+  ok?: boolean
+  open: boolean
+  onToggle: () => void
+  children: ReactNode
+}): JSX.Element {
+  return (
+    <div className={`ou-ch${open ? ' open' : ''}`}>
+      <button type="button" className="ou-ch-head" aria-expanded={open} onClick={onToggle}>
+        <Icon className="ou-ch-icon" size={17} strokeWidth={1.75} aria-hidden="true" />
+        <span className="ou-settings-grow">
+          <span className="ou-set-row-title">{name}</span>
+          <span className="ou-set-row-desc">{sub}</span>
+        </span>
+        <span className={`ou-ch-status${ok ? ' ok' : ''}`}>
+          <i aria-hidden="true" />
+          {status}
+        </span>
+        <ChevronDown className="ou-ch-chevron" size={16} strokeWidth={1.75} aria-hidden="true" />
+      </button>
+      <div className="ou-ch-body">
+        <div className="ou-ch-clip">
+          <div className="ou-ch-inner">{children}</div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/** The start of a key and a mask: enough to recognise it, not enough to use it. */
+function maskKey(value: string): string {
+  const v = value.trim()
+  return `${v.slice(0, Math.min(5, Math.floor(v.length / 4)))}…••••`
+}
+
+/** A saved key: masked, copyable, removable in two clicks. */
+function KeyRow({
+  label,
+  hint,
+  value,
+  onRemove
+}: {
+  label: string
+  hint: string
+  value: string
+  onRemove: () => void
+}): JSX.Element {
+  const [copy, setCopy] = useState<'idle' | 'copied' | 'failed'>('idle')
+  const [confirming, setConfirming] = useState(false)
+  const timer = useRef<number | undefined>(undefined)
+  useEffect(() => () => window.clearTimeout(timer.current), [])
+
+  const copyKey = (): void => {
+    const show = (state: 'copied' | 'failed'): void => {
+      setCopy(state)
+      window.clearTimeout(timer.current)
+      timer.current = window.setTimeout(() => setCopy('idle'), 1500)
+    }
+    navigator.clipboard.writeText(value.trim()).then(
+      () => show('copied'),
+      () => show('failed')
+    )
+  }
+
+  return (
+    <div className="ou-key">
+      <div className="ou-settings-grow">
+        <div className="ou-set-row-title">{label}</div>
+        <code className="ou-key-value">{maskKey(value)}</code>
+        <div className="ou-set-row-desc">{hint}</div>
+      </div>
+      <span className="ou-key-copy">
+        <button type="button" className="ou-set-ghost bordered" onClick={copyKey} aria-label={`Copy ${label}`}>
+          {copy === 'copied' ? <Check size={14} strokeWidth={2} aria-hidden="true" /> : <Copy size={14} strokeWidth={1.75} aria-hidden="true" />}
+          Copy
+        </button>
+        {copy !== 'idle' && (
+          <span className="ou-key-tip" role="status">
+            {copy === 'copied' ? 'Copied' : 'Couldn’t copy'}
+          </span>
+        )}
+      </span>
+      <button
+        type="button"
+        className={`ou-set-ghost bordered${confirming ? ' danger' : ''}`}
+        aria-label={confirming ? `Confirm removing ${label}` : `Remove ${label}`}
+        onBlur={() => setConfirming(false)}
+        onClick={() => {
+          if (confirming) onRemove()
+          else setConfirming(true)
+        }}
+      >
+        {confirming ? 'Click to confirm' : 'Remove'}
+      </button>
+    </div>
+  )
+}
+
+/**
+ * How Splen has been used, from the local usage meter. There is no token budget
+ * to show: while the app is free the only honest ratio is days used out of the
+ * window. When plans are on, the bar becomes today's messages against the limit.
+ */
+function UsagePanel({ today, summary }: UsageData): JSX.Element {
+  const limited = !today.unlimited && today.limit !== null
+  const value = limited ? today.used : summary.activeDays
+  const max = limited ? (today.limit as number) : summary.windowDays
+  const percent = max > 0 ? Math.min(100, Math.round((value / max) * 100)) : 0
+  return (
+    <>
+      <Group title={limited ? 'Today' : `Last ${summary.windowDays} days`}>
+        <div className="ou-set-card ou-set-pad">
+          <div className="ou-usage-head">
+            <span className="ou-usage-num">{value}</span>
+            <span className="ou-usage-of">{limited ? `of ${max} messages today` : `of ${max} days active`}</span>
+          </div>
+          <div
+            className="ou-usage-bar"
+            role="progressbar"
+            aria-label={limited ? 'Messages used today' : 'Days active'}
+            aria-valuenow={value}
+            aria-valuemin={0}
+            aria-valuemax={max}
+          >
+            <div style={{ width: `${percent}%` }} />
+          </div>
+          {summary.totalMessages === 0 && (
+            <p className="ou-set-row-desc">Nothing yet. Send Splen a message and it shows up here.</p>
+          )}
+        </div>
+      </Group>
+
+      <Group title="Activity">
+        <dl className="ou-usage-stats">
+          <div>
+            <dt>Today</dt>
+            <dd>{today.used}</dd>
+          </div>
+          <div>
+            <dt>Last {summary.windowDays} days</dt>
+            <dd>{summary.totalMessages}</dd>
+          </div>
+          <div>
+            <dt>Day streak</dt>
+            <dd>{summary.currentStreak}</dd>
+          </div>
+        </dl>
+      </Group>
+
+      {today.unlimited && (
+        <Group title="Plan">
+          <Row title="Unlimited messages" desc="Splen is free to use as much as you like during the beta.">
+            <span className="ou-settings-status ok">Free</span>
+          </Row>
+        </Group>
+      )}
+    </>
+  )
+}
+
+/** A mechanical toggle: the thumb slides, the track lights up gold. */
 function Switch({
   on,
   disabled,

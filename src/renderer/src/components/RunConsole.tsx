@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { ArrowUp, Settings as SettingsIcon } from 'lucide-react'
 import type { HitlRequestPayload, PlanRequestPayload, ModelPullProgress, ModelStatus, TaskCard } from '../env'
 import { useTaskActivity } from '../context/TaskActivityContext'
 import { useAuth } from '../context/AuthContext'
 import { getConnections, subscribeConnections, type ConnectableApp } from './ConnectAppsModal'
-import SettingsModal from './SettingsModal'
+import SettingsModal, { type SettingsChannel, type SettingsSection } from './SettingsModal'
 import ConversationList from './ConversationList'
 import { useUpdater } from '../hooks/useUpdater'
 import { formatBytes } from '../lib/formatBytes'
@@ -47,7 +48,7 @@ interface PastTurn {
 const SPLEN_MODEL_ID = 'openui/splen:4b'
 
 /** The messaging channels Splen works across, in sidebar order. */
-const CHANNELS: Array<{ id: string; name: string }> = [
+const CHANNELS: Array<{ id: SettingsChannel; name: string }> = [
   { id: 'whatsapp', name: 'WhatsApp' },
   { id: 'gmail', name: 'Gmail' },
   { id: 'telegram', name: 'Telegram' },
@@ -82,29 +83,6 @@ function SplenMark(): JSX.Element {
         strokeLinejoin="round"
       />
       <path d="M11 3.5l3.4 2.6" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" />
-    </svg>
-  )
-}
-
-function SendIcon(): JSX.Element {
-  return (
-    <svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true">
-      <path d="M12 19V5M5.5 11.5L12 5l6.5 6.5" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  )
-}
-
-function GearIcon(): JSX.Element {
-  return (
-    <svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true">
-      <circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" strokeWidth="1.6" />
-      <path
-        d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-1.8-.3 1.6 1.6 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.6 1.6 0 0 0-1-1.5 1.6 1.6 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.6 1.6 0 0 0 .3-1.8 1.6 1.6 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.6 1.6 0 0 0 1.5-1 1.6 1.6 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.6 1.6 0 0 0 1.8.3H9a1.6 1.6 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 1 1.5 1.6 1.6 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0-.3 1.8V9a1.6 1.6 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.6 1.6 0 0 0-1.5 1z"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.6"
-        strokeLinejoin="round"
-      />
     </svg>
   )
 }
@@ -146,7 +124,8 @@ export default function RunConsole({
 
   const [mode, setMode] = useState<Mode>('do')
   const [input, setInput] = useState('')
-  const [showSettings, setShowSettings] = useState(false)
+  const [settingsAt, setSettingsAt] = useState<{ section: SettingsSection; channel?: SettingsChannel } | null>(null)
+  const showSettings = settingsAt !== null
   const inputRef = useRef<HTMLTextAreaElement>(null)
 
   // The open thread: runs from index `threadFrom` of the task list, after the
@@ -162,16 +141,26 @@ export default function RunConsole({
 
   useEffect(() => { onApprovalInline?.(false) }, [onApprovalInline])
 
-  // Channel status: Gmail is Google OAuth from Settings; the others come from
-  // the connection store, which only says "connected" when it KNOWS.
+  // Channel status: Gmail is Google OAuth from Settings; Telegram and Slack are
+  // "on" once Settings holds a token for them; WhatsApp is built in.
   const [conns, setConns] = useState<ConnectableApp[]>(getConnections())
   useEffect(() => subscribeConnections(() => setConns(getConnections())), [])
   const [gmailOn, setGmailOn] = useState(false)
   useEffect(() => {
     window.openui.gmailStatus?.().then((s) => setGmailOn(Boolean(s?.connected))).catch(() => {})
   }, [showSettings])
-  const channelOn = (id: string): boolean =>
-    id === 'gmail' ? gmailOn : conns.some((c) => c.id === id && c.state === 'connected')
+  const [tokenOn, setTokenOn] = useState({ telegram: false, slack: false })
+  useEffect(() => {
+    const has = (key: string): Promise<boolean> =>
+      window.openui.getSetting(key).then((v) => typeof v === 'string' && v.trim() !== '', () => false)
+    void Promise.all([has('telegram_bot_token'), has('slack_token')]).then(([telegram, slack]) => setTokenOn({ telegram, slack }))
+  }, [showSettings])
+  const channelOn = (id: SettingsChannel): boolean =>
+    id === 'gmail'
+      ? gmailOn
+      : id === 'telegram' || id === 'slack'
+        ? tokenOn[id] || conns.some((c) => c.id === id && c.state === 'connected')
+        : conns.some((c) => c.id === id && c.state === 'connected')
 
   // ── The Splen model: is it on this computer? ──────────────────────────────
   // null = still checking (or the list could not be read): no strip at all.
@@ -389,7 +378,7 @@ export default function RunConsole({
         </div>
         <span className="ou-sp-hint">{mode === 'do' ? 'Splen asks before it sends anything' : 'Splen only reads and answers'}</span>
         <button type="button" className="ou-sp-send" onClick={startRun} disabled={!input.trim()} aria-label="Send">
-          <SendIcon />
+          <ArrowUp size={17} strokeWidth={2.25} aria-hidden="true" />
         </button>
       </div>
     </div>
@@ -450,7 +439,7 @@ export default function RunConsole({
                 key={ch.id}
                 type="button"
                 className={`ou-sp-channel${on ? ' on' : ''}`}
-                onClick={() => setShowSettings(true)}
+                onClick={() => setSettingsAt({ section: 'channels', channel: ch.id })}
                 title={on ? `${ch.name} is connected` : `Set up ${ch.name} in Settings`}
               >
                 <span className="ou-sp-channel-dot" aria-hidden="true" />
@@ -462,8 +451,8 @@ export default function RunConsole({
           })}
         </nav>
 
-        <button type="button" className="ou-sp-channel ou-sp-settings" onClick={() => setShowSettings(true)}>
-          <GearIcon />
+        <button type="button" className="ou-sp-channel ou-sp-settings" onClick={() => setSettingsAt({ section: 'general' })}>
+          <SettingsIcon size={16} strokeWidth={1.75} aria-hidden="true" />
           <span className="ou-sp-channel-name">Settings</span>
         </button>
       </aside>
@@ -536,9 +525,11 @@ export default function RunConsole({
         )}
       </main>
 
-      {showSettings && (
+      {settingsAt && (
         <SettingsModal
-          onClose={() => setShowSettings(false)}
+          initialSection={settingsAt.section}
+          initialChannel={settingsAt.channel}
+          onClose={() => setSettingsAt(null)}
           appVersion={appVersion}
           updateStatus={updateState.status}
           onCheckForUpdates={checkForUpdates}
