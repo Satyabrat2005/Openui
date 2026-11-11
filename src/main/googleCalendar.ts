@@ -265,11 +265,17 @@ export function invalidateCachedAccessToken(): void {
 
 async function getAccessToken(): Promise<string> {
   const nowSec = Math.floor(Date.now() / 1000)
+  // Checked BEFORE the cache: once the connection is removed (disconnect, or a
+  // different account signing in on this computer) the hour-long access token
+  // still in memory must not keep working.
+  const refresh = getRefreshToken()
+  if (!refresh) {
+    cachedToken = null
+    throw new Error('Google Calendar is not connected.')
+  }
   if (cachedToken && cachedToken.expiresAt > nowSec + 60) return cachedToken.value
   const cfg = getOAuthConfig()
   if (!cfg) throw new Error('Google OAuth client is not configured (Settings → Google Calendar).')
-  const refresh = getRefreshToken()
-  if (!refresh) throw new Error('Google Calendar is not connected.')
   const tok = await postToken(buildRefreshBody(cfg, refresh))
   if (!tok.access_token) throw new Error('Google did not return an access token.')
   cachedToken = { value: tok.access_token, expiresAt: nowSec + (tok.expires_in ?? 3600) }

@@ -2,7 +2,7 @@
 import './loadEnv'
 import { app, BrowserWindow, Tray, Menu, ipcMain, nativeImage, session, shell, desktopCapturer, dialog } from 'electron'
 import { join } from 'path'
-import { registerAgentIPC, registerConversationIPC } from './agent'
+import { registerAgentIPC, registerConversationIPC, clearHistory } from './agent'
 import { checkAllowance, summarise } from './usageMeter'
 import { isCodingEnabled } from './capabilities'
 import { startPromptRefiner, stopPromptRefiner } from './promptRefiner'
@@ -21,10 +21,10 @@ import { connectGmail, isGmailConnected } from './gmail'
 import { connectGoogleDrive, isGoogleDriveConnected } from './googleDrive'
 import { connectMcpServer, disconnectAll, type McpServerConfig } from './mcp-client'
 import { initDatabase, database } from './database'
-import { registerWhatsAppAutoReplyIpc } from './whatsappWatcherService'
+import { registerWhatsAppAutoReplyIpc, initWhatsAppWatcher } from './whatsappWatcherService'
 import { registerDeepLinkProtocol, setupDeepLinkHandlers } from './auth/deeplink'
 import { openAuthWindow, isAuthWebContents } from './auth/authWindow'
-import { logout, getCurrentUser, getUserTier, startTokenRefreshLoop, stopTokenRefreshLoop, accountSessionState } from './auth/sessionManager'
+import { onAccountSwitch, logout, getCurrentUser, getUserTier, startTokenRefreshLoop, stopTokenRefreshLoop, accountSessionState } from './auth/sessionManager'
 import { registerWithEmail, signInWithEmail } from './auth/emailAuth'
 import { downloadModel, listModelStatus } from './modelDownload'
 import { initTelemetry, enableTelemetryAfterConsent, shutdownTelemetry, setTelemetryOptOut, isTelemetryActive, trackEvent } from './telemetry/posthog'
@@ -628,6 +628,13 @@ app.whenReady().then(async () => {
   // WhatsApp allowlisted auto-reply: get/set config, kill switch, status, and
   // the background watcher that resumes only if the user left it enabled.
   registerWhatsAppAutoReplyIpc(() => win)
+  // A different account signed in: its stored data was already cleared
+  // (auth/personalData.ts); also drop the last person's chat held in memory and
+  // stop an auto-reply loop still running on their allowlist.
+  onAccountSwitch(() => {
+    clearHistory()
+    initWhatsAppWatcher(() => win)
+  })
 
   // ── Google Calendar (dedicated OAuth, see googleCalendar.ts) ───────────────
   ipcMain.handle('openui:google-calendar-status', () => ({ connected: isGoogleCalendarConnected() }))

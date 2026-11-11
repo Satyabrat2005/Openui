@@ -121,9 +121,24 @@ export function saveExample(input: TrainingExampleInput): string {
         step.durationMs ?? null
       )
     })
+    pruneExamples(db)
   })()
 
   return exampleId
+}
+
+/**
+ * Newest examples kept. Every turn is recorded with its full tool trajectory
+ * (message text included), and nothing ever deleted them: the database grew
+ * for as long as the app was used. Older rows are dropped on write.
+ */
+export const MAX_TRAINING_EXAMPLES = 2000
+
+function pruneExamples(db: ReturnType<typeof getDb>): void {
+  const stale = `SELECT id FROM training_examples ORDER BY created_at DESC, rowid DESC LIMIT -1 OFFSET ?`
+  // Steps first: no reliance on foreign-key cascades being switched on.
+  db.prepare(`DELETE FROM training_steps WHERE example_id IN (${stale})`).run(MAX_TRAINING_EXAMPLES)
+  db.prepare(`DELETE FROM training_examples WHERE id IN (${stale})`).run(MAX_TRAINING_EXAMPLES)
 }
 
 /**
