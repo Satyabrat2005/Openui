@@ -100,7 +100,16 @@ import {
   signInWithEmail,
   MIN_PASSWORD_LENGTH
 } from './auth/emailAuth'
-import { hasAccountSession, getCurrentUser, ACTIVE_USER_KEY } from './auth/sessionManager'
+import {
+  hasAccountSession,
+  getCurrentUser,
+  accountSessionState,
+  refreshSessionOutcome,
+  isRejection,
+  ACTIVE_USER_KEY,
+  OFFLINE_GRACE_SEC,
+  REFRESH_TIMEOUT_MS
+} from './auth/sessionManager'
 
 function session(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return { access_token: 'access-1', refresh_token: 'refresh-1', expires_at: now() + 3600, ...overrides }
@@ -303,7 +312,7 @@ describe('the session gate itself', () => {
 
   // 2026-10-19: the free-plan project went to sleep, every refresh failed with a
   // network error, and the app wiped the session — the user had to sign in again.
-  it('an expired session while Supabase is UNREACHABLE is kept for the next launch', async () => {
+  it('an expired session while Supabase is UNREACHABLE is kept, and stays usable offline', async () => {
     supabase.auth.signInWithPassword.mockResolvedValue({
       data: { user: user(), session: session({ expires_at: now() - 10 }) },
       error: null
@@ -311,10 +320,130 @@ describe('the session gate itself', () => {
     await signInWithEmail(null, 'rin@example.com', 'pw')
     supabase.auth.refreshSession.mockRejectedValue(new TypeError('fetch failed'))
 
-    await expect(getCurrentUser()).resolves.toBeNull()
-    // Not signed in right now (no valid token)… but nothing was destroyed.
+    // Splen runs on this computer: a lost connection must not lock the user out.
+    await expect(accountSessionState()).resolves.toBe('offline')
+    await expect(getCurrentUser()).resolves.toMatchObject({ id: 'u1', email: 'rin@example.com' })
+    // Nothing was destroyed, so the next launch with a connection renews it.
     expect(settings.get(ACTIVE_USER_KEY)).toBe('u1')
     expect(db.users.getUserById('u1')?.refresh_token).toBeTruthy()
+  })
+
+  it('offline grace ends: a session unchecked for longer than the grace gates closed', async () => {
+    supabase.auth.signInWithPassword.mockResolvedValue({
+      data: { user: user(), session: session({ expires_at: now() - OFFLINE_GRACE_SEC - 60 }) },
+      error: null
+    })
+    await signInWithEmail(null, 'rin@example.com', 'pw')
+    supabase.auth.refreshSession.mockRejectedValue(new TypeError('fetch failed'))
+    await expect(accountSessionState()).resolves.toBe('none')
+    await expect(getCurrentUser()).resolves.toBeNull()
+  })
+
+  // The startup gate used to read the token alone. Access tokens last an hour,
+  // so every launch more than an hour after the last showed the sign-in screen.
+  it('the startup gate renews an expired one-hour token instead of asking to sign in again', async () => {
+    supabase.auth.signInWithPassword.mockResolvedValue({
+      data: { user: user(), session: session({ expires_at: now() - 7200 }) },
+      error: null
+    })
+    await signInWithEmail(null, 'rin@example.com', 'pw')
+    expect(hasAccountSession()).toBe(false) // what the gate used to read
+    // The real client only RETURNS the new pair; storing it is our job.
+    supabase.auth.refreshSession.mockResolvedValue({
+      data: { session: { access_token: 'access-2', refresh_token: 'refresh-2', expires_at: now() + 3600, user: { app_metadata: {} } } },
+      error: null
+    })
+
+    await expect(accountSessionState()).resolves.toBe('live')
+    expect(hasAccountSession()).toBe(true)
+    expect(db.users.getUserById('u1')?.refresh_token).toBe('refresh-2')
+  })
+
+  it('a rejected refresh gates closed and clears the session', async () => {
+    supabase.auth.signInWithPassword.mockResolvedValue({
+      data: { user: user(), session: session({ expires_at: now() - 10 }) },
+      error: null
+    })
+    await signInWithEmail(null, 'rin@example.com', 'pw')
+    supabase.auth.refreshSession.mockResolvedValue({
+      data: { session: null },
+      error: Object.assign(new Error('Invalid Refresh Token'), { status: 400 })
+    })
+    await expect(accountSessionState()).resolves.toBe('none')
+    expect(settings.get(ACTIVE_USER_KEY)).toBeUndefined()
+  })
+
+  it('a rate-limited refresh (429) does not sign anyone out', async () => {
+    expect(isRejection({ status: 429 })).toBe(false)
+    expect(isRejection({ status: 408 })).toBe(false)
+    expect(isRejection({ status: 400 })).toBe(true)
+    supabase.auth.signInWithPassword.mockResolvedValue({
+      data: { user: user(), session: session({ expires_at: now() - 10 }) },
+      error: null
+    })
+    await signInWithEmail(null, 'rin@example.com', 'pw')
+    supabase.auth.refreshSession.mockResolvedValue({
+      data: { session: null },
+      error: Object.assign(new Error('Request rate limit reached'), { status: 429 })
+    })
+    await expect(accountSessionState()).resolves.toBe('offline')
+    expect(settings.get(ACTIVE_USER_KEY)).toBe('u1')
+  })
+
+  it('refreshes that fire together share one request, so the rotated token is never reused', async () => {
+    supabase.auth.signInWithPassword.mockResolvedValue({
+      data: { user: user(), session: session({ expires_at: now() - 10 }) },
+      error: null
+    })
+    await signInWithEmail(null, 'rin@example.com', 'pw')
+    supabase.auth.refreshSession.mockImplementation(async () => {
+      await new Promise((r) => setTimeout(r, 5))
+      return { data: { session: { access_token: 'access-2', refresh_token: 'refresh-2', expires_at: now() + 3600, user: { app_metadata: {} } } }, error: null }
+    })
+    const [a, b, c] = await Promise.all([refreshSessionOutcome(), accountSessionState(), getCurrentUser()])
+    expect(a).toBe('refreshed')
+    expect(b).toBe('live')
+    expect(c?.id).toBe('u1')
+    expect(supabase.auth.refreshSession).toHaveBeenCalledTimes(1)
+  })
+
+  it('a refusal that arrives after the user signed in again does not sign out the new session', async () => {
+    supabase.auth.signInWithPassword.mockResolvedValue({
+      data: { user: user(), session: session({ expires_at: now() - 10 }) },
+      error: null
+    })
+    await signInWithEmail(null, 'rin@example.com', 'pw')
+    supabase.auth.refreshSession.mockImplementation(async () => {
+      // While the old token's refresh is out, the user signs in again.
+      db.users.updateAuthTokens('u1', 'access-new', 'refresh-new', now() + 3600)
+      return { data: { session: null }, error: Object.assign(new Error('Already Used'), { status: 400 }) }
+    })
+    await expect(refreshSessionOutcome()).resolves.toBe('refreshed')
+    expect(settings.get(ACTIVE_USER_KEY)).toBe('u1')
+    expect(hasAccountSession()).toBe(true)
+  })
+
+  it('a refresh that hangs gives up quickly, and its late answer is still stored', async () => {
+    supabase.auth.signInWithPassword.mockResolvedValue({
+      data: { user: user(), session: session({ expires_at: now() - 10 }) },
+      error: null
+    })
+    await signInWithEmail(null, 'rin@example.com', 'pw')
+    let answer!: (v: unknown) => void
+    supabase.auth.refreshSession.mockImplementation(() => new Promise((r) => (answer = r)))
+
+    vi.useFakeTimers()
+    try {
+      const outcome = refreshSessionOutcome()
+      await vi.advanceTimersByTimeAsync(REFRESH_TIMEOUT_MS)
+      await expect(outcome).resolves.toBe('unreachable')
+    } finally {
+      vi.useRealTimers()
+    }
+    answer({ data: { session: { access_token: 'access-late', refresh_token: 'refresh-late', expires_at: now() + 3600, user: { app_metadata: {} } } }, error: null })
+    await new Promise((r) => setTimeout(r, 0))
+    expect(db.users.getUserById('u1')?.refresh_token).toBe('refresh-late')
+    expect(hasAccountSession()).toBe(true)
   })
 
   it('an expired session that CAN be refreshed stays signed in', async () => {

@@ -18,7 +18,7 @@
 import { app, BrowserWindow } from 'electron'
 import path from 'path'
 import { getSupabaseClient } from './supabaseClient'
-import { closeAuthWindow } from './authWindow'
+import { closeAuthWindow, isAuthWindowOpen } from './authWindow'
 import { database } from '../database'
 import { setActiveUser, cacheUserTier, type UserProfile } from './sessionManager'
 import { identifyUser } from '../telemetry/posthog'
@@ -178,6 +178,15 @@ export async function handleDeepLink(url: string, mainWindow: BrowserWindow | nu
 
   // For `openui://auth-callback`, the URL parser puts `auth-callback` in `host`.
   if (action !== 'auth-callback') return
+
+  // Anyone can send an openui://auth-callback link carrying THEIR OWN tokens;
+  // opening it used to switch this app, silently, to the sender's account. With
+  // no account signed in (an email-confirmation link, say) it is still adopted;
+  // with one signed in, only while a sign-in started here is under way.
+  if (getCurrentUserId() && !isAuthWindowOpen()) {
+    console.warn('[openui] Ignored a sign-in link that no sign-in in this app started.')
+    return
+  }
 
   // Tokens arrive in the fragment (#…); some error responses use the query
   // string. Merge both so we read whichever the provider used.

@@ -138,6 +138,10 @@ export default function RunConsole({
   const [resumeError, setResumeError] = useState(false)
   const tasksRef = useRef(tasks)
   tasksRef.current = tasks
+  // Splen answers one message at a time (main refuses a second turn). While an
+  // answer is running, Send, New chat and opening a past chat wait for it.
+  const busy = tasks.some((t) => t.status === 'in_progress')
+  const isBusy = (): boolean => tasksRef.current.some((t) => t.status === 'in_progress')
 
   useEffect(() => { onApprovalInline?.(false) }, [onApprovalInline])
 
@@ -219,7 +223,7 @@ export default function RunConsole({
   const send = useCallback(
     (raw: string) => {
       const text = raw.trim()
-      if (!text) return
+      if (!text || isBusy()) return
       setModes((m) => ({ ...m, [text]: mode }))
       // The same send path as before: beginTask opens the run, chat() runs it.
       beginTask(text, 'chat')
@@ -229,12 +233,13 @@ export default function RunConsole({
   )
 
   const startRun = useCallback(() => {
-    if (!input.trim()) return
+    if (!input.trim() || isBusy()) return
     send(input)
     setInput('')
   }, [input, send])
 
   const newChat = useCallback(() => {
+    if (isBusy()) return
     window.openui.clearHistory()
     focusTask(null)
     setInput('')
@@ -260,6 +265,7 @@ export default function RunConsole({
   // Reopen a past chat: main loads it as the context for the next message and
   // returns its messages, which become the top of the thread.
   const openChat = useCallback(async (id: string) => {
+    if (isBusy()) return
     onHistoryChange?.(false)
     focusTask(null)
     setOpenChatId(id)
@@ -377,7 +383,7 @@ export default function RunConsole({
           <button type="button" role="radio" aria-checked={mode === 'do'} className={`ou-sp-seg-btn${mode === 'do' ? ' on' : ''}`} onClick={() => setMode('do')}>Act</button>
         </div>
         <span className="ou-sp-hint">{mode === 'do' ? 'Splen asks before it sends anything' : 'Splen only reads and answers'}</span>
-        <button type="button" className="ou-sp-send" onClick={startRun} disabled={!input.trim()} aria-label="Send">
+        <button type="button" className="ou-sp-send" onClick={startRun} disabled={!input.trim() || busy} aria-label={busy ? 'Splen is still answering' : 'Send'} title={busy ? 'Splen is still answering' : undefined}>
           <ArrowUp size={17} strokeWidth={2.25} aria-hidden="true" />
         </button>
       </div>
@@ -419,7 +425,7 @@ export default function RunConsole({
           <span className="ou-sp-brand-name">Splen</span>
         </div>
 
-        <button type="button" className="ou-sp-newrun" onClick={newChat}>
+        <button type="button" className="ou-sp-newrun" onClick={newChat} disabled={busy} title={busy ? 'Wait for Splen to finish answering' : undefined}>
           <span className="ou-sp-newrun-plus" aria-hidden="true">+</span>
           <span>New chat</span>
           <kbd className="ou-sp-kbd" aria-hidden="true">Ctrl N</kbd>

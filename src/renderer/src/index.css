@@ -5330,6 +5330,7 @@ body {
 }
 .ou-sp-newrun:hover { border-color: var(--ou-border-hover); }
 .ou-sp-newrun:active { transform: scale(0.985); }
+.ou-sp-newrun:disabled { opacity: 0.55; cursor: default; transform: none; }
 .ou-sp-newrun-plus { font-size: 18px; font-weight: 400; line-height: 1; color: var(--ou-accent); width: 16px; text-align: center; }
 .ou-sp-kbd {
   margin-left: auto;

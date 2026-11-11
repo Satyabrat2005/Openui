@@ -109,6 +109,13 @@ export async function requestSplenGrant(): Promise<SplenGrant> {
       message: 'Splen isn’t available for your account yet.'
     })
   }
+  if (res.status === 403 && error === 'email_not_confirmed') {
+    throw new SplenGrantError({
+      ok: false,
+      code: 'unauthenticated',
+      message: 'Confirm your email address first — open the link we emailed you, then start the download again.'
+    })
+  }
   if (res.status === 401 || res.status === 403) {
     throw new SplenGrantError({ ok: false, code: 'unauthenticated', message: 'Sign in to download Splen.' })
   }
@@ -136,7 +143,11 @@ export interface SplenOffer {
 }
 
 const OFFER_CACHE_MS = 10 * 60 * 1000
-let offerCache: { at: number; offer: SplenOffer | null } | null = null
+// When the server could not be asked at all (offline, signed out, a hiccup),
+// ask again soon: caching that for ten minutes hid Splen from someone who
+// simply signed in, or got their connection back, a minute later.
+const OFFER_FAILURE_CACHE_MS = 30 * 1000
+let offerCache: { at: number; offer: SplenOffer | null; ttl: number } | null = null
 
 /**
  * Ask the server whether to show Splen at all. The owner turns Splen on (and
@@ -145,11 +156,13 @@ let offerCache: { at: number; offer: SplenOffer | null } | null = null
  * the model screen simply does not show a row it could not deliver.
  */
 export async function getSplenOffer(): Promise<SplenOffer | null> {
-  if (offerCache && Date.now() - offerCache.at < OFFER_CACHE_MS) return offerCache.offer
+  if (offerCache && Date.now() - offerCache.at < offerCache.ttl) return offerCache.offer
   let offer: SplenOffer | null = null
+  let answered = false
   try {
     const res = await callEdgeFunction('splen-download', { action: 'status' })
     const body = res.ok ? ((await res.json()) as Record<string, unknown>) : null
+    answered = body !== null
     if (
       body?.available === true &&
       typeof body.version === 'string' &&
@@ -162,7 +175,7 @@ export async function getSplenOffer(): Promise<SplenOffer | null> {
   } catch {
     offer = null
   }
-  offerCache = { at: Date.now(), offer }
+  offerCache = { at: Date.now(), offer, ttl: answered ? OFFER_CACHE_MS : OFFER_FAILURE_CACHE_MS }
   return offer
 }
 
@@ -208,6 +221,8 @@ function freeBytes(dir: string): number | null {
 export interface SplenDownloadDeps {
   requestGrant: () => Promise<SplenGrant>
   fetch: typeof fetch
+  /** Moves the verified download into place. Defaults to renameWithRetry. */
+  place?: (from: string, to: string) => Promise<void>
 }
 
 const defaultDeps: SplenDownloadDeps = { requestGrant: requestSplenGrant, fetch: (...a) => fetch(...a) }
@@ -267,13 +282,23 @@ export function isSplenDownloadInFlight(): boolean {
 
 /**
  * Download, verify and install Splen. Concurrent calls share one download.
- * Resolves with the outcome; never throws.
+ * Resolves with the outcome; never throws — any disk or file error the steps
+ * below did not foresee still becomes a failure the UI can show.
  */
 export function downloadSplen(win: BrowserWindow | null, deps: SplenDownloadDeps = defaultDeps): Promise<DownloadResult> {
   if (inFlight) return inFlight
-  const run = runDownload(win, deps).finally(() => {
-    inFlight = null
-  })
+  const run = runDownload(win, deps)
+    .catch((err): DownloadResult => {
+      console.error('[splen] download failed unexpectedly:', err)
+      return {
+        ok: false,
+        code: 'failed',
+        message: 'The Splen download hit an unexpected problem. Start it again — what already arrived is kept.'
+      }
+    })
+    .finally(() => {
+      inFlight = null
+    })
   inFlight = run
   return run
 }
@@ -296,6 +321,18 @@ async function runDownload(win: BrowserWindow | null, deps: SplenDownloadDeps): 
   const dir = splenDir()
   mkdirSync(dir, { recursive: true })
   const part = `${splenWeightsPath()}.part`
+
+  // The file is already in place but its record is not — a crash, or a failed
+  // write, right after the last download's final rename. Check it and record
+  // it instead of downloading gigabytes again.
+  if (!installed && !existsSync(part) && sizeOf(splenWeightsPath()) === grant.bytes) {
+    emit(win, progress('verifying download', grant.bytes, grant.bytes))
+    if ((await sha256File(splenWeightsPath())) === grant.sha256) {
+      writeSplenInstall({ version: grant.version, sha256: grant.sha256, bytes: grant.bytes })
+      emit(win, progress('ready', grant.bytes, grant.bytes, true))
+      return { ok: true, model: SPLEN_DOWNLOAD_ID }
+    }
+  }
 
   const alreadyHave = existsSync(part) ? statSync(part).size : 0
   const free = freeBytes(dir)
@@ -330,7 +367,17 @@ async function runDownload(win: BrowserWindow | null, deps: SplenDownloadDeps): 
   }
 
   emit(win, progress('verifying download', grant.bytes, grant.bytes))
-  const actual = await sha256File(part)
+  let actual: string
+  try {
+    actual = await sha256File(part)
+  } catch (err) {
+    console.error('[splen] could not read the download to check it:', err)
+    return {
+      ok: false,
+      code: 'failed',
+      message: 'The downloaded file couldn’t be read to check it. Start the download again.'
+    }
+  }
   if (actual !== grant.sha256) {
     // A complete file with the wrong hash is corrupt or tampered with: never
     // load it, and do not resume from it.
@@ -345,12 +392,59 @@ async function runDownload(win: BrowserWindow | null, deps: SplenDownloadDeps): 
   // Replacing an older Splen: free the loaded copy first (llama.cpp maps the
   // file, and Windows will not replace a mapped file), and drop its record
   // before the swap so a crash in between reads as "not installed".
-  if (installed) {
-    await withOllamaLock(unloadSplen)
-    rmSync(join(dir, SPLEN_MANIFEST_FILE), { force: true })
+  try {
+    if (installed) {
+      await withOllamaLock(unloadSplen)
+      rmSync(join(dir, SPLEN_MANIFEST_FILE), { force: true })
+    }
+    await (deps.place ?? renameWithRetry)(part, splenWeightsPath())
+    writeSplenInstall({ version: grant.version, sha256: grant.sha256, bytes: grant.bytes })
+  } catch (err) {
+    // The verified download is kept (as .part, or already in place), so
+    // starting again only finishes the install — it does not download again.
+    console.error('[splen] could not put the download in place:', err)
+    return {
+      ok: false,
+      code: 'failed',
+      message:
+        'Splen downloaded and passed its check, but couldn’t be put in place — another program (often antivirus) may be using the file. Start the download again: it only finishes installing, it won’t download again.'
+    }
   }
-  renameSync(part, splenWeightsPath())
-  writeSplenInstall({ version: grant.version, sha256: grant.sha256, bytes: grant.bytes })
   emit(win, progress('ready', grant.bytes, grant.bytes, true))
   return { ok: true, model: SPLEN_DOWNLOAD_ID }
+}
+
+function sizeOf(path: string): number | null {
+  try {
+    return statSync(path).size
+  } catch {
+    return null
+  }
+}
+
+/** Errors Windows raises while antivirus or the indexer briefly holds a file. */
+const TRANSIENT_FS_CODES = new Set(['EPERM', 'EBUSY', 'EACCES'])
+export const RENAME_ATTEMPTS = 5
+
+/**
+ * Rename, retrying the brief locks Windows antivirus takes on a fresh
+ * multi-gigabyte file. Any other error, or a lock that outlasts the retries,
+ * is thrown.
+ */
+export async function renameWithRetry(
+  from: string,
+  to: string,
+  delayMs = 400,
+  rename: (from: string, to: string) => void = renameSync
+): Promise<void> {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      rename(from, to)
+      return
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code
+      if (attempt >= RENAME_ATTEMPTS || !code || !TRANSIENT_FS_CODES.has(code)) throw err
+      await new Promise((r) => setTimeout(r, delayMs * attempt))
+    }
+  }
 }

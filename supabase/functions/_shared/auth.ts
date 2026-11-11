@@ -18,7 +18,9 @@ export interface VerifiedUser {
 export interface AuthClient {
   auth: {
     getUser(token: string): Promise<{
-      data: { user: { id: string; email?: string } | null }
+      data: {
+        user: { id: string; email?: string; is_anonymous?: boolean; email_confirmed_at?: string | null } | null
+      }
       error: unknown
     }>
   }
@@ -37,7 +39,8 @@ export type AuthResult =
 export async function requireVerifiedUser(
   req: Request,
   supabase: AuthClient,
-  claimedUserId?: string
+  claimedUserId?: string,
+  opts: { requireAccount?: boolean } = {}
 ): Promise<AuthResult> {
   const token = req.headers.get('Authorization')?.replace(/^Bearer\s+/i, '')
   if (!token) return { ok: false, status: 401, error: 'missing_token' }
@@ -48,6 +51,15 @@ export async function requireVerifiedUser(
 
   if (claimedUserId && claimedUserId !== user.id) {
     return { ok: false, status: 403, error: 'user_mismatch' }
+  }
+
+  // A real, confirmed account — not an anonymous guest session (anyone can mint
+  // those with the public anon key) and not an email nobody has proved they
+  // own. With email confirmation switched off, Supabase sets
+  // email_confirmed_at at sign-up, so this only bites when confirmation is on.
+  if (opts.requireAccount) {
+    if (user.is_anonymous) return { ok: false, status: 403, error: 'account_required' }
+    if (!user.email || !user.email_confirmed_at) return { ok: false, status: 403, error: 'email_not_confirmed' }
   }
 
   return { ok: true, user: { id: user.id, email: user.email } }

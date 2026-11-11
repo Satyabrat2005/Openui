@@ -419,7 +419,7 @@ describe('handleChat — malformed tool-call JSON', () => {
   // (see the truncation test below, which is the safety half of this pair).
   it('recovers a complete-but-unclosed tool call and runs it', async () => {
     h.state.responses = ['{"tool":"open_app","args":{"name":"Slack"', 'Done.']
-    await expect(handleChat(win, 'open slack', 'free')).resolves.toBeUndefined()
+    await expect(handleChat(win, 'open slack', 'free')).resolves.toBe(true)
 
     expect(h.executeTool).toHaveBeenCalledWith('open_app', { name: 'Slack' }, expect.anything())
     expect(sent('openui:chat:done')).toBe(true)
@@ -431,7 +431,7 @@ describe('handleChat — malformed tool-call JSON', () => {
   // half-written file for write_file), so the call is still dropped.
   it('executes no tool when the response is truncated mid-string', async () => {
     h.state.responses = ['{"tool":"open_app","args":{"name":"Sla']
-    await expect(handleChat(win, 'open slack', 'free')).resolves.toBeUndefined()
+    await expect(handleChat(win, 'open slack', 'free')).resolves.toBe(true)
 
     expect(h.executeTool).not.toHaveBeenCalled()
     expect(sent('openui:chat:done')).toBe(true)

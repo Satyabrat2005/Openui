@@ -4,7 +4,7 @@
  * renderer, and owns the IPC surface for the Settings UI + kill switch.
  *
  * This is the one place the untestable I/O converges: the screenshot/OCR reads
- * (from tools.ts), the chat-proxy compose call, the settings store, the audit
+ * (from tools.ts), the compose call (on-device Splen), the settings store, the audit
  * log, and the renderer event emits. The decision logic it drives is all in the
  * unit-tested pure modules; this file only assembles and dispatches.
  *
@@ -15,6 +15,9 @@
 
 import { ipcMain, type BrowserWindow } from 'electron'
 import { callChatProxyText } from './edgeFunctions'
+import { isCloudTierEnabled } from './models'
+import { generateSplen } from './splen/runtime'
+import { resolveNumCtx } from './agent'
 import { readWhatsAppUnreadSenders, readWhatsAppChatText, executeTool } from './tools'
 import { WhatsAppWatcher, type WatcherDeps, type DraftReply } from './whatsappWatcher'
 import { getAutoReplyConfig, setAutoReplyConfig, auditDraftedReply } from './whatsappAutoReplyConfig'
@@ -26,20 +29,34 @@ function emit(win: BrowserWindow | null, channel: string, payload: unknown): voi
   if (win && !win.isDestroyed()) win.webContents.send(channel, payload)
 }
 
+/**
+ * Write a draft reply. The text being answered is someone's private WhatsApp
+ * chat, and this build promises it never leaves the computer — so it is
+ * written by Splen, on this machine. It used to go to chat-proxy (the cloud)
+ * even with the cloud tier switched off. Only when the cloud tier is switched
+ * on does it go there, as every other model call then does. Any failure (Splen
+ * not downloaded yet, a chat too long to read) throws, and the watcher simply
+ * skips this draft.
+ */
+export function composeDraft(system: string, user: string): Promise<string> {
+  if (isCloudTierEnabled()) {
+    // Background composes have no interactive tier, so ask for the
+    // pro-default model; the proxy clamps it to the user's entitlement.
+    return callChatProxyText({ system, modelKey: 'pro-default', messages: [{ role: 'user', content: user }] })
+  }
+  return generateSplen({
+    systemPrompt: system,
+    turns: [{ role: 'user', content: user }],
+    numCtx: resolveNumCtx(false, system.length + user.length),
+    onDelta: () => {}
+  })
+}
+
 function buildDeps(getWindow: () => BrowserWindow | null): WatcherDeps {
   return {
     captureUnreadSenders: () => readWhatsAppUnreadSenders(),
     readChat: (name) => readWhatsAppChatText(name),
-    compose: (system, user) =>
-      // Route through chat-proxy like every other model call — OUR key stays
-      // server-side. Background composes have no interactive tier, so ask for
-      // the pro-default model; the proxy clamps it to the user's entitlement
-      // (a free/limit failure throws and the watcher just skips this draft).
-      callChatProxyText({
-        system,
-        modelKey: 'pro-default',
-        messages: [{ role: 'user', content: user }]
-      }),
+    compose: composeDraft,
     onDraft: (draft: DraftReply) => emit(getWindow(), 'openui:whatsapp:draft', draft),
     onAudit: (draft: DraftReply) => auditDraftedReply(draft),
     onActiveChange: (active: boolean) => emit(getWindow(), 'openui:whatsapp:active', active),

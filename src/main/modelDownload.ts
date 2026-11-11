@@ -30,7 +30,7 @@
 import type { BrowserWindow } from 'electron'
 import { isPullInFlight, pullModel } from './ollamaPull'
 import { DEFAULT_CODE_MODEL, DEFAULT_GENERAL_MODEL, SPLEN_MODEL, getAvailableModels } from './models'
-import { hasAccountSession } from './auth/sessionManager'
+import { accountSessionState } from './auth/sessionManager'
 import { isCodingEnabled } from './capabilities'
 import { downloadSplen, getSplenOffer, isSplenDownloadInFlight } from './splen/download'
 import { readSplenInstall } from './splen/install'
@@ -285,11 +285,19 @@ async function splenStatus(): Promise<ModelStatus | null> {
  * (ollamaPull emits it), so this resolves only with the terminal outcome.
  */
 export async function downloadModel(win: BrowserWindow | null, model: unknown): Promise<DownloadResult> {
-  if (!hasAccountSession()) {
+  const session = await accountSessionState()
+  if (session === 'none') {
     return {
       ok: false,
       code: 'unauthenticated',
       message: 'Sign in to download a model.'
+    }
+  }
+  if (session === 'offline') {
+    return {
+      ok: false,
+      code: 'network',
+      message: 'OpenUI can’t be reached right now, so the download can’t start. Check your connection and try again.'
     }
   }
   // Splen downloads from OpenUI's private storage into the app's own folder;

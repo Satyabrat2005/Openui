@@ -110,25 +110,87 @@ export async function refreshSession(): Promise<boolean> {
  */
 export type RefreshOutcome = 'refreshed' | 'rejected' | 'unreachable' | 'no_session'
 
-export async function refreshSessionOutcome(): Promise<RefreshOutcome> {
+let refreshInFlight: Promise<RefreshOutcome> | null = null
+
+/**
+ * One refresh at a time. Supabase rotates the refresh token on every use, so
+ * two refreshes racing with the same token (the startup check, the 30-minute
+ * loop and a profile read can all fire together) could see the loser told
+ * "already used" — a 4xx that read as 'rejected' and signed out a user whose
+ * session the winner had just renewed. Concurrent callers share one answer.
+ */
+export function refreshSessionOutcome(): Promise<RefreshOutcome> {
+  if (refreshInFlight) return refreshInFlight
+  const run = runRefresh().finally(() => {
+    refreshInFlight = null
+  })
+  refreshInFlight = run
+  return run
+}
+
+/**
+ * The startup sign-in check waits on a refresh, so a network that hangs instead
+ * of failing (captive portal, a dead proxy) must not hold the app on its
+ * loading screen for the five minutes fetch would otherwise wait.
+ */
+export const REFRESH_TIMEOUT_MS = 10_000
+
+type RefreshAnswer = Awaited<ReturnType<ReturnType<typeof getSupabaseClient>['auth']['refreshSession']>>
+type RefreshedSession = NonNullable<RefreshAnswer['data']['session']>
+
+/** Signed out, or signed in again, since `used` was read? */
+function sessionReplaced(id: string, used: string): boolean {
+  return getActiveUserId() !== id || database.users.getUserById(id)?.refresh_token !== used
+}
+
+function storeSession(id: string, session: RefreshedSession): void {
+  // Supabase's session.expires_at is already epoch SECONDS.
+  const expiresAtSec = session.expires_at ?? nowSeconds() + (session.expires_in ?? 3600)
+  database.users.updateAuthTokens(id, session.access_token, session.refresh_token, expiresAtSec)
+  const tier = (session.user?.app_metadata as Record<string, unknown> | undefined)?.tier
+  if (typeof tier === 'string') cacheUserTier(id, tier)
+}
+
+async function runRefresh(): Promise<RefreshOutcome> {
   const id = getActiveUserId()
   if (!id) return 'no_session'
   const row = database.users.getUserById(id)
-  if (!row?.refresh_token) return 'no_session'
+  const used = row?.refresh_token
+  if (!used) return 'no_session'
 
   try {
     const supabase = getSupabaseClient()
-    const { data, error } = await supabase.auth.refreshSession({ refresh_token: row.refresh_token })
+    const request = supabase.auth.refreshSession({ refresh_token: used })
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const timedOut = new Promise<'timeout'>((resolve) => {
+      timer = setTimeout(() => resolve('timeout'), REFRESH_TIMEOUT_MS)
+    })
+    const answer = await Promise.race([request, timedOut]).finally(() => clearTimeout(timer))
+    if (answer === 'timeout') {
+      // Still let a late answer land: the server rotates the refresh token
+      // when it answers, so dropping that answer would leave this app holding
+      // a used token — and the next refresh would be refused.
+      void request
+        .then(({ data }) => {
+          if (data?.session && !sessionReplaced(id, used)) storeSession(id, data.session)
+        })
+        .catch(() => {})
+      return 'unreachable'
+    }
+    const { data, error } = answer
+
+    // Signed out, or signed in again, while the request was out: the answer is
+    // about a session this app no longer holds. Never write it back (that would
+    // bring a signed-out session back to life), and never let its "no" end the
+    // session that replaced it.
+    if (sessionReplaced(id, used)) {
+      const current = getActiveUserId()
+      return current && database.users.getValidToken(current) !== null ? 'refreshed' : 'no_session'
+    }
+
     const session = data?.session
     if (error || !session) return isRejection(error) ? 'rejected' : 'unreachable'
-
-    // Supabase's session.expires_at is already epoch SECONDS.
-    const expiresAtSec = session.expires_at ?? nowSeconds() + (session.expires_in ?? 3600)
-    database.users.updateAuthTokens(id, session.access_token, session.refresh_token, expiresAtSec)
-
-    const tier = (session.user?.app_metadata as Record<string, unknown> | undefined)?.tier
-    if (typeof tier === 'string') cacheUserTier(id, tier)
-
+    storeSession(id, session)
     return 'refreshed'
   } catch (err) {
     console.error('[openui] refreshSession failed:', err)
@@ -140,10 +202,59 @@ export async function refreshSessionOutcome(): Promise<RefreshOutcome> {
  * Did Supabase itself refuse the refresh token? Its auth errors carry the HTTP
  * status: a 4xx (400 invalid_grant, 401, 403) is a real "no"; a network failure
  * has no status (or 0), and a 5xx is the server's problem, not the session's.
+ * 408 (timed out) and 429 (rate limited — many installs behind one office or
+ * campus IP hit it together) mean "not now", not "this session is over".
  */
 export function isRejection(error: unknown): boolean {
   const status = (error as { status?: unknown } | null)?.status
-  return typeof status === 'number' && status >= 400 && status < 500
+  return typeof status === 'number' && status >= 400 && status < 500 && status !== 408 && status !== 429
+}
+
+/**
+ * How long a registered account stays usable while Supabase cannot be reached
+ * at all — offline, or the project paused. Splen runs on this computer, so a
+ * lost connection must not lock anyone out of it. A session Supabase actually
+ * REJECTS still ends at once; only "could not ask" gets the grace.
+ */
+export const OFFLINE_GRACE_SEC = 30 * 24 * 60 * 60
+
+function withinOfflineGrace(row: UserRow): boolean {
+  return Boolean(row.email) && Boolean(row.refresh_token) && nowSeconds() - (row.token_expires_at ?? 0) < OFFLINE_GRACE_SEC
+}
+
+function clearSession(id: string): void {
+  database.users.updateAuthTokens(id, '', '', 0)
+  database.settings.deleteSetting(ACTIVE_USER_KEY)
+}
+
+/**
+ * 'live'    — a registered account with a working session (renewed here first
+ *             if its one-hour access token has run out).
+ * 'offline' — a registered account whose session could not be checked because
+ *             Supabase is unreachable; usable for local work (Splen), but
+ *             nothing that needs the server will work until it is back.
+ * 'none'    — no registered account, or Supabase rejected the session.
+ */
+export type AccountSessionState = 'live' | 'offline' | 'none'
+
+export async function accountSessionState(): Promise<AccountSessionState> {
+  const id = getActiveUserId()
+  if (!id) return 'none'
+  const row = database.users.getUserById(id)
+  // An anonymous guest (no email) is not an account: see hasAccountSession.
+  if (!row?.email) return 'none'
+  if ((row.token_expires_at ?? 0) > nowSeconds() + EXPIRY_SKEW_SEC && database.users.getValidToken(id) !== null) {
+    return 'live'
+  }
+
+  const outcome = await refreshSessionOutcome()
+  if (hasAccountSession()) return 'live' // renewed, or still inside the skew window
+  if (outcome === 'rejected') {
+    clearSession(id)
+    return 'none'
+  }
+  if (outcome === 'unreachable' && getActiveUserId() === id && withinOfflineGrace(row)) return 'offline'
+  return 'none'
 }
 
 /**
@@ -246,12 +357,12 @@ export async function ensureGuestSession(win?: BrowserWindow | null): Promise<bo
  * Return the cached user profile, refreshing the session first when the access
  * token is at/near expiry. Returns null when nobody is signed in.
  *
- * An EXPIRED session that cannot be refreshed resolves to null rather than to
- * the stale profile. This used to return the profile either way, which is
- * invisible while sign-in is optional but becomes a real hole once the app is
- * gated on a session: the renderer would keep the AI UI mounted on a session
- * that no longer authorises anything. The dead session is cleared here so the
- * next read is consistent and the user lands back on the sign-in screen.
+ * A session Supabase REJECTS resolves to null and is cleared, so the user lands
+ * back on the sign-in screen. One that merely could not be checked (offline,
+ * paused project) keeps its refresh token — wiping it is how a sleeping
+ * free-plan project logged everyone out (2026-10-19) — and a registered
+ * account keeps its profile through OFFLINE_GRACE_SEC, because Splen works
+ * without the server.
  */
 export async function getCurrentUser(): Promise<UserProfile | null> {
   const id = getActiveUserId()
@@ -262,17 +373,15 @@ export async function getCurrentUser(): Promise<UserProfile | null> {
   if (row.token_expires_at && row.token_expires_at <= nowSeconds() + EXPIRY_SKEW_SEC) {
     const outcome = await refreshSessionOutcome()
     if (outcome !== 'refreshed' && !database.users.getValidToken(id)) {
-      // Only a refresh Supabase REJECTED clears the session. Unreachable
-      // (offline, paused project) keeps the refresh token, so the next launch
-      // with a connection signs the user straight back in — wiping it here is
-      // how a sleeping free-plan project logged everyone out (2026-10-19).
       if (outcome === 'rejected') {
-        database.users.updateAuthTokens(id, '', '', 0)
-        database.settings.deleteSetting(ACTIVE_USER_KEY)
+        clearSession(id)
+        return null
       }
-      return null
+      if (!(outcome === 'unreachable' && withinOfflineGrace(row))) return null
     }
   }
+  // Signed out while the refresh was out: there is no current user any more.
+  if (getActiveUserId() !== id) return null
   const fresh = database.users.getUserById(id)
   return rowToProfile(fresh ?? row)
 }

@@ -23,6 +23,7 @@
  */
 import { request as httpsRequest } from 'node:https'
 import { createServer } from 'node:http'
+import { addGuardToAuthParams, newOAuthGuard, stateMatches, type OAuthGuard } from './oauthGuard'
 import { readFile } from 'node:fs/promises'
 import { basename } from 'node:path'
 import { GCAL_CLIENT_ID_KEY, GCAL_CLIENT_SECRET_KEY } from './googleCalendar'
@@ -137,7 +138,7 @@ export function isGmailConnected(): boolean {
 
 // ── pure builders (exported for unit tests) ────────────────────────────────
 
-export function buildAuthUrl(clientId: string, redirectUri: string): string {
+export function buildAuthUrl(clientId: string, redirectUri: string, guard?: OAuthGuard): string {
   const p = new URLSearchParams({
     client_id: clientId,
     redirect_uri: redirectUri,
@@ -147,21 +148,25 @@ export function buildAuthUrl(clientId: string, redirectUri: string): string {
     prompt: 'consent',
     include_granted_scopes: 'true'
   })
+  if (guard) addGuardToAuthParams(p, guard)
   return `${AUTH_ENDPOINT}?${p.toString()}`
 }
 
 export function buildTokenExchangeBody(
   cfg: OAuthConfig,
   code: string,
-  redirectUri: string
+  redirectUri: string,
+  codeVerifier?: string
 ): URLSearchParams {
-  return new URLSearchParams({
+  const body = new URLSearchParams({
     client_id: cfg.clientId,
     client_secret: cfg.clientSecret,
     code,
     redirect_uri: redirectUri,
     grant_type: 'authorization_code'
   })
+  if (codeVerifier) body.set('code_verifier', codeVerifier)
+  return body
 }
 
 export function buildRefreshBody(cfg: OAuthConfig, refreshToken: string): URLSearchParams {
@@ -529,6 +534,7 @@ export async function connectGmail(): Promise<EmailResult> {
     }
   }
   const { shell } = await import('electron')
+  const guard = newOAuthGuard()
 
   return new Promise<EmailResult>((resolve) => {
     let settled = false
@@ -552,6 +558,13 @@ export async function connectGmail(): Promise<EmailResult> {
         res.end()
         return
       }
+      // Not the redirect from the request we made: refuse it, and keep waiting
+      // for the real one (see oauthGuard.ts).
+      if (!stateMatches(guard.state, url.searchParams.get('state'))) {
+        res.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' })
+        res.end('This link was not started by OpenUI. Nothing was connected.')
+        return
+      }
       const code = url.searchParams.get('code')
       const oauthErr = url.searchParams.get('error')
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' })
@@ -565,7 +578,7 @@ export async function connectGmail(): Promise<EmailResult> {
         return
       }
       const redirectUri = `http://127.0.0.1:${port}/callback`
-      postToken(buildTokenExchangeBody(cfg, code, redirectUri))
+      postToken(buildTokenExchangeBody(cfg, code, redirectUri, guard.codeVerifier))
         .then((tok) => {
           if (!tok.refresh_token) {
             finish({
@@ -594,7 +607,7 @@ export async function connectGmail(): Promise<EmailResult> {
       const addr = server.address()
       port = typeof addr === 'object' && addr ? addr.port : 0
       const redirectUri = `http://127.0.0.1:${port}/callback`
-      void shell.openExternal(buildAuthUrl(cfg.clientId, redirectUri))
+      void shell.openExternal(buildAuthUrl(cfg.clientId, redirectUri, guard))
     })
   })
 }

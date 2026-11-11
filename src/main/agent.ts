@@ -99,6 +99,26 @@ interface TaskUpdate {
 const history: Message[] = []
 let currentConversationId: string | null = null
 
+// One chat turn at a time. `history` and `currentConversationId` are shared by
+// the whole app, so a second turn started mid-answer (a double Enter, a voice
+// note while typing) would interleave its messages with the first, and New
+// chat pressed mid-answer would let the old turn write into — or, on failure,
+// roll back with `history.length = rollbackLen` and leave holes in — the new
+// chat's history. So a second turn is refused, and a New chat / resume that
+// arrives mid-turn is applied the moment the turn ends.
+let turnInFlight = false
+let pendingHistoryReset: (() => void) | null = null
+
+/** True while a chat turn is running. */
+export function isChatTurnInFlight(): boolean {
+  return turnInFlight
+}
+
+function replaceHistory(reset: () => void): void {
+  if (turnInFlight) pendingHistoryReset = reset
+  else reset()
+}
+
 // Provenance for the send guards (sendGuards.ts). Content alone cannot say who
 // wrote a history entry: plan context and continuation nudges are user-role
 // too, and anyone can type a line starting "TOOL RESULT". So the loop records
@@ -2203,8 +2223,29 @@ export function deriveConversationTitle(message: string): string {
  * emitting tool calls, execute each tool in the main process, push the result
  * back into the conversation, and let the model continue reasoning. Task-list
  * status is pushed to the renderer as each tool moves working → done/error.
+ *
+ * Returns false, doing nothing at all, when another turn is still running.
  */
-export async function handleChat(win: BrowserWindow, userMessage: string, tier: Tier, fromVoice = false): Promise<void> {
+export async function handleChat(win: BrowserWindow, userMessage: string, tier: Tier, fromVoice = false): Promise<boolean> {
+  // Refused before the allowance check, so a refused turn costs nothing, and
+  // without emitting chat:error, which would mark the RUNNING turn as failed.
+  if (turnInFlight) {
+    console.warn('[chat] a turn is already running; ignoring the new message')
+    return false
+  }
+  turnInFlight = true
+  try {
+    await runChatTurn(win, userMessage, tier, fromVoice)
+  } finally {
+    turnInFlight = false
+    const reset = pendingHistoryReset
+    pendingHistoryReset = null
+    reset?.()
+  }
+  return true
+}
+
+async function runChatTurn(win: BrowserWindow, userMessage: string, tier: Tier, fromVoice: boolean): Promise<void> {
   // Daily allowance, checked BEFORE anything is written.
   //
   // This is the only place metering belongs. `callModel` is shared with the
@@ -2854,8 +2895,10 @@ export async function handleChat(win: BrowserWindow, userMessage: string, tier: 
 }
 
 export function clearHistory(): void {
-  history.length = 0
-  currentConversationId = null
+  replaceHistory(() => {
+    history.length = 0
+    currentConversationId = null
+  })
 }
 
 /** Coerce an untrusted IPC tier value to a known Tier, defaulting to 'free'. */
@@ -2974,17 +3017,23 @@ export function registerConversationIPC(_win: BrowserWindow): void {
   ipcMain.handle('openui:resume-conversation', async (_event, conversationId: unknown) => {
     if (typeof conversationId !== 'string') return []
     const messages = database.messages.getMessagesByConversation(conversationId)
-    history.length = 0
-    for (const msg of messages) {
-      if (msg.role === 'user' || msg.role === 'assistant') {
-        const entry: Message = { role: msg.role, content: msg.content ?? '' }
-        // Only the user's own messages and final replies are persisted, so every
-        // stored user-role row is something the user typed.
-        if (msg.role === 'user') typedByUser.add(entry)
-        history.push(entry)
+    const deferred = turnInFlight
+    replaceHistory(() => {
+      // A resume deferred behind a running turn re-reads when applied, so it
+      // includes anything that turn wrote to this conversation.
+      const rows = deferred ? database.messages.getMessagesByConversation(conversationId) : messages
+      history.length = 0
+      for (const msg of rows) {
+        if (msg.role === 'user' || msg.role === 'assistant') {
+          const entry: Message = { role: msg.role, content: msg.content ?? '' }
+          // Only the user's own messages and final replies are persisted, so every
+          // stored user-role row is something the user typed.
+          if (msg.role === 'user') typedByUser.add(entry)
+          history.push(entry)
+        }
       }
-    }
-    currentConversationId = conversationId
+      currentConversationId = conversationId
+    })
     return messages
   })
 }
