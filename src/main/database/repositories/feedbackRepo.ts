@@ -42,8 +42,19 @@ export function recordTurn(
        VALUES (?, ?, ?, ?, ?)`
     )
     .run(id, conversationId, userMessage, assistantResponse, NEUTRAL_RATING)
+  // Each row holds a full message and reply; without a cap the table grew for
+  // as long as the app was used.
+  getDb()
+    .prepare(
+      `DELETE FROM conversation_feedback WHERE id IN
+         (SELECT id FROM conversation_feedback ORDER BY timestamp DESC, rowid DESC LIMIT -1 OFFSET ?)`
+    )
+    .run(MAX_FEEDBACK_ROWS)
   return id
 }
+
+/** Newest feedback rows kept. */
+export const MAX_FEEDBACK_ROWS = 5000
 
 /**
  * Re-score the most recent turn in a conversation based on the sentiment of the

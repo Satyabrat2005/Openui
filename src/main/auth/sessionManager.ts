@@ -16,6 +16,7 @@ import { getSupabaseClient, isSupabaseConfigured } from './supabaseClient'
 import { database, type UserRow } from '../database'
 import { getSetting, setSetting } from '../database/repositories/settingsRepo'
 import { resetTelemetryIdentity } from '../telemetry/posthog'
+import { clearPersonalData } from './personalData'
 
 /** Settings key under which the signed-in user's id is stored. */
 export const ACTIVE_USER_KEY = 'auth.active_user_id'
@@ -66,7 +67,32 @@ function nowSeconds(): number {
 
 /** Record which user is signed in (called when an auth callback completes). */
 export function setActiveUser(userId: string): void {
+  // A DIFFERENT account signing in on this computer must not inherit the last
+  // person's connected channels, chat memory or contacts — none of those are
+  // per-account. Signing out and back in as the same person keeps everything.
+  const previous = database.settings.getSetting(LAST_ACCOUNT_KEY)
+  if (typeof previous === 'string' && previous && previous !== userId) {
+    clearPersonalData()
+    for (const listener of accountSwitchListeners) {
+      try {
+        listener()
+      } catch (err) {
+        console.error('[openui] account-switch listener failed:', err)
+      }
+    }
+  }
   database.settings.setSetting(ACTIVE_USER_KEY, userId)
+  database.settings.setSetting(LAST_ACCOUNT_KEY, userId)
+}
+
+/** The last account that signed in here; survives sign-out, unlike ACTIVE_USER_KEY. */
+export const LAST_ACCOUNT_KEY = 'auth.last_account_id'
+
+const accountSwitchListeners: Array<() => void> = []
+
+/** Run `listener` when a different account signs in (e.g. drop the in-memory chat). */
+export function onAccountSwitch(listener: () => void): void {
+  accountSwitchListeners.push(listener)
 }
 
 function getActiveUserId(): string | null {

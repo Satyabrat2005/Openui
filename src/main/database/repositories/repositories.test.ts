@@ -282,6 +282,13 @@ describe('subscriptionRepo', () => {
 
 // ── feedbackRepo ─────────────────────────────────────────────────────────────
 describe('feedbackRepo', () => {
+  it('keeps only the newest MAX_FEEDBACK_ROWS turns', () => {
+    for (let i = 0; i < feedback.MAX_FEEDBACK_ROWS + 3; i++) feedback.recordTurn('c1', `q${i}`, `a${i}`)
+    const n = (sql: string): number => (temp.db.prepare(sql).get() as { n: number }).n
+    expect(n('SELECT COUNT(*) AS n FROM conversation_feedback')).toBe(feedback.MAX_FEEDBACK_ROWS)
+    expect(n("SELECT COUNT(*) AS n FROM conversation_feedback WHERE user_message = 'q0'")).toBe(0)
+  })
+
   it('records a turn at the neutral rating', () => {
     recordAndExpectNeutral()
   })
@@ -351,6 +358,17 @@ describe('trainingRepo', () => {
       ...overrides
     }
   }
+
+  it('keeps only the newest MAX_TRAINING_EXAMPLES, with their steps', () => {
+    for (let i = 0; i < training.MAX_TRAINING_EXAMPLES + 5; i++) {
+      training.saveExample(baseExample({ instruction: `task ${i}` }))
+    }
+    const n = (sql: string): number => (temp.db.prepare(sql).get() as { n: number }).n
+    expect(n('SELECT COUNT(*) AS n FROM training_examples')).toBe(training.MAX_TRAINING_EXAMPLES)
+    expect(n('SELECT COUNT(*) AS n FROM training_steps')).toBe(training.MAX_TRAINING_EXAMPLES)
+    expect(n("SELECT COUNT(*) AS n FROM training_examples WHERE instruction = 'task 0'")).toBe(0)
+    expect(n(`SELECT COUNT(*) AS n FROM training_examples WHERE instruction = 'task ${training.MAX_TRAINING_EXAMPLES + 4}'`)).toBe(1)
+  })
 
   it('saves an example with its ordered steps in one transaction', () => {
     const id = training.saveExample(
