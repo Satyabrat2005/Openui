@@ -33,6 +33,12 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      # This Electron version fetches its binary lazily, the first time anything
+      # requires('electron'). Tests that import it unmocked then race: several
+      # vitest workers start the same download at once and one fails, killing
+      # a whole test file (seen on ubuntu, PR #201). Fetch it once, up front.
+      - name: Download the Electron binary
+        run: node node_modules/electron/install.js
       # Lint is platform-independent — run it once to avoid 3× redundant work.
       - name: Lint (Linux only)
         if: matrix.os == 'ubuntu-latest'
