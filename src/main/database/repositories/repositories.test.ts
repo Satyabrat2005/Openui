@@ -161,6 +161,24 @@ describe('messageRepo', () => {
     expect(rows[1].model).toBe('llama3:8b')
   })
 
+  it('keeps send order for messages written in the same second', () => {
+    // A question and a fast answer share a created_at second; the reopened chat
+    // must still show the question first.
+    for (let i = 0; i < 20; i++) messages.addMessage(convId, i % 2 ? 'assistant' : 'user', `m${i}`)
+    const rows = messages.getMessagesByConversation(convId)
+    expect(rows.map((m) => m.content)).toEqual(Array.from({ length: 20 }, (_, i) => `m${i}`))
+  })
+
+  it('moves a continued chat to the top of Recent', () => {
+    const older = conversations.createConversation('owner', 'older chat')
+    temp.db.prepare('UPDATE conversations SET updated_at = 1000 WHERE id = ?').run(convId)
+    temp.db.prepare('UPDATE conversations SET updated_at = 2000 WHERE id = ?').run(older)
+    expect(conversations.getConversationsByUser('owner')[0].id).toBe(older)
+
+    messages.addMessage(convId, 'user', 'picking this one back up')
+    expect(conversations.getConversationsByUser('owner')[0].id).toBe(convId)
+  })
+
   it('serialises tool calls / results as JSON', () => {
     messages.addMessage(convId, 'tool', '', undefined, { tool: 'open_app' }, { ok: true })
     const row = messages.getMessagesByConversation(convId)[0]
