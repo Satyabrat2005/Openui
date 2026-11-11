@@ -100,7 +100,7 @@ function isOfferedTo(email: string | undefined): boolean {
   return Boolean(email) && allow.includes(email!.toLowerCase())
 }
 
-serve(async (req) => {
+async function handle(req: Request): Promise<Response> {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders })
   if (req.method !== 'POST') return json({ error: 'method_not_allowed' }, 405)
 
@@ -168,4 +168,16 @@ serve(async (req) => {
   const signed = await r2.sign(new Request(objectUrl, { method: 'GET' }), { aws: { signQuery: true } })
 
   return json({ url: signed.url, version: cfg.version, sha256: cfg.sha256, bytes: cfg.bytes })
+}
+
+// Anything unforeseen (a signing error, a storage client throw) still returns
+// JSON with CORS headers, so the app shows its own message instead of a bare
+// platform 500 it cannot read.
+serve(async (req) => {
+  try {
+    return await handle(req)
+  } catch (err) {
+    console.error('[splen-download] unexpected failure', err)
+    return json({ error: 'unavailable' }, 503)
+  }
 })

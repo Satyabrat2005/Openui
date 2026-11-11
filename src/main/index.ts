@@ -352,6 +352,16 @@ app.whenReady().then(async () => {
     initDatabase()
   } catch (err) {
     console.error('[openui] Database initialisation failed:', err)
+    // Without its database nothing in the app works (sign-in, chats, settings
+    // all read it), and a log line nobody sees left users with an app that
+    // opened and then failed at every click. Say so, once, with what to try.
+    dialog.showErrorBox(
+      'OpenUI couldn’t open its data',
+      'OpenUI could not open its local database, so sign-in, chats and settings will not work.\n\n' +
+        'Close OpenUI and open it again. If this keeps happening, your antivirus may have blocked part of ' +
+        'OpenUI — allow it, or reinstall OpenUI.\n\n' +
+        `Details: ${err instanceof Error ? err.message : String(err)}`
+    )
   }
   try {
     await initTelemetry()

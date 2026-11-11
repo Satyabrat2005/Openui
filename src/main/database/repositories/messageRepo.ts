@@ -22,8 +22,8 @@ export function addMessage(
   toolResults?: unknown
 ): string {
   const id = randomUUID()
-  getDb()
-    .prepare(
+  const db = getDb()
+  db.prepare(
       `INSERT INTO messages (id, conversation_id, role, content, model, tool_calls, tool_results)
        VALUES (?, ?, ?, ?, ?, ?, ?)`
     )
@@ -36,12 +36,15 @@ export function addMessage(
       toolCalls != null ? JSON.stringify(toolCalls) : null,
       toolResults != null ? JSON.stringify(toolResults) : null
     )
+  // "Recent" is ordered by updated_at: a chat you just continued belongs at the
+  // top, not where it was when it was created.
+  db.prepare(`UPDATE conversations SET updated_at = strftime('%s','now') WHERE id = ?`).run(conversationId)
   return id
 }
 
 export function getMessagesByConversation(conversationId: string): MessageRow[] {
   return getDb()
-    .prepare('SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at ASC')
+    .prepare('SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at ASC, rowid ASC')
     .all(conversationId) as MessageRow[]
 }
 
