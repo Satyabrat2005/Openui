@@ -25,6 +25,8 @@ import {
   clearSplenOfferCacheForTests,
   downloadSplen,
   getSplenOffer,
+  RENAME_ATTEMPTS,
+  renameWithRetry,
   requestSplenGrant,
   SPLEN_DOWNLOAD_ID,
   type SplenGrant
@@ -158,6 +160,79 @@ describe('downloadSplen', () => {
     expect(a).toEqual(b)
     expect(s.requests).toHaveLength(1)
   })
+
+  it('keeps a verified download it could not put in place, and the retry only installs', async () => {
+    const s = storage()
+    const locked = Object.assign(new Error('EBUSY: resource busy or locked'), { code: 'EBUSY' })
+    const res = await downloadSplen(null, {
+      requestGrant: async () => GRANT,
+      fetch: s.fetch,
+      place: async () => {
+        throw locked
+      }
+    })
+    expect(res).toMatchObject({ ok: false, code: 'failed', message: expect.stringContaining('won’t download again') })
+    expect(readSplenInstall()).toBeNull()
+    expect(existsSync(join(dir, `${SPLEN_WEIGHTS_FILE}.part`))).toBe(true)
+
+    const again = await downloadSplen(null, { requestGrant: async () => GRANT, fetch: s.fetch })
+    expect(again).toEqual({ ok: true, model: SPLEN_DOWNLOAD_ID })
+    expect(s.requests).toHaveLength(1) // nothing downloaded the second time
+    expect(readSplenInstall()?.sha256).toBe(SHA)
+  })
+
+  it('records a file already in place whose record was lost, without downloading it again', async () => {
+    writeFileSync(join(dir, SPLEN_WEIGHTS_FILE), WEIGHTS)
+    const s = storage()
+    const res = await downloadSplen(null, { requestGrant: async () => GRANT, fetch: s.fetch })
+    expect(res).toEqual({ ok: true, model: SPLEN_DOWNLOAD_ID })
+    expect(s.requests).toHaveLength(0)
+    expect(readSplenInstall()).toMatchObject({ version: GRANT.version, sha256: SHA, bytes: WEIGHTS.length })
+  })
+
+  it('resolves with a failure instead of throwing when the disk itself fails', async () => {
+    // The Splen folder path is taken by a file, so creating the folder throws.
+    const blocker = join(dir, 'not-a-folder')
+    writeFileSync(blocker, 'x')
+    setSplenDirForTests(blocker)
+    const s = storage()
+    await expect(downloadSplen(null, { requestGrant: async () => GRANT, fetch: s.fetch })).resolves.toMatchObject({
+      ok: false,
+      code: 'failed'
+    })
+  })
+})
+
+describe('renameWithRetry', () => {
+  const err = (code: string): Error => Object.assign(new Error(code), { code })
+
+  it('waits out a brief antivirus lock', async () => {
+    let calls = 0
+    await renameWithRetry('a', 'b', 0, () => {
+      if (++calls < 3) throw err('EBUSY')
+    })
+    expect(calls).toBe(3)
+  })
+
+  it('gives up after its attempts and throws the lock error', async () => {
+    let calls = 0
+    const rename = (): void => {
+      calls++
+      throw err('EPERM')
+    }
+    await expect(renameWithRetry('a', 'b', 0, rename)).rejects.toMatchObject({ code: 'EPERM' })
+    expect(calls).toBe(RENAME_ATTEMPTS)
+  })
+
+  it('does not retry an error that is not a lock', async () => {
+    let calls = 0
+    const rename = (): void => {
+      calls++
+      throw err('ENOENT')
+    }
+    await expect(renameWithRetry('a', 'b', 0, rename)).rejects.toMatchObject({ code: 'ENOENT' })
+    expect(calls).toBe(1)
+  })
 })
 
 describe('requestSplenGrant', () => {
@@ -189,6 +264,13 @@ describe('requestSplenGrant', () => {
   it('reports the daily cap plainly', async () => {
     callEdgeFunction.mockResolvedValue(new Response('{"error":"rate_limited"}', { status: 429 }))
     await expect(requestSplenGrant()).rejects.toMatchObject({ failure: { code: 'failed' } })
+  })
+
+  it('asks an account whose email is unconfirmed to confirm it — not to sign in', async () => {
+    callEdgeFunction.mockResolvedValue(new Response('{"error":"email_not_confirmed"}', { status: 403 }))
+    await expect(requestSplenGrant()).rejects.toMatchObject({
+      failure: { code: 'unauthenticated', message: expect.stringContaining('Confirm your email') }
+    })
   })
 
   it('tells a signed-in account Splen is not offered to it yet — not to sign in', async () => {
@@ -226,5 +308,22 @@ describe('getSplenOffer', () => {
     await getSplenOffer()
     await getSplenOffer()
     expect(callEdgeFunction).toHaveBeenCalledTimes(1)
+  })
+
+  it('asks again soon after it could not reach the server, instead of hiding Splen for ten minutes', async () => {
+    vi.useFakeTimers()
+    try {
+      callEdgeFunction.mockRejectedValue(new EdgeFunctionError('no session', 0, 'not_configured'))
+      await expect(getSplenOffer()).resolves.toBeNull()
+
+      // The user signs in a minute later.
+      vi.advanceTimersByTime(60_000)
+      callEdgeFunction.mockResolvedValue(
+        new Response(JSON.stringify({ available: true, version: '4b-run5', bytes: 2_790_000_288 }), { status: 200 })
+      )
+      await expect(getSplenOffer()).resolves.toEqual({ version: '4b-run5', bytes: 2_790_000_288 })
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

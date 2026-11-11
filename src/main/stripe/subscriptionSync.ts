@@ -16,7 +16,7 @@ import { BrowserWindow } from 'electron'
 import { getSupabaseClient, isSupabaseConfigured } from '../auth/supabaseClient'
 import { database } from '../database'
 import { ACTIVE_USER_KEY } from '../auth/sessionManager'
-import { getTierForUser, type TierId } from './pricing'
+import { arePaidPlansEnabled, getTierForUser, type TierId } from './pricing'
 
 const SYNC_INTERVAL_MS = 5 * 60 * 1000
 const DAY_SEC = 24 * 60 * 60
@@ -63,6 +63,12 @@ function coerceTier(value: unknown): TierId {
  */
 export async function syncSubscriptionStatus(userId: string): Promise<TierId> {
   const previousTier = getTierForUser(userId)
+
+  // Paid plans are off: every account is unlimited, so there is nothing to
+  // check — and asking anyway cost two network calls per user every five
+  // minutes and on every window focus, which alone would use up the Supabase
+  // free plan's monthly Edge Function allowance at a few hundred users.
+  if (!arePaidPlansEnabled()) return previousTier
 
   if (!isSupabaseConfigured()) {
     // Nothing to verify against — never trust a stale cache to unlock paid tiers.
@@ -126,6 +132,7 @@ export async function syncSubscriptionStatus(userId: string): Promise<TierId> {
  * never by itself keeps the app alive.
  */
 export function startSubscriptionSyncLoop(): void {
+  if (!arePaidPlansEnabled()) return
   const tick = (): void => {
     const userId = getCurrentUserId()
     if (userId) void syncSubscriptionStatus(userId)

@@ -33,7 +33,7 @@ vi.mock('./splen/install', () => ({
 }))
 
 vi.mock('./auth/sessionManager', () => ({
-  hasAccountSession: () => H.session.authed
+  accountSessionState: async () => (H.session.authed ? 'live' : 'none')
 }))
 vi.mock('./models', async () => {
   const actual = await vi.importActual<typeof import('./models')>('./models')

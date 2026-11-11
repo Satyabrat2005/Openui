@@ -57,3 +57,23 @@ Deno.test('accepts a valid token with no claimed userId at all', async () => {
   const result = await requireVerifiedUser(reqWithAuth('valid-token'), fakeSupabase())
   assertEquals(result, { ok: true, user: { id: REAL_USER_ID, email: 'real@example.com' } })
 })
+
+// requireAccount (splen-download): only a real, confirmed account gets Splen.
+function userShaped(user: Record<string, unknown>): AuthClient {
+  return fakeSupabase({ getUser: async () => ({ data: { user: user as { id: string } }, error: null }) })
+}
+
+Deno.test('requireAccount refuses an anonymous guest session', async () => {
+  const result = await requireVerifiedUser(reqWithAuth('t'), userShaped({ id: 'g', is_anonymous: true }), undefined, { requireAccount: true })
+  assertEquals(result, { ok: false, status: 403, error: 'account_required' })
+})
+
+Deno.test('requireAccount refuses an email nobody has confirmed', async () => {
+  const result = await requireVerifiedUser(reqWithAuth('t'), userShaped({ id: 'u', email: 'a@b.co', email_confirmed_at: null }), undefined, { requireAccount: true })
+  assertEquals(result, { ok: false, status: 403, error: 'email_not_confirmed' })
+})
+
+Deno.test('requireAccount accepts a confirmed account', async () => {
+  const result = await requireVerifiedUser(reqWithAuth('t'), userShaped({ id: 'u', email: 'a@b.co', email_confirmed_at: '2026-11-01T00:00:00Z' }), undefined, { requireAccount: true })
+  assertEquals(result, { ok: true, user: { id: 'u', email: 'a@b.co' } })
+})

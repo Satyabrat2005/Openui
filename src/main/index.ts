@@ -24,7 +24,7 @@ import { initDatabase, database } from './database'
 import { registerWhatsAppAutoReplyIpc } from './whatsappWatcherService'
 import { registerDeepLinkProtocol, setupDeepLinkHandlers } from './auth/deeplink'
 import { openAuthWindow, isAuthWebContents } from './auth/authWindow'
-import { logout, getCurrentUser, getUserTier, startTokenRefreshLoop, stopTokenRefreshLoop, hasAccountSession } from './auth/sessionManager'
+import { logout, getCurrentUser, getUserTier, startTokenRefreshLoop, stopTokenRefreshLoop, accountSessionState } from './auth/sessionManager'
 import { registerWithEmail, signInWithEmail } from './auth/emailAuth'
 import { downloadModel, listModelStatus } from './modelDownload'
 import { initTelemetry, enableTelemetryAfterConsent, shutdownTelemetry, setTelemetryOptOut, isTelemetryActive, trackEvent } from './telemetry/posthog'
@@ -468,8 +468,11 @@ app.whenReady().then(async () => {
   )
   // Whether a REGISTERED account is signed in right now. This is what the
   // renderer's gate reads: it is false for an anonymous/guest session, so the
-  // model UI cannot mount on a session nobody registered for.
-  ipcMain.handle('openui:auth:has-session', () => hasAccountSession())
+  // model UI cannot mount on a session nobody registered for. It renews an
+  // expired one-hour token first (reading the token alone sent everyone back to
+  // the sign-in screen on any launch more than an hour after the last), and
+  // stays open offline, because Splen runs on this computer.
+  ipcMain.handle('openui:auth:has-session', async () => (await accountSessionState()) !== 'none')
 
   // ── Local model download (session-gated) ────────────────────────────────────
   // The in-app path to getting a model. Progress streams separately over

@@ -104,7 +104,9 @@ serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders })
   if (req.method !== 'POST') return json({ error: 'method_not_allowed' }, 405)
 
-  const auth = await requireVerifiedUser(req, supabase)
+  // Splen goes only to real, confirmed accounts: an anonymous session costs
+  // nothing to mint, so without this the daily per-account cap capped nothing.
+  const auth = await requireVerifiedUser(req, supabase, undefined, { requireAccount: true })
   if (!auth.ok) return json({ error: auth.error }, auth.status)
 
   let action = 'grant'

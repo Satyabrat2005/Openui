@@ -185,6 +185,26 @@ describe('RunConsole — a chat thread, like any chat app', () => {
     expect(screen.getByText('Your wish is my command!')).toBeTruthy()
   })
 
+  // Main answers one message at a time; these keep the screen from offering
+  // a second send, a New chat or an old chat while an answer is running.
+  it('while Splen is answering, Send and New chat wait, and Enter sends nothing', () => {
+    activity.tasks = [card({ id: 'a', title: 'first question', status: 'in_progress', steps: [] })]
+    render(<RunConsole />)
+    const box = screen.getByLabelText('Describe a task or ask a question')
+    fireEvent.change(box, { target: { value: 'second question' } })
+    fireEvent.keyDown(box, { key: 'Enter' })
+    expect(activity.beginTask).not.toHaveBeenCalled()
+    expect(api().chat).not.toHaveBeenCalled()
+    // What you typed is kept for when the answer is done.
+    expect((box as HTMLTextAreaElement).value).toBe('second question')
+    expect((screen.getByRole('button', { name: 'Splen is still answering' }) as HTMLButtonElement).disabled).toBe(true)
+
+    const newChat = screen.getByRole('button', { name: /New chat/ }) as HTMLButtonElement
+    expect(newChat.disabled).toBe(true)
+    fireEvent.keyDown(window, { key: 'n', ctrlKey: true })
+    expect(api().clearHistory).not.toHaveBeenCalled()
+  })
+
   it('reopening a recent chat shows its saved messages and loads it as context', async () => {
     api().resumeConversation = vi.fn(() =>
       Promise.resolve([

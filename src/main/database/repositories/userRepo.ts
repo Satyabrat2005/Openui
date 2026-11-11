@@ -1,4 +1,19 @@
 import { getDb } from '../init'
+import { decryptValue, encryptValue } from './secretStore'
+
+// The sign-in tokens are encrypted at rest like every other credential (see
+// secretStore.ts): the refresh token alone is enough to act as this user, and it
+// sat in plaintext in openui.db. An empty string means "signed out" and stays
+// empty. Rows written before this change are plaintext; they still read, and
+// are encrypted on the next refresh.
+function sealToken(token: string): string {
+  return token ? encryptValue(token) : token
+}
+
+/** Null for an envelope this OS user cannot open: treated as signed out. */
+function openToken(stored: string | null): string | null {
+  return stored ? decryptValue(stored) : stored
+}
 
 export interface UserRow {
   id: string
@@ -47,7 +62,9 @@ export function upsertUser(userData: UserData): void {
 }
 
 export function getUserById(id: string): UserRow | null {
-  return (getDb().prepare('SELECT * FROM users WHERE id = ?').get(id) as UserRow | undefined) ?? null
+  const row = getDb().prepare('SELECT * FROM users WHERE id = ?').get(id) as UserRow | undefined
+  if (!row) return null
+  return { ...row, auth_token: openToken(row.auth_token), refresh_token: openToken(row.refresh_token) }
 }
 
 export function updateUserTier(userId: string, tier: string): void {
@@ -68,7 +85,7 @@ export function updateAuthTokens(
        SET auth_token = ?, refresh_token = ?, token_expires_at = ?, updated_at = strftime('%s','now')
        WHERE id = ?`
     )
-    .run(accessToken, refreshToken, expiresAt, userId)
+    .run(sealToken(accessToken), sealToken(refreshToken), expiresAt, userId)
 }
 
 export function getValidToken(userId: string): string | null {
@@ -77,7 +94,7 @@ export function getValidToken(userId: string): string | null {
     .get(userId) as { auth_token: string | null; token_expires_at: number | null } | undefined
   if (!row?.auth_token || !row.token_expires_at) return null
   if (row.token_expires_at <= Math.floor(Date.now() / 1000)) return null
-  return row.auth_token
+  return openToken(row.auth_token)
 }
 
 export function deleteUser(userId: string): void {

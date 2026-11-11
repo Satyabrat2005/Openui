@@ -21,7 +21,9 @@ import { contextForModel, MAX_CONTEXT_MESSAGES } from './agent'
 import type { Message } from './agent'
 
 const h = vi.hoisted(() => {
-  const state = { responses: [] as string[] }
+  // gate: when set, the model call waits on it, so a test can act mid-turn.
+  // fail: the next model call throws, to drive the failed-turn rollback.
+  const state = { responses: [] as string[], gate: null as Promise<void> | null, fail: false }
   // Real in-memory store so getMessagesByConversation returns what addMessage saved.
   const store = {
     convSeq: 0,
@@ -36,6 +38,11 @@ const h = vi.hoisted(() => {
     // records the messages it was asked to send (so we can assert what the model
     // actually saw this turn).
     ollamaChat: vi.fn(async (_arg: unknown) => {
+      if (state.gate) await state.gate
+      if (state.fail) {
+        state.fail = false
+        throw new Error('model exploded')
+      }
       const text = state.responses.shift() ?? 'All done.'
       async function* stream(): AsyncGenerator<{ message: { content: string } }> {
         yield { message: { content: text } }
@@ -153,6 +160,8 @@ beforeEach(() => {
   clearHistory()
   h.sends.length = 0
   h.state.responses = []
+  h.state.gate = null
+  h.state.fail = false
   h.store.messages.length = 0
   h.store.convSeq = 0
   h.ollamaChat.mockClear()
@@ -203,6 +212,81 @@ describe('conversation memory — New Chat isolates, resume restores', () => {
     // And this turn was persisted back into conversation 1, not a new one.
     expect(h.store.convSeq).toBe(2)
     expect(h.store.messages.filter((m) => m.conversationId === 'conv-1')).toHaveLength(4)
+  })
+})
+
+describe('one turn at a time — double send and New chat mid-answer', () => {
+  /** Hold the model mid-answer; returns the release function. */
+  function holdModel(): () => void {
+    let release!: () => void
+    h.state.gate = new Promise<void>((r) => (release = r))
+    return () => {
+      h.state.gate = null
+      release()
+    }
+  }
+  const tick = (): Promise<void> => new Promise((r) => setTimeout(r, 0))
+
+  it('refuses a second message while the first is still answering, without failing the first', async () => {
+    const release = holdModel()
+    h.state.responses = ['First answer.']
+    const first = handleChat(win, 'first message', 'free')
+    await tick()
+
+    const second = await handleChat(win, 'second message', 'free')
+    expect(second).toBe(false)
+    // Refused silently: an error event would mark the RUNNING answer as failed.
+    expect(h.sends.some((s) => s.channel === 'openui:chat:error')).toBe(false)
+
+    release()
+    expect(await first).toBe(true)
+    expect(h.ollamaChat).toHaveBeenCalledTimes(1)
+    expect(h.store.messages.map((m) => m.content)).toEqual(['first message', 'First answer.'])
+  })
+
+  it('applies New chat pressed mid-answer once the answer ends, so nothing bleeds across', async () => {
+    const newChat = h.ipc.get('openui:clear-history') as () => void
+    const release = holdModel()
+    h.state.responses = ['The code is PEAR.']
+    const first = handleChat(win, 'Remember the code PEAR.', 'free')
+    await tick()
+    newChat()
+    release()
+    await first
+    // The old turn still finished into ITS conversation…
+    expect(h.store.messages.filter((m) => m.conversationId === 'conv-1')).toHaveLength(2)
+
+    // …and the next message starts a new one that cannot see it.
+    h.ollamaChat.mockClear()
+    h.state.responses = ['Hello.']
+    await handleChat(win, 'hi', 'free')
+    expect(h.store.convSeq).toBe(2)
+    expect(lastModelContext()).not.toContain('PEAR')
+  })
+
+  it('a turn that fails after New chat leaves no holes in the new chat', async () => {
+    const newChat = h.ipc.get('openui:clear-history') as () => void
+    h.state.responses = ['KIWI-TWO']
+    await handleChat(win, 'KIWI-ONE', 'free')
+
+    const release = holdModel()
+    h.state.fail = true
+    const failing = handleChat(win, 'this one fails', 'free')
+    await tick()
+    newChat()
+    release()
+    await failing
+    expect(h.sends.some((s) => s.channel === 'openui:chat:error')).toBe(true)
+
+    // Before the fix the rollback re-grew the cleared history to its old
+    // length with empty slots, and the next turn crashed reading `.role`.
+    h.sends.length = 0
+    h.ollamaChat.mockClear()
+    h.state.responses = ['Fresh start.']
+    expect(await handleChat(win, 'new chat message', 'free')).toBe(true)
+    expect(h.sends.some((s) => s.channel === 'openui:chat:error')).toBe(false)
+    expect(lastModelContext()).not.toContain('KIWI')
+    expect(lastModelContext()).toContain('new chat message')
   })
 })
 
