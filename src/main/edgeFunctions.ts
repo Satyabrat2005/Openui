@@ -57,6 +57,9 @@ export function isEdgeFunctionConfigured(): boolean {
  * that happen BEFORE we get an HTTP answer (no auth / no network); a non-OK HTTP
  * status is returned to the caller to interpret.
  */
+/** Every edge call returns one JSON body (none streams); a minute covers a long cloud reply or transcription. */
+export const EDGE_TIMEOUT_MS = 60_000
+
 export async function callEdgeFunction(name: string, body: unknown): Promise<Response> {
   const userId = getCurrentUserId()
   const baseUrl = process.env.SUPABASE_URL
@@ -80,6 +83,9 @@ export async function callEdgeFunction(name: string, body: unknown): Promise<Res
 
   try {
     return await fetch(`${baseUrl.replace(/\/$/, '')}/functions/v1/${name}`, {
+      // Without a limit, a network that hangs instead of failing left the
+      // Splen download on "starting download" for minutes.
+      signal: AbortSignal.timeout(EDGE_TIMEOUT_MS),
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
